@@ -14,6 +14,7 @@
 #include "common/QLogging.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "messages/Message.hpp"
+#include "messages/Emote.hpp"
 #include "messages/MessageBuilder.hpp"
 #include "providers/bttv/BttvEmotes.hpp"
 #include "providers/bttv/BttvLiveUpdates.hpp"
@@ -29,11 +30,13 @@
 #include "providers/twitch/IrcMessageHandler.hpp"
 #include "providers/twitch/PubSubManager.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
+#include "providers/twitch/TwitchBadges.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
 #include "providers/twitch/TwitchCommon.hpp"
 #include "providers/twitch/TwitchHelpers.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/WindowManager.hpp"
+#include "widgets/helper/TabAvatars.hpp"
 #include "util/PostToThread.hpp"
 #include "util/RatelimitBucket.hpp"
 #include "util/Twitch.hpp"
@@ -353,6 +356,21 @@ void TwitchIrcServer::initialize()
 {
     getApp()->getAccounts()->twitch.currentUserChanged.connect([this]() {
         postToThread([this] {
+            const auto account = getApp()->getAccounts()->twitch.getCurrent();
+            if (!account->isAnon())
+            {
+                getApp()->getTwitchBadges()->loadTwitchBadges();
+                TabAvatars::instance().retryFailed();
+                getApp()->getSeventvEmotes()->loadGlobalEmotes();
+                this->forEachChannel([](const auto &channel) {
+                    if (auto *twitch = dynamic_cast<TwitchChannel *>(channel.get());
+                        twitch && !twitch->roomId().isEmpty() &&
+                        twitch->seventvEmotes()->empty())
+                    {
+                        twitch->refreshSevenTVChannelEmotes(false);
+                    }
+                });
+            }
             // Bans are per account: read them again for the new one.
             this->updateAllBannedChatReading();
             if (getSettings()->twitchReadConnectionMode ==

@@ -1159,7 +1159,8 @@ QString cleanIrcMessageBody(QString value)
 MessagePtr makeUsercardModLogMessage(const GqlUsercardMessage &message,
                                      TwitchChannel *twitchChannel,
                                      const QString &channelName,
-                                     const QString &fallbackUserId)
+                                     const QString &fallbackUserId,
+                                     const QString &profileDisplayName)
 {
     auto sentAt = parseIvrTimestamp(message.sentAt);
     if (!sentAt.isValid())
@@ -1176,7 +1177,13 @@ MessagePtr makeUsercardModLogMessage(const GqlUsercardMessage &message,
     auto displayName = message.senderDisplayName.trimmed();
     if (displayName.isEmpty())
     {
-        displayName = message.senderLogin;
+        // Keep historical logins after a rename. A profile can only restore
+        // capitalization for the same login and Twitch identity.
+        displayName = userId == fallbackUserId && !userId.isEmpty() &&
+                              profileDisplayName.compare(message.senderLogin,
+                                                         Qt::CaseInsensitive) == 0
+                          ? profileDisplayName
+                          : message.senderLogin;
     }
     const auto login =
         message.senderLogin.isEmpty() ? displayName : message.senderLogin;
@@ -2965,6 +2972,7 @@ void UserInfoPopup::setOfflinePreviewData(const UserInfoPreviewData &data)
     this->earnedBadgesReady_ = false;
     this->earnedBadgesError_.clear();
     this->userId_ = data.userId;
+    this->historyProfileDisplayName_ = data.displayName;
     this->userName_ = data.login;
     this->loginHint_ = data.login;
     if (this->ui_.userColorRow)
@@ -3761,6 +3769,7 @@ void UserInfoPopup::setData(const QString &name,
     else
     {
         this->userId_.clear();
+    this->historyProfileDisplayName_.clear();
         this->userName_ = name;
         this->kickUserSlug_ = KickApi::slugify(name);
     }
@@ -4248,6 +4257,7 @@ void UserInfoPopup::resetPublicHistory()
     this->publicHistoryMessages_.clear();
     this->publicHistoryUncolored_.clear();
     this->publicHistoryColor_.clear();
+    this->publicHistoryProfileDisplayName_.clear();
     this->publicHistoryTimestamps_.clear();
     this->publicHistoryStatus_.clear();
     this->publicHistoryLoading_ = false;
@@ -4371,7 +4381,7 @@ void UserInfoPopup::applyPublicHistory(const QJsonObject &data)
             message.id = id;
             message.senderId = this->userId_;
             message.senderLogin = row.value("user").toString();
-            message.senderDisplayName = message.senderLogin;
+            message.senderDisplayName = row.value("display_name").toString();
             message.sentAt = row.value("time_utc").toString();
             message.text = row.value("text").toString();
             message.isFirstMessage = row.value("first_msg").toBool();
@@ -4388,15 +4398,19 @@ void UserInfoPopup::applyPublicHistory(const QJsonObject &data)
             {
                 continue;
             }
-            if (message.senderColor.isEmpty())
+            if (message.senderColor.isEmpty() ||
+                message.senderDisplayName.isEmpty())
             {
                 this->publicHistoryUncolored_.insert(id, message);
+            }
+            if (message.senderColor.isEmpty())
+            {
                 this->publicHistoryColor_ = this->knownChatColor();
                 message.senderColor = this->publicHistoryColor_;
             }
             this->publicHistoryMessages_.push_back(makeUsercardModLogMessage(
                 message, renderChannel, this->underlyingChannel_->getName(),
-                this->userId_));
+                this->userId_, this->historyProfileDisplayName_));
             ids.insert(id);
             ++added;
         }
@@ -4478,11 +4492,13 @@ void UserInfoPopup::refreshPublicHistoryColors()
         return;
     }
     const auto color = this->knownChatColor();
-    if (color.isEmpty() || color == this->publicHistoryColor_)
+    if (color == this->publicHistoryColor_ &&
+        this->historyProfileDisplayName_ == this->publicHistoryProfileDisplayName_)
     {
         return;
     }
     this->publicHistoryColor_ = color;
+    this->publicHistoryProfileDisplayName_ = this->historyProfileDisplayName_;
     auto *renderChannel =
         dynamic_cast<TwitchChannel *>(this->underlyingChannel_.get());
     for (auto &message : this->publicHistoryMessages_)
@@ -4493,10 +4509,13 @@ void UserInfoPopup::refreshPublicHistoryColors()
             continue;
         }
         auto colored = source.value();
-        colored.senderColor = color;
+        if (colored.senderColor.isEmpty())
+        {
+            colored.senderColor = color;
+        }
         message = makeUsercardModLogMessage(colored, renderChannel,
                                             this->underlyingChannel_->getName(),
-                                            this->userId_);
+                                            this->userId_, this->historyProfileDisplayName_);
     }
     this->rebuildPublicHistoryView(true);
 }
@@ -4928,7 +4947,7 @@ void UserInfoPopup::fetchMoreUsercardMessages(int emptyPageSkipsLeft,
                 }
 
                 messages.push_back(makeUsercardModLogMessage(
-                    *it, renderChannel, channelName, targetUserId));
+                    *it, renderChannel, channelName, targetUserId, self->historyProfileDisplayName_));
             }
 
             if (!messages.empty())
@@ -5074,6 +5093,8 @@ void UserInfoPopup::updateUserData()
         }
 
         this->userId_ = user.id;
+        this->historyProfileDisplayName_ = user.displayName;
+        this->refreshPublicHistoryColors();
         this->refreshFollowingStatus(false);
         this->updateUsercardFollowButton();
 
@@ -5234,16 +5255,18 @@ void UserInfoPopup::updateUserData()
 
         if (type == Channel::Type::Twitch)
         {
-            // Moderators get followage from Helix below; everyone else from
-            // the followedAt field of IVR's public subage answer.
             auto *followChannel =
                 dynamic_cast<TwitchChannel *>(this->underlyingChannel_.get());
+            const auto account = getApp()->getAccounts()->twitch.getCurrent();
+            const bool ownCard = account && !account->isAnon() &&
+                                 user.id == account->getUserId();
             const bool followageViaHelix =
                 followChannel &&
                 (followChannel->isBroadcaster() || followChannel->isMod()) &&
                 !followChannel->roomId().isEmpty();
             const bool followageViaIvr =
-                !followageViaHelix && getSettings()->showUsercardFollowage;
+                !ownCard && !followageViaHelix &&
+                getSettings()->showUsercardFollowage;
 
             // get subage
             if (getSettings()->showUsercardSubage ||
@@ -5360,15 +5383,67 @@ void UserInfoPopup::updateUserData()
             // get followage
             if (getSettings()->showUsercardFollowage)
             {
-                auto *twitchChannel = dynamic_cast<TwitchChannel *>(
-                    this->underlyingChannel_.get());
-                if (twitchChannel &&
-                    (twitchChannel->isBroadcaster() ||
-                     twitchChannel->isMod()) &&
-                    !twitchChannel->roomId().isEmpty())
+                if (ownCard)
+                {
+                    const auto isOwnRequest = [isCurrentRequest, id = user.id] {
+                        if (!isCurrentRequest())
+                        {
+                            return false;
+                        }
+                        const auto current =
+                            getApp()->getAccounts()->twitch.getCurrent();
+                        return current && !current->isAnon() &&
+                               current->getUserId() == id;
+                    };
+                    const auto failed = [this, isOwnRequest] {
+                        if (isOwnRequest())
+                        {
+                            this->setUsercardFollowage(
+                                std::nullopt, uiText("Could not load your follow date"));
+                        }
+                    };
+                    const auto lookup = [this, isOwnRequest, failed, id = user.id](
+                                            const QString &channelId) {
+                        if (!isOwnRequest())
+                        {
+                            return;
+                        }
+                        getHelix()->getFollowedChannel(
+                            id, channelId, this,
+                            [this, isOwnRequest](const auto &follow) {
+                                if (!isOwnRequest())
+                                {
+                                    return;
+                                }
+                                if (!follow)
+                                {
+                                    this->setUsercardFollowage(
+                                        std::nullopt, uiText("You do not follow this channel"));
+                                }
+                                else
+                                {
+                                    this->setUsercardFollowage(
+                                        follow->followedAt, uiText("Could not load your follow date"));
+                                }
+                            },
+                            [failed](const QString &) { failed(); });
+                    };
+                    if (followChannel && !followChannel->roomId().isEmpty())
+                    {
+                        lookup(followChannel->roomId());
+                    }
+                    else
+                    {
+                        getHelix()->getUserByName(
+                            this->underlyingChannel_->getName(),
+                            [lookup](const HelixUser &channel) { lookup(channel.id); },
+                            failed);
+                    }
+                }
+                else if (followageViaHelix)
                 {
                     getHelix()->getChannelFollowers(
-                        twitchChannel->roomId(), user.id,
+                        followChannel->roomId(), user.id,
                         [this, isCurrentRequest](const auto &response) {
                             if (!isCurrentRequest() ||
                                 !getSettings()->showUsercardFollowage)
@@ -6440,8 +6515,10 @@ void UserInfoPopup::updateUsercardStatusIcons()
 }
 
 void UserInfoPopup::setUsercardFollowage(
-    const std::optional<QDateTime> &followedAt)
+    const std::optional<QDateTime> &followedAt, const QString &emptyText)
 {
+    this->ui_.followageLabel->setProperty("openUrl", QVariant());
+    this->ui_.followageLabel->unsetCursor();
     if (!getSettings()->showUsercardFollowage)
     {
         this->ui_.followageLabel->setText({});
@@ -6453,6 +6530,15 @@ void UserInfoPopup::setUsercardFollowage(
 
     if (!followedAt || !followedAt->isValid())
     {
+        if (!emptyText.isEmpty())
+        {
+            this->ui_.followageLabel->setText(emptyText);
+            this->ui_.followageLabel->setToolTip({});
+            this->updateUsercardStatusIcons();
+            this->ui_.followageRow->show();
+            this->ui_.followageIcon->show();
+            return;
+        }
         // Twitch no longer tells anyone but moderators: the followage site
         // shows it (opened in the browser, on this person).
         const auto url =
@@ -6470,9 +6556,6 @@ void UserInfoPopup::setUsercardFollowage(
         this->ui_.followageIcon->setVisible(true);
         return;
     }
-    this->ui_.followageLabel->setProperty("openUrl", QVariant());
-    this->ui_.followageLabel->unsetCursor();
-
     const auto followedDate = followedAt->toLocalTime().date();
     auto relativeTime = QString();
     if (getSettings()->showUsercardFollowageRelativeTime)

@@ -3009,5 +3009,12 @@
   "Top bet: %1 by %2": "Самая крупная ставка: %1 — %2",
   "Payout per point if this outcome wins": "Сколько вернётся за каждый балл, если победит этот вариант",
   "Hide community gift messages only when the gift meets the enabled banner's minimum. Smaller gifts remain visible in chat.": "Скрывать сообщения о подаренных подписках только тогда, когда подарок достигает порога включённого баннера. Небольшие подарки остаются видны в чате.",
-    "Need %1 more points": "Не хватает %1 баллов"
+    "Need %1 more points": "Не хватает %1 баллов",
+  "Channel roles": "Роли канала",
+  "moddex unavailable · try again in a minute": "moddex недоступен · повтори через минуту",
+  "Loading channel roles…": "Загружаем роли канала…",
+  "moddex · assigned roles": "moddex · назначенные роли",
+  "This list shows channel roles. Online status is unknown.": "Здесь показаны назначенные роли канала. Присутствие в чате неизвестно.",
+  "Could not load your follow date": "Не удалось загрузить дату фоллова",
+  "You do not follow this channel": "Ты не отслеживаешь этот канал"
 }

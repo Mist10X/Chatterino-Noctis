@@ -199,7 +199,6 @@ private:
     void tryApplyTopMost();
     bool waitingForTopMost_ = false;
 
-    QRect initalBounds_;
     QRect currentBounds_;
     QTimer useNextBounds_;
     bool isNotMinimizedOrMaximized_{};

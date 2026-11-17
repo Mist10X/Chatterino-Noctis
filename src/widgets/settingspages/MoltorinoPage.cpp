@@ -44,7 +44,6 @@
 #include <QPointer>
 #include <QPushButton>
 
-#include "widgets/dialogs/Mist1XUsersDialog.hpp"
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -797,15 +796,6 @@ MoltorinoPage::MoltorinoPage()
             "everyone with the build sees its badge at your name even before "
             "you write. Nothing else is sent: no token, no messages."))
         ->addTo(*view);
-    if (Mist1XUsersDialog::available())
-    {
-        view->addButton(uiText("Chatterino by Mist1X users"), [this] {
-            auto *dialog = new Mist1XUsersDialog(this);
-            dialog->setAttribute(Qt::WA_DeleteOnClose);
-            dialog->show();
-        });
-    }
-
     routeSetting(*view, QStringLiteral("Chat"),
                  QStringLiteral("If I am banned or timed out"));
     SettingWidget::checkbox(uiText("Show my timeout in the chat input"),

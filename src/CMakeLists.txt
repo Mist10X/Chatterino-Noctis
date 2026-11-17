@@ -1037,8 +1037,6 @@ set(SOURCE_FILES
         widgets/dialogs/StreamStatsDialog.hpp
         widgets/helper/UploadPreview.cpp
         widgets/helper/UploadPreview.hpp
-        widgets/dialogs/Mist1XUsersDialog.cpp
-        widgets/dialogs/Mist1XUsersDialog.hpp
         providers/twitch/ChannelStats.cpp
         providers/twitch/ChannelStats.hpp
         widgets/dialogs/WelcomeDialog.cpp

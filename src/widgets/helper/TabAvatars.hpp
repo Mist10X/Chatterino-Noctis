@@ -30,6 +30,7 @@ public:
     /// A round avatar `size` pixels across, or a null pixmap while the
     /// channel's avatar isn't known yet (the first call queues a lookup).
     QPixmap circle(const QString &login, int size);
+    void retryFailed();
 
 Q_SIGNALS:
     void loaded(const QString &login);
@@ -46,6 +47,8 @@ private:
     struct Entry {
         State state = State::Loading;
         QPixmap pixmap;
+        unsigned failures = 0;
+        bool retryPending = false;
     };
 
     void queueLookup(const QString &login);

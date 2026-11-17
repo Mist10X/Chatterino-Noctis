@@ -27,6 +27,7 @@
 #include <QAbstractListModel>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QHBoxLayout>
 #include <QItemSelectionModel>
@@ -64,6 +65,9 @@ namespace chatterino {
 namespace {
 
 constexpr auto COMMUNITY_ENDPOINT = "https://api.tackling.cc/twitch/Chatters";
+constexpr auto MODDEX_ENDPOINT = "https://api.moddex.tv/v1/channels/%1/roles";
+constexpr auto MODDEX_REFRESH_MS = 60 * 1000;
+constexpr auto MODDEX_MAX_BYTES = 2 * 1024 * 1024;
 constexpr auto CHATTER_LIMIT = 20000;
 constexpr auto COMMUNITY_CACHE_TTL_MS = 5 * 60 * 1000;
 constexpr auto COMMUNITY_CACHE_LIMIT = 5;
@@ -1287,6 +1291,26 @@ public:
             uiText(QStringLiteral("Refresh all available sources")));
         tools->addWidget(this->search, 1);
         tools->addWidget(this->refresh);
+        if (this->localChannels.size() == 1 && this->twitchChannels.size() == 1)
+        {
+            this->rolesModel = new ChatterListModel(this->q);
+            this->rolesButton = new QPushButton(
+                uiText(QStringLiteral("Channel roles")), this->q);
+            this->rolesButton->setCheckable(true);
+            tools->addWidget(this->rolesButton);
+            QObject::connect(this->rolesButton, &QPushButton::toggled, this->q,
+                             [this](bool showRoles) {
+                auto *active = showRoles ? this->rolesModel : this->model;
+                this->list->setModel(active);
+                active->setQuery(this->search->text());
+                if (showRoles)
+                {
+                    this->requestRoles();
+                }
+                this->refreshModelPreservingView();
+                this->updateSummary();
+            });
+        }
 
         auto *summary = new QVBoxLayout();
         summary->setContentsMargins(0, 0, 0, 0);
@@ -1319,13 +1343,23 @@ public:
                          });
         QObject::connect(&this->searchUpdate, &QTimer::timeout, this->q,
                          [this] {
-                             if (this->model->setQuery(this->search->text()))
+                             auto *active = static_cast<ChatterListModel *>(
+                                 this->list->model());
+                             if (active->setQuery(this->search->text()))
                              {
                                  this->refreshModelPreservingView();
                              }
                          });
         QObject::connect(this->refresh, &QPushButton::clicked, this->q, [this] {
-            this->reload(true);
+            if (this->list->model() == this->rolesModel)
+            {
+                this->requestRoles();
+                this->updateSummary();
+            }
+            else
+            {
+                this->reload(true);
+            }
         });
         QObject::connect(
             this->list, &QListView::activated, this->q,
@@ -1367,7 +1401,8 @@ public:
                 {
                     return;
                 }
-                if (!this->liveUpdate.isActive())
+                if (this->list->model() == this->model &&
+                    !this->liveUpdate.isActive())
                 {
                     this->liveUpdate.setInterval(this->liveUpdateInterval());
                     this->liveUpdate.start();
@@ -1409,16 +1444,19 @@ public:
 
     void refreshModelPreservingView()
     {
-        const auto selectedKey = this->model->keyAt(this->list->currentIndex());
+        auto *active = static_cast<ChatterListModel *>(this->list->model());
+        const auto selectedKey = active->keyAt(this->list->currentIndex());
         const auto topIndex = this->list->indexAt(QPoint(1, 1));
-        const auto topAnchor = this->model->anchorAt(topIndex);
+        const auto topAnchor = active->anchorAt(topIndex);
         const auto topOffset =
             topIndex.isValid() ? this->list->visualRect(topIndex).top() : 0;
 
         this->liveUpdate.stop();
-        this->model->rebuild(this->pendingRequests() > 0);
+        active->rebuild(active == this->rolesModel
+                            ? this->rolesState == SourceState::Pending
+                            : this->pendingRequests() > 0);
 
-        const auto restoredTop = this->model->indexForAnchor(topAnchor);
+        const auto restoredTop = active->indexForAnchor(topAnchor);
         if (restoredTop.isValid())
         {
             this->list->scrollTo(restoredTop, QAbstractItemView::PositionAtTop);
@@ -1429,7 +1467,7 @@ public:
             }
         }
 
-        const auto restoredSelection = this->model->indexForKey(selectedKey);
+        const auto restoredSelection = active->indexForKey(selectedKey);
         if (restoredSelection.isValid())
         {
             this->list->selectionModel()->setCurrentIndex(
@@ -1959,9 +1997,88 @@ public:
         this->pumpCommunityRequests(requestGeneration, force);
     }
 
+    void requestRoles()
+    {
+        if (this->rolesState == SourceState::Pending ||
+            (this->rolesRefresh.isValid() &&
+             !this->rolesRefresh.hasExpired(MODDEX_REFRESH_MS)))
+        {
+            return;
+        }
+
+        const auto &channel = this->twitchChannels.front();
+        const auto name = channel->getName();
+        const auto displayName = channel->getDisplayName();
+        const QUrl url(QString::fromLatin1(MODDEX_ENDPOINT)
+                           .arg(QString::fromLatin1(QUrl::toPercentEncoding(name))));
+        this->rolesState = SourceState::Pending;
+        this->rolesRefresh.start();
+        const auto finish = [this](SourceState state) {
+            this->rolesState = state;
+            if (this->list->model() == this->rolesModel)
+            {
+                this->refreshModelPreservingView();
+                this->updateSummary();
+            }
+        };
+
+        NetworkRequest(url)
+            .caller(this->q)
+            .timeout(8000)
+            .followRedirects(false)
+            .header("Accept", "application/json")
+            .onSuccess([this, name, displayName, finish](const NetworkResult &result) {
+                if (result.status() != 200 ||
+                    result.getData().size() > MODDEX_MAX_BYTES)
+                {
+                    finish(SourceState::Failed);
+                    return;
+                }
+                const auto json = result.parseJson();
+                const auto moderators = json.value(QStringLiteral("mods"));
+                const auto vips = json.value(QStringLiteral("vips"));
+                if (!moderators.isArray() || !vips.isArray())
+                {
+                    finish(SourceState::Failed);
+                    return;
+                }
+
+                this->rolesModel->clear();
+                const auto add = [&](const QJsonArray &users, std::uint8_t role) {
+                    for (const auto &user : users)
+                    {
+                        const auto row = user.toObject();
+                        const auto login = normalizedLogin(row.value(QStringLiteral("login")).toString());
+                        this->rolesModel->add(
+                            login, row.value(QStringLiteral("name")).toString(),
+                            role, 3, MessagePlatform::AnyOrTwitch, name,
+                            displayName, row.value(QStringLiteral("id")).toString());
+                    }
+                };
+                add(moderators.toArray(), ModeratorRole);
+                add(vips.toArray(), VipRole);
+                finish(SourceState::Ready);
+            })
+            .onError([finish](const NetworkResult &) { finish(SourceState::Failed); })
+            .execute();
+    }
+
     void updateSummary()
     {
-        const auto [moderators, vips] = this->model->moderatorAndVipCounts();
+        const bool showRoles = this->list->model() == this->rolesModel;
+        const auto *active = showRoles ? this->rolesModel : this->model;
+        const auto [moderators, vips] = active->moderatorAndVipCounts();
+        if (showRoles)
+        {
+            this->counts->setText(
+                QStringLiteral("%1 · %2")
+                    .arg(countLabel(moderators, QStringLiteral("moderator"),
+                                    QStringLiteral("moderators")),
+                         countLabel(vips, QStringLiteral("VIP"),
+                                    uiText(QStringLiteral("VIPs")))));
+            this->updateSourceStatus();
+            return;
+        }
         this->counts->setText(
             QStringLiteral("%1 · %2 · %3")
                 .arg(countLabel(this->model->total(), QStringLiteral("chatter"),
@@ -1976,6 +2093,19 @@ public:
 
     void updateSourceStatus()
     {
+        if (this->list->model() == this->rolesModel)
+        {
+            this->sources->setText(
+                this->rolesState == SourceState::Failed
+                    ? uiText(QStringLiteral("moddex unavailable · try again in a minute"))
+                    : this->rolesState == SourceState::Pending
+                        ? uiText(QStringLiteral("Loading channel roles…"))
+                        : uiText(QStringLiteral("moddex · assigned roles")));
+            this->sources->setToolTip(uiText(QStringLiteral(
+                "This list shows channel roles. Online status is unknown.")));
+            this->refresh->setEnabled(this->rolesState != SourceState::Pending);
+            return;
+        }
         int sourceCount = 1;
         sourceCount += sourceIsReady(this->twitchState);
         sourceCount += sourceIsReady(this->communityState);
@@ -2096,6 +2226,10 @@ public:
     ChatterListDelegate *delegate;
     QLineEdit *search = nullptr;
     QPushButton *refresh = nullptr;
+    QPushButton *rolesButton = nullptr;
+    ChatterListModel *rolesModel = nullptr;
+    SourceState rolesState = SourceState::Skipped;
+    QElapsedTimer rolesRefresh;
     QLabel *counts = nullptr;
     QLabel *sources = nullptr;
     QListView *list = nullptr;

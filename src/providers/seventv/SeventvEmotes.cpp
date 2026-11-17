@@ -228,11 +228,20 @@ void maybeRetryTimeoutRequest(const QString &channelId,
 {
     (void)channel;
 
-    if (result.error() == QNetworkReply::TimeoutError &&
+    const auto status = result.status().value_or(0);
+    const bool temporaryFailure =
+        status == 429 || status >= 500 ||
+        (status == 0 &&
+         (result.error() == QNetworkReply::TimeoutError ||
+          result.error() == QNetworkReply::HostNotFoundError ||
+          result.error() == QNetworkReply::RemoteHostClosedError ||
+          result.error() == QNetworkReply::TemporaryNetworkFailureError ||
+          result.error() == QNetworkReply::ConnectionRefusedError));
+    if (temporaryFailure &&
         attempt < CHANNEL_EMOTE_TIMEOUT_MAX_ATTEMPTS)
     {
         qCWarning(chatterinoSeventv)
-            << "Timed out fetching 7TV channel emotes for" << channelId
+            << "Temporary failure fetching 7TV channel emotes for" << channelId
             << "- retrying attempt" << (attempt + 1);
         QTimer::singleShot(CHANNEL_EMOTE_TIMEOUT_RETRY_DELAY_MS,
                            [retry = std::forward<RetryFn>(retry)]() mutable {

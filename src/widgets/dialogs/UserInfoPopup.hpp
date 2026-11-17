@@ -157,7 +157,8 @@ private:
     void openNameHistoryMenu(const QString &statusText = {});
     void requestNameHistory();
     void updateUsercardStatusIcons();
-    void setUsercardFollowage(const std::optional<QDateTime> &followedAt);
+    void setUsercardFollowage(const std::optional<QDateTime> &followedAt,
+                             const QString &emptyText = {});
     void updateUsercardSubGiftRow(const IvrSubage &subageInfo);
     void hideUsercardSubGiftRow();
     void resetUsercardInfoRows();
@@ -253,6 +254,7 @@ private:
     Split *split_;
 
     QString userName_;
+    QString historyProfileDisplayName_;
     QString userId_;
     QString loginHint_;
     uint64_t userDataRequestGeneration_ = 0;
@@ -281,6 +283,7 @@ private:
     std::vector<MessagePtr> publicHistoryMessages_;
     QHash<QString, GqlUsercardMessage> publicHistoryUncolored_;
     QString publicHistoryColor_;
+    QString publicHistoryProfileDisplayName_;
     QHash<QString, QString> publicHistoryTimestamps_;
     QString publicHistoryStatus_;
     bool publicHistoryLoading_ = false;

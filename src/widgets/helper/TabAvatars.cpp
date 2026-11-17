@@ -237,6 +237,8 @@ void TabAvatars::finish(const QString &login, const QByteArray &data)
 
     auto &entry = this->entries_[login];
     entry.state = State::Ready;
+    entry.failures = 0;
+    entry.retryPending = false;
     entry.pixmap = pixmap;
     this->circles_.removeIf([&login](const auto &it) {
         return it.key().startsWith(login + '@');
@@ -249,9 +251,36 @@ void TabAvatars::fail(const QString &login)
     auto &entry = this->entries_[login];
     if (entry.state != State::Ready)
     {
-        // An older saved avatar stays in use; without one, the tab keeps its
-        // letter until the next start.
         entry.state = State::Failed;
+    }
+    if (entry.retryPending || entry.failures >= 3)
+    {
+        return;
+    }
+    const auto delay = 2000 << entry.failures++;
+    entry.retryPending = true;
+    QTimer::singleShot(delay, this, [this, login] {
+        auto &current = this->entries_[login];
+        if (!current.retryPending)
+        {
+            return;
+        }
+        current.retryPending = false;
+        this->queueLookup(login);
+    });
+}
+
+void TabAvatars::retryFailed()
+{
+    for (auto it = this->entries_.begin(); it != this->entries_.end(); ++it)
+    {
+        if (it->state == State::Failed)
+        {
+            it->state = State::Loading;
+            it->failures = 0;
+            it->retryPending = false;
+            this->queueLookup(it.key());
+        }
     }
 }
 

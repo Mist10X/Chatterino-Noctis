@@ -39,22 +39,16 @@ namespace chatterino {
 
 void TwitchBadges::loadTwitchBadges(std::optional<ChannelPtr> messageChannel)
 {
-    if (this->loaded_)
-    {
-        {
-            auto badgeSets = this->badgeSets_.access();
-            badgeSets->clear();
-        }
-        {
-            std::unique_lock lock(this->badgesMutex_);
-            this->badgesMap_.clear();
-        }
-    }
-
+    const auto generation = ++this->loadGeneration_;
     getHelix()->getGlobalBadges(
-        [this, messageChannel](auto globalBadges) {
+        [this, messageChannel, generation](auto globalBadges) {
+            if (generation != this->loadGeneration_)
+            {
+                return;
+            }
             {
                 auto badgeSets = this->badgeSets_.access();
+                badgeSets->clear();
 
                 for (const auto &badgeSet : globalBadges.badgeSets)
                 {
@@ -80,6 +74,10 @@ void TwitchBadges::loadTwitchBadges(std::optional<ChannelPtr> messageChannel)
                     }
                 }
             }
+            {
+                std::unique_lock lock(this->badgesMutex_);
+                this->badgesMap_.clear();
+            }
 
             if (messageChannel.has_value())
             {
@@ -89,7 +87,11 @@ void TwitchBadges::loadTwitchBadges(std::optional<ChannelPtr> messageChannel)
 
             this->loaded();
         },
-        [this](auto error, auto message) {
+        [this, generation](auto error, auto message) {
+            if (generation != this->loadGeneration_)
+            {
+                return;
+            }
             QString errorMessage("Failed to load global badges - ");
 
             switch (error)
@@ -105,7 +107,10 @@ void TwitchBadges::loadTwitchBadges(std::optional<ChannelPtr> messageChannel)
                 break;
             }
             qCWarning(chatterinoTwitch) << errorMessage;
-            this->loadLocalBadges();
+            if (this->badgeSets_.access()->empty())
+            {
+                this->loadLocalBadges();
+            }
         });
 }
 

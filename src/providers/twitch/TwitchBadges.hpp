@@ -15,6 +15,7 @@
 #include <QString>
 
 #include <memory>
+#include <atomic>
 #include <optional>
 #include <queue>
 #include <shared_mutex>
@@ -64,6 +65,7 @@ private:
 
     std::shared_mutex loadedMutex_;
     bool loaded_ = false;
+    std::atomic_uint64_t loadGeneration_{0};
 
     UniqueAccess<
         std::unordered_map<QString, std::unordered_map<QString, EmotePtr>>>

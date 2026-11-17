@@ -262,7 +262,11 @@ BaseWindow::BaseWindow(FlagsEnum<Flags> _flags, QWidget *parent)
 #ifdef USEWINSDK
     this->useNextBounds_.setSingleShot(true);
     QObject::connect(&this->useNextBounds_, &QTimer::timeout, this, [this]() {
-        this->currentBounds_ = this->geometry();
+        if (!this->isMinimized() && !this->isMaximized() &&
+            !this->isFullScreen())
+        {
+            this->currentBounds_ = this->geometry();
+        }
     });
 #endif
 
@@ -293,16 +297,21 @@ void BaseWindow::setInitialBounds(QRect bounds, widgets::BoundsChecking mode)
 {
     bounds = widgets::checkInitialBounds(bounds, mode);
 #ifdef USEWINSDK
-    this->initalBounds_ = bounds;
-#else
-    this->setGeometry(bounds);
+    this->currentBounds_ = bounds;
 #endif
+    // Establish normal geometry before Windows applies the initial show state.
+    this->setGeometry(bounds);
 }
 
 QRect BaseWindow::getBounds() const
 {
 #ifdef USEWINSDK
-    return this->currentBounds_;
+    if (this->isMinimized() || this->isMaximized() || this->isFullScreen())
+    {
+        return this->currentBounds_.isValid() ? this->currentBounds_
+                                              : this->normalGeometry();
+    }
+    return this->geometry();
 #else
     return this->geometry();
 #endif
@@ -1097,12 +1106,6 @@ bool BaseWindow::handleSHOWWINDOW(MSG *msg)
             DwmExtendFrameIntoClientArea(msg->hwnd, &margins);
         }
 
-        if (!this->initalBounds_.isNull())
-        {
-            this->setGeometry(this->initalBounds_);
-            this->currentBounds_ = this->initalBounds_;
-        }
-
         this->calcButtonsSizes();
         this->updateRealSize();
     }
@@ -1177,11 +1180,12 @@ bool BaseWindow::handleSIZE(MSG *msg)
 
             if (this->isNotMinimizedOrMaximized_)
             {
-                postToThread([this] {
-                    this->currentBounds_ = this->geometry();
-                });
+                this->useNextBounds_.start(10);
             }
-            this->useNextBounds_.stop();
+            else
+            {
+                this->useNextBounds_.stop();
+            }
 
             if (msg->wParam == SIZE_MINIMIZED && this->ui_.titlebarButtons)
             {
