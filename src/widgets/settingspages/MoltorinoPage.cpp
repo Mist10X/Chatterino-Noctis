@@ -777,22 +777,22 @@ MoltorinoPage::MoltorinoPage()
     routeSetting(*view, QStringLiteral("Emotes and badges"),
                  QStringLiteral("More badges"));
     SettingWidget::checkbox(
-        uiText("Show the Chatterino by Mist1X badge to its other users"),
+        uiText("Show the Chatterino Noctis badge to its other users"),
         s.mist1xMarkMessages)
         ->setTooltip(uiText(
             "Your chat messages carry an invisible mark (like the one Twitch's "
-            "web chat adds). Other people with Chatterino by Mist1X see the "
+            "web chat adds). Other people with Chatterino Noctis see the "
             "build's badge at your name. Nothing is sent anywhere else."))
         ->addTo(*view);
     SettingWidget::checkbox(
-        uiText("Show the badge at other users of Chatterino by Mist1X"),
+        uiText("Show the badge at other users of Chatterino Noctis"),
         s.mist1xShowBadge)
         ->addTo(*view);
     SettingWidget::checkbox(
         uiText("Tell the users list my Twitch ID (test)"), s.mist1xShareId)
         ->setTooltip(uiText(
             "At start and once a day the app sends your Twitch ID, login and "
-            "version of Chatterino by Mist1X to the build's users list. Then "
+            "version of Chatterino Noctis to the build's users list. Then "
             "everyone with the build sees its badge at your name even before "
             "you write. Nothing else is sent: no token, no messages."))
         ->addTo(*view);

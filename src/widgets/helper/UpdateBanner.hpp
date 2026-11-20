@@ -10,7 +10,7 @@ class QWidget;
 
 namespace chatterino {
 
-/// When a newer Chatterino by Mist1X is out, a card at the top of @a window
+/// When a newer Chatterino Noctis is out, a card at the top of @a window
 /// says so (once per version: closing it hides it until the next version).
 /// Clicking it opens showUpdatePrompt().
 void initUpdateBanner(QWidget *window, pajlada::Signals::SignalHolder &holder);

@@ -1,5 +1,5 @@
-﻿<#
-Builds a release of Chatterino by Mist1X: the installer, a portable zip and
+<#
+Builds a release of Chatterino Noctis: the installer, a portable zip and
 SHA256SUMS.txt.
 
   .\build-release.ps1 -Version 1.0.0 -Exe <built Leafyrino.exe> -Runtime <folder with the Qt/OpenSSL/VC runtime> -Out <folder>
@@ -35,7 +35,7 @@ function Test-BinaryMarker([string] $Marker) {
     $utf16 = $binaryEncoding.GetString([Text.Encoding]::Unicode.GetBytes($Marker))
     return $binary.Contains($Marker) -or $binary.Contains($utf16)
 }
-if (-not (Test-BinaryMarker "ChatterinoByMist1X/$Version")) {
+if (-not (Test-BinaryMarker "ChatterinoNoctis/$Version")) {
     throw "The executable does not report version $Version to the update service."
 }
 foreach ($marker in @('archive-bridge.json', 'archive-card', '/archive/socketName',
@@ -64,7 +64,7 @@ $runtimeDirs = @('generic', 'iconengines', 'imageformats', 'networkinformation',
 foreach ($dir in $runtimeDirs) { Copy-Item (Join-Path $Runtime $dir) $staging -Recurse }
 
 # 2. Icon, licences, the guide, release notes, the extra theme.
-Copy-Item (Join-Path $repo 'resources\icon.ico') (Join-Path $staging 'Chatterino-by-Mist1X.ico')
+Copy-Item (Join-Path $repo 'resources\icon.ico') (Join-Path $staging 'Chatterino-Noctis.ico')
 Copy-Item (Join-Path $repo 'LICENSE') (Join-Path $staging 'LICENSE.txt')
 Copy-Item (Join-Path $repo 'LICENSES') $staging -Recurse
 # licenses of the bundled libraries, fonts and data (the same texts as in About)
@@ -87,15 +87,22 @@ $bad = Get-ChildItem $staging -Recurse -File | Where-Object {
 if ($bad) { throw "Token-like text in: $($bad.FullName -join ', ')" }
 
 # 4. Installer.
-& $Iscc "/DAppVersion=$Version" "/DStagingDir=$staging" "/DOutputDir=$dist" (Join-Path $here 'ChatterinoByMist1X.iss') | Out-Host
+& $Iscc "/DAppVersion=$Version" "/DStagingDir=$staging" "/DOutputDir=$dist" (Join-Path $here 'ChatterinoNoctis.iss') | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
 
 # 5. Portable zip: the same files in one folder.
-$portableName = "ChatterinoByMist1X-$Version-portable"
+$portableName = "ChatterinoNoctis-$Version-portable"
 $portable = Join-Path $Out $portableName
 Copy-Item $staging $portable -Recurse
 Compress-Archive -Path $portable -DestinationPath (Join-Path $dist "$portableName.zip") -CompressionLevel Optimal
-Remove-Item $portable -Recurse -Force
+$resolvedPortable = (Resolve-Path -LiteralPath $portable).Path
+$expectedPortable = Join-Path (Resolve-Path -LiteralPath $Out).Path $portableName
+if ($resolvedPortable -ne $expectedPortable) { throw "Unexpected portable staging path: $resolvedPortable" }
+Remove-Item -LiteralPath $resolvedPortable -Recurse -Force
+
+# Transitional asset names allow previously installed clients to update.
+Copy-Item (Join-Path $dist "ChatterinoNoctis-Setup-$Version.exe") (Join-Path $dist "ChatterinoByMist1X-Setup-$Version.exe")
+Copy-Item (Join-Path $dist "$portableName.zip") (Join-Path $dist "ChatterinoByMist1X-$Version-portable.zip")
 
 # 6. Checksums.
 $sums = Get-ChildItem $dist -File | Where-Object Name -ne 'SHA256SUMS.txt' | Sort-Object Name | ForEach-Object {

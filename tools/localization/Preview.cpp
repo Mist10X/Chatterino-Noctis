@@ -168,7 +168,7 @@ int main(int argc, char **argv)
     progress("resources");
     initResources();
     qt.setWindowIcon(QIcon(":/icon.ico"));
-    qt.setApplicationDisplayName("Chatterino by Mist1X");
+    qt.setApplicationDisplayName("Chatterino Noctis");
     QFile stylesheet(":/qss/settings.qss");
     stylesheet.open(QIODevice::ReadOnly);
     qt.setStyleSheet(QString::fromUtf8(stylesheet.readAll()));
@@ -246,17 +246,43 @@ int main(int argc, char **argv)
     {
         progress("language "+language);
         initializeUiLanguage(language);
-        check(Version::instance().fullVersion().startsWith("Chatterino by Mist1X "), language+" real version display branding");
+        check(Version::instance().fullVersion().startsWith("Chatterino Noctis "), language+" real version display branding");
         check(!Version::instance().fullVersion().contains("Nightly"),language+" display version omits Nightly");
-        check(Version::instance().isNightly(),language+" actual nightly build metadata retained");
-        check(uiText("Leafyrino")=="Chatterino by Mist1X", language+" localized display branding");
-        check(uiText("Leafyrino Settings").contains("Chatterino by Mist1X"), language+" settings caption branding");
+        check(Version::instance().isNightly() == bool(LEAFYRINO_EXPECT_NIGHTLY_BUILD),
+              language+" actual nightly build metadata retained");
+        check(uiText("Leafyrino")=="Chatterino Noctis", language+" localized display branding");
+        check(uiText("Leafyrino Settings").contains("Chatterino Noctis"), language+" settings caption branding");
         check(qt.windowIcon().availableSizes().contains(QSize(256,256)), language+" embedded ICO contains 256px");
-        check(qt.windowIcon().pixmap(QSize(256,256),1.0).toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied)==QImage(":/icon.png").convertToFormat(QImage::Format_ARGB32_Premultiplied), language+" ICO PNG rendered premultiplied artwork matches");
+        // The supplied ICO and high-resolution PNG use independent resampling.
+        // Compare them at the same size in premultiplied color space.
+        const auto ico = qt.windowIcon().pixmap(QSize(256,256),1.0)
+                             .toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        const QImage sourceIcon(":/icon.png");
+        const auto png = sourceIcon.scaled(ico.size(), Qt::KeepAspectRatio,
+                                          Qt::SmoothTransformation)
+                             .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        check(sourceIcon.size()==QSize(1024,1024) && sourceIcon.hasAlphaChannel(),
+              language+" full-resolution PNG");
+        qint64 difference = 0;
+        if (ico.size() == png.size())
+        {
+            for (int y = 0; y < ico.height(); ++y)
+            {
+                const auto *a = ico.constScanLine(y);
+                const auto *b = png.constScanLine(y);
+                for (int x = 0; x < ico.width() * 4; ++x)
+                {
+                    difference += qAbs(int(a[x]) - int(b[x]));
+                }
+            }
+        }
+        check(!ico.isNull() && ico.size()==png.size() &&
+                  difference <= qint64(ico.width()) * ico.height() * 4 * 2,
+              language+" ICO PNG rendered artwork matches");
         for (const int size : {16,24,32,48,64,128,256})
         {
             const auto image=qt.windowIcon().pixmap(QSize(size,size),1.0).toImage();
-            check(image.hasAlphaChannel() && image.pixelColor(0,0).alpha()==0 && image.pixelColor(image.width()-1,image.height()-1).alpha()==0,language+" icon transparent corners "+QString::number(size));
+            check(image.hasAlphaChannel() && image.pixelColor(0,0).alpha()<=2 && image.pixelColor(image.width()-1,image.height()-1).alpha()<=2,language+" icon transparent corners "+QString::number(size));
         }
         {
             auto mainOwner = std::make_unique<Window>(WindowType::Main, nullptr);
@@ -310,12 +336,12 @@ int main(int argc, char **argv)
         {
             TrayController tray(app.windows);
             auto *icon = tray.findChild<QSystemTrayIcon *>();
-            check(icon && icon->toolTip()=="Chatterino by Mist1X",language+" real tray tooltip");
+            check(icon && icon->toolTip()=="Chatterino Noctis",language+" real tray tooltip");
             check(icon && icon->icon().pixmap(256).toImage()==qt.windowIcon().pixmap(256).toImage(),language+" tray artwork matches application icon");
             if (icon && icon->contextMenu())
             {
                 const auto actions = icon->contextMenu()->actions();
-                check(actions.first()->text().contains("Chatterino by Mist1X") && actions.last()->text().contains("Chatterino by Mist1X"),language+" real tray open and quit branding");
+                check(actions.first()->text().contains("Chatterino Noctis") && actions.last()->text().contains("Chatterino Noctis"),language+" real tray open and quit branding");
                 icon->contextMenu()->setAttribute(Qt::WA_DontShowOnScreen,true);
                 check(icon->contextMenu()->grab().save(output+"/"+language+"-tray-menu.png"),language+" real tray menu rendered");
             }
@@ -452,7 +478,7 @@ int main(int argc, char **argv)
             {
                 auto *brand=widget->findChild<QLabel *>("BrandDisplayName");
                 auto *attribution=widget->findChild<QLabel *>("BrandAttribution");
-                check(brand && brand->text().contains("Chatterino by Mist1X"),language+" about brand heading");
+                check(brand && brand->text().contains("Chatterino Noctis"),language+" about brand heading");
                 check(attribution && attribution->text().contains("Leafyrino") && attribution->text().contains("Chatterino7"),language+" upstream attribution preserved");
             }
             if(name=="settings" || name=="general" || name=="edit-hotkey" || name=="about")

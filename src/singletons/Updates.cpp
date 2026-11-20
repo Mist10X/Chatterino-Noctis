@@ -37,12 +37,12 @@ namespace {
 using namespace chatterino;
 using namespace literals;
 
-/// Releases of Chatterino by Mist1X are published here (a public repository,
+/// Releases of Chatterino Noctis are published here (a public repository,
 /// so the check needs no login; GitHub allows 60 such requests an hour).
 const QString RELEASES_API =
-    u"https://api.github.com/repos/Mist10X/chatterino-by-mist1x/releases"_s;
+    u"https://api.github.com/repos/Mist10X/chatterino-noctis/releases"_s;
 const QString RELEASES_PAGE =
-    u"https://github.com/Mist10X/chatterino-by-mist1x/releases"_s;
+    u"https://github.com/Mist10X/chatterino-noctis/releases"_s;
 
 constexpr auto FIRST_CHECK_DELAY = std::chrono::seconds(20);
 
@@ -107,7 +107,7 @@ NetworkRequest githubRequest(const QString &url)
 {
     return NetworkRequest(url)
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "ChatterinoByMist1X/" MIST1X_VERSION)
+        .header("User-Agent", "ChatterinoNoctis/" MIST1X_VERSION)
         .followRedirects(true);
 }
 
@@ -224,7 +224,7 @@ void Updates::updateFailed_(Status status, const QString &reason)
         this->releasePage_.isEmpty() ? RELEASES_PAGE : this->releasePage_;
     postToThread([reason, page] {
         auto *box = new QMessageBox(
-            QMessageBox::Warning, uiText("Chatterino by Mist1X update"),
+            QMessageBox::Warning, uiText("Chatterino Noctis update"),
             uiText("The update could not be installed:") + "\n" + reason);
         box->setAttribute(Qt::WA_DeleteOnClose);
         auto *open = box->addButton(uiText("Open the download page"),
@@ -320,7 +320,7 @@ void Updates::installUpdates()
 
                     // The setup shows only its progress, closes this copy if
                     // it is still running, keeps the settings and starts the
-                    // new version (AUTOUPDATE, see ChatterinoByMist1X.iss).
+                    // new version (AUTOUPDATE, see the release installer).
                     const bool started = QProcess::startDetached(
                         filePath, {"/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
                                    "/CLOSEAPPLICATIONS", "/AUTOUPDATE=1"});
@@ -379,8 +379,12 @@ void Updates::checkForUpdates()
         }
 
         const auto setupName =
-            u"ChatterinoByMist1X-Setup-" % version % u".exe";
+            u"ChatterinoNoctis-Setup-" % version % u".exe";
         const auto portableName =
+            u"ChatterinoNoctis-" % version % u"-portable.zip";
+        const auto legacySetupName =
+            u"ChatterinoByMist1X-Setup-" % version % u".exe";
+        const auto legacyPortableName =
             u"ChatterinoByMist1X-" % version % u"-portable.zip";
         QString setup;
         QString portable;
@@ -395,6 +399,14 @@ void Updates::checkForUpdates()
                 setup = url;
             }
             else if (name == portableName)
+            {
+                portable = url;
+            }
+            else if (name == legacySetupName && setup.isEmpty())
+            {
+                setup = url;
+            }
+            else if (name == legacyPortableName && portable.isEmpty())
             {
                 portable = url;
             }

@@ -902,7 +902,7 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
         box.hide();
     }
 
-    // 20. the Chatterino by Mist1X badge: a marked client-nonce, nothing else
+    // 20. the Chatterino Noctis badge: a marked client-nonce, nothing else
     {
         mist1xmark::resetForTesting();
         bool nonceOk = true;

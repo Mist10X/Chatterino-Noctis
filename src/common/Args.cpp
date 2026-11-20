@@ -135,7 +135,7 @@ namespace chatterino {
 Args::Args(const QApplication &app)
 {
     QCommandLineParser parser;
-    parser.setApplicationDescription("Chatterino by Mist1X - Twitch Chat Client");
+    parser.setApplicationDescription("Chatterino Noctis - Twitch Chat Client");
     parser.addHelpOption();
 
     auto crashRecoveryOption = hiddenOption("crash-recovery");
@@ -153,14 +153,14 @@ Args::Args(const QApplication &app)
                                      "allowing you to see debug output.");
 
     QCommandLineOption safeModeOption(
-        "safe-mode", "Starts Chatterino by Mist1X without loading Plugins and always "
+        "safe-mode", "Starts Chatterino Noctis without loading Plugins and always "
                      "show the settings button.");
 
     QCommandLineOption loginOption(
         "login",
-        "Starts Chatterino by Mist1X logged in as the account matching the supplied "
+        "Starts Chatterino Noctis logged in as the account matching the supplied "
         "username. If the supplied username does not match any account, "
-        "Chatterino by Mist1X starts logged in as anonymous.",
+        "Chatterino Noctis starts logged in as anonymous.",
         "username");
 
     auto channelLayout = QCommandLineOption(
@@ -180,7 +180,7 @@ Args::Args(const QApplication &app)
 
     QCommandLineOption useOldScalingOption(
         "use-old-scaling",
-        "Starts Chatterino by Mist1X with legacy scaling (96 DPI) for this run only. "
+        "Starts Chatterino Noctis with legacy scaling (96 DPI) for this run only. "
         "To persist it, enable \"Use legacy scaling\" in Settings → General.");
 
     QCommandLineOption portableEnable("portable", "Enable portable mode.");

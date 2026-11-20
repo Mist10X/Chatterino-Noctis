@@ -2175,7 +2175,7 @@ std::pair<MessagePtrMut, HighlightAlert> MessageBuilder::makeIrcMessage(
     {
         const auto clientNonce = tags.getOrEmpty("client-nonce");
         builder.message().clientDetection = performClientDetection(clientNonce);
-        // sent from Chatterino by Mist1X: the badge from now on
+        // sent from Chatterino Noctis: the badge from now on
         if (mist1xmark::isMarked(clientNonce))
         {
             mist1xmark::remember(tags.getOrEmpty("user-id"));
@@ -3836,7 +3836,7 @@ void MessageBuilder::appendMist1XBadge(const QString &userID)
         this->emplace<BadgeElement>(*badge,
                                     MessageElementFlag::BadgeChatterino);
         this->message().externalBadges.emplace_back(
-            QStringLiteral("mist1x:Chatterino by Mist1X"));
+            QStringLiteral("mist1x:Chatterino Noctis"));
     }
 }
 

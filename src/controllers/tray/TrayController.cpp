@@ -111,7 +111,7 @@ void TrayController::hideToTray()
         if (this->trayIcon_ != nullptr && QSystemTrayIcon::supportsMessages())
         {
             this->trayIcon_->showMessage(
-                uiText(QStringLiteral("Chatterino by Mist1X is still running")),
+                uiText(QStringLiteral("Chatterino Noctis is still running")),
                 QStringLiteral(
                     "You can disable this feature from the settings."),
                 QSystemTrayIcon::Information, 7000);

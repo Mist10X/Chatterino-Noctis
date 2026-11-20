@@ -142,13 +142,13 @@ EmotePtr makeBadge()
                                            Qt::SmoothTransformation);
     };
     Emote emote;
-    emote.name = EmoteName{QStringLiteral("Chatterino by Mist1X")};
+    emote.name = EmoteName{QStringLiteral("Chatterino Noctis")};
     emote.images = ImageSet(Image::fromResourcePixmap(sized(18), 1),
                             Image::fromResourcePixmap(sized(36), 0.5),
                             Image::fromResourcePixmap(sized(72), 0.25));
-    emote.tooltip = Tooltip{QStringLiteral("Chatterino by Mist1X")};
+    emote.tooltip = Tooltip{QStringLiteral("Chatterino Noctis")};
     emote.homePage =
-        Url{QStringLiteral("https://github.com/Mist10X/chatterino-by-mist1x")};
+        Url{QStringLiteral("https://github.com/Mist10X/chatterino-noctis")};
     return std::make_shared<const Emote>(std::move(emote));
 }
 

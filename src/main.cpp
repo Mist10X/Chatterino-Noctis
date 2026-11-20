@@ -202,7 +202,7 @@ int main(int argc, char **argv)
     // Own names, so nothing Qt derives from them (QSettings, standard paths)
     // can land in another Chatterino client's place.
     QCoreApplication::setApplicationName(isolation::APPLICATION_NAME);
-    QGuiApplication::setApplicationDisplayName(QStringLiteral("Chatterino by Mist1X"));
+    QGuiApplication::setApplicationDisplayName(QStringLiteral("Chatterino Noctis"));
     QCoreApplication::setApplicationVersion(CHATTERINO_VERSION);
     QCoreApplication::setOrganizationName(isolation::ORGANIZATION_NAME);
     QCoreApplication::setOrganizationDomain(isolation::ORGANIZATION_DOMAIN);
@@ -237,7 +237,7 @@ int main(int argc, char **argv)
         auto errorMessage =
             QString::fromUtf8(error.what()) +
             QStringLiteral(
-                "\n\nChatterino by Mist1X keeps its profile only next to Leafyrino.exe "
+                "\n\nChatterino Noctis keeps its profile only next to Leafyrino.exe "
                 "(or in --portable-dir) and never falls back to another "
                 "location, so it did not start. Move it to a folder you can "
                 "write to.");

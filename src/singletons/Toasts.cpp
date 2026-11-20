@@ -424,7 +424,7 @@ void Toasts::ensureInitialized()
     this->initialized_ = true;
 
     auto *instance = WinToast::instance();
-    instance->setAppName(L"Chatterino by Mist1X");
+    instance->setAppName(L"Chatterino Noctis");
     instance->setAppUserModelId(Version::instance().appUserModelID());
     if (isRunningFromBuildTree() || !getSettings()->createShortcutForToasts)
     {
@@ -556,7 +556,7 @@ void Toasts::ensureInitialized()
     {
         return;
     }
-    auto result = notify_init("Chatterino by Mist1X");
+    auto result = notify_init("Chatterino Noctis");
 
     if (result == 0)
     {

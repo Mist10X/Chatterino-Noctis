@@ -44,7 +44,7 @@ class Args;
 class Modes;
 
 #ifdef Q_OS_WIN32
-// The look of Chatterino by Mist1X: its bundled Montserrat, semi-bold
+// The look of Chatterino Noctis: its bundled Montserrat, semi-bold
 #    define DEFAULT_FONT_FAMILY "Mist Montserrat"
 #    define DEFAULT_FONT_SIZE 10
 #    define DEFAULT_FONT_WEIGHT QFont::DemiBold

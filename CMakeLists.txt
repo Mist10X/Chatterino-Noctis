@@ -386,6 +386,8 @@ if(LEAFYRINO_LOCALIZATION_TESTS)
     endif()
     target_include_directories(Leafyrino-localization-tests PRIVATE "${CMAKE_SOURCE_DIR}/mocks/include")
     target_link_libraries(Leafyrino-localization-tests PRIVATE chatterino-lib)
+    target_compile_definitions(Leafyrino-localization-tests PRIVATE
+        LEAFYRINO_EXPECT_NIGHTLY_BUILD=$<BOOL:${CHATTERINO_NIGHTLY_BUILD}>)
     set_target_properties(Leafyrino-localization-tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()
 

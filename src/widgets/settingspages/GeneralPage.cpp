@@ -1048,7 +1048,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
             uiText("The program checks for a new version by itself at startup "
             "and every 6 hours. When one is out, a card appears at the top "
             "of the window: click it to update. Releases and the list of "
-            "changes: <a href='https://github.com/Mist10X/chatterino-by-mist1x/"
+            "changes: <a href='https://github.com/Mist10X/chatterino-noctis/"
             "releases'>GitHub</a>."));
 
         auto *status = new QLabel;
@@ -1161,7 +1161,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
             // Its own folder inside the chosen one: clearing the cache must
             // never touch what else is there.
             getSettings()->cachePath = QDir(chosen).filePath(
-                QStringLiteral("Chatterino by Mist1X cache"));
+                QStringLiteral("Chatterino Noctis cache"));
         }));
         box->addWidget(layout.makeButton("Reset", []() {
             getSettings()->cachePath = "";

@@ -42,7 +42,7 @@ public:
 
     QString cacheDirectory() const;
     /// A folder that only holds this program's cache: the profile's Cache
-    /// folder or a "Chatterino by Mist1X cache" folder, never the program
+    /// folder or a "Chatterino Noctis cache" folder, never the program
     /// folder, its settings or a parent of them. Only these are cleaned.
     bool isOwnCacheFolder(const QString &path) const;
 

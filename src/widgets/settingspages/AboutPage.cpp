@@ -54,10 +54,10 @@ AboutPage::AboutPage()
         }
         logo->setScaledContents(true);
 
-        auto brand = layout.emplace<QLabel>(QStringLiteral("<h1>Chatterino by Mist1X</h1>"));
+        auto brand = layout.emplace<QLabel>(QStringLiteral("<h1>Chatterino Noctis</h1>"));
         brand->setObjectName("BrandDisplayName");
         auto attribution = layout.emplace<QLabel>(uiText(QStringLiteral(
-            R"(Unofficial build based on <a href="https://github.com/Chatterino/chatterino2">Chatterino 2</a>, <a href="https://github.com/SevenTV/chatterino7">Chatterino7</a>, <a href="https://github.com/Leafyzito/leafyrino">Leafyrino</a>, <a href="https://github.com/2547techno/technorino">Technorino</a> and <a href="https://github.com/EEVA-inc/Moltorino7">Moltorino7</a> (MIT license). It is not affiliated with their authors or with Twitch. Changes by Mist1X: <a href="https://github.com/Mist10X/chatterino-by-mist1x">github.com/Mist10X/chatterino-by-mist1x</a>. Who made what: the CREDITS.md file there.)")));
+            R"(Unofficial build based on <a href="https://github.com/Chatterino/chatterino2">Chatterino 2</a>, <a href="https://github.com/SevenTV/chatterino7">Chatterino7</a>, <a href="https://github.com/Leafyzito/leafyrino">Leafyrino</a>, <a href="https://github.com/2547techno/technorino">Technorino</a> and <a href="https://github.com/EEVA-inc/Moltorino7">Moltorino7</a> (MIT license). It is not affiliated with their authors or with Twitch. Changes by Mist1X: <a href="https://github.com/Mist10X/chatterino-noctis">github.com/Mist10X/chatterino-noctis</a>. Who made what: the CREDITS.md file there.)")));
         attribution->setWordWrap(true);
         attribution->setTextFormat(Qt::RichText);
         attribution->setOpenExternalLinks(true);
@@ -100,7 +100,7 @@ AboutPage::AboutPage()
             l.emplace<QLabel>(uiText("All about Chatterino's <a href=\"") % LINK_CHATTERINO_FEATURES % uiText("\">features</a>"))->setOpenExternalLinks(true);
             // Problems with this build go to its own page, not to the
             // communities of the projects it is based on.
-            l.emplace<QLabel>(uiText("Report a problem with this build <a href=\"https://github.com/Mist10X/chatterino-by-mist1x/issues\">on GitHub</a>"))->setOpenExternalLinks(true);
+            l.emplace<QLabel>(uiText("Report a problem with this build <a href=\"https://github.com/Mist10X/chatterino-noctis/issues\">on GitHub</a>"))->setOpenExternalLinks(true);
             // clang-format on
         }
 

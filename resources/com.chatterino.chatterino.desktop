@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Leafyrino
-GenericName=Leafyrino
+Name=Chatterino Noctis
+GenericName=Twitch chat client
 Comment=Chat client for Twitch
 Exec=Leafyrino
 Icon=com.leafyzito.leafyrino

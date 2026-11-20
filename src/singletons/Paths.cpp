@@ -71,8 +71,13 @@ QString Paths::cacheDirectory() const
         checkedResult = path;
         if (!this->isOwnCacheFolder(path))
         {
-            checkedResult =
+            // Reuse the old external cache in existing profiles.
+            const auto legacy =
                 QDir(path).filePath(QStringLiteral("Chatterino by Mist1X cache"));
+            const auto renamed =
+                QDir(path).filePath(QStringLiteral("Chatterino Noctis cache"));
+            checkedResult = !QFileInfo::exists(renamed) && QFileInfo(legacy).isDir()
+                                ? legacy : renamed;
             QDir().mkpath(checkedResult);
         }
     }
@@ -96,9 +101,11 @@ bool Paths::isOwnCacheFolder(const QString &path) const
     {
         return true;
     }
-    return QFileInfo(clean).fileName().compare(
-               QStringLiteral("Chatterino by Mist1X cache"),
-               Qt::CaseInsensitive) == 0;
+    const auto name = QFileInfo(clean).fileName();
+    return name.compare(QStringLiteral("Chatterino Noctis cache"),
+                        Qt::CaseInsensitive) == 0 ||
+           name.compare(QStringLiteral("Chatterino by Mist1X cache"),
+                        Qt::CaseInsensitive) == 0;
 }
 
 QString Paths::messageLogsIn(const QString &configured) const

@@ -352,7 +352,7 @@ QPushButton#welcomeDone { background: %1; border-color: %1; color: #16161c;
     auto *layout = new QVBoxLayout(dialog);
     layout->setContentsMargins(24, 20, 24, 18);
     layout->setSpacing(4);
-    auto *heading = new QLabel(uiText("Welcome to Chatterino by Mist1X"));
+    auto *heading = new QLabel(uiText("Welcome to Chatterino Noctis"));
     heading->setObjectName("welcomeHeading");
     layout->addWidget(heading);
     auto *intro = new QLabel(uiText("A few steps to set it up. All of them can "

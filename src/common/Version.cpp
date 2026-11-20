@@ -24,7 +24,7 @@ Version::Version()
     , dateOfBuild_(QStringLiteral(CHATTERINO_CMAKE_GEN_DATE))
     , isNightly_(CHATTERINO_NIGHTLY_BUILD == 1)
 {
-    this->fullVersion_ = "Chatterino by Mist1X ";
+    this->fullVersion_ = "Chatterino Noctis ";
     this->fullVersion_ += QStringLiteral(MIST1X_VERSION);
 
 #ifndef NDEBUG
@@ -42,7 +42,8 @@ Version::Version()
     this->generateExtraString();
 
 #ifdef Q_OS_WIN
-    // keep in sync with .CI/chatterino-installer.iss
+    // Keep the installed identity across the rebrand so existing pins and
+    // upgrades refer to the same application. Both installers use this ID.
     this->appUserModelID_ = L"Mist1X.ChatterinoByMist1X";
 #endif
 }

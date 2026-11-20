@@ -42,7 +42,7 @@ public:
 
     void deleteOldFiles();
 
-    /// Asks GitHub for the newest release of Chatterino by Mist1X.
+    /// Asks GitHub for the newest release of Chatterino Noctis.
     void checkForUpdates();
     /// Checks shortly after the start and then every few hours.
     void startPeriodicChecks();

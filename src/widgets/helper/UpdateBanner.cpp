@@ -183,7 +183,7 @@ void showUpdatePrompt(QWidget *parent)
     if (updates.getStatus() == Updates::Downloading)
     {
         QMessageBox::information(
-            parent, uiText("Chatterino by Mist1X update"),
+            parent, uiText("Chatterino Noctis update"),
             uiText("The update is downloading. The program will restart by "
                    "itself when it is installed."));
         return;
@@ -192,7 +192,7 @@ void showUpdatePrompt(QWidget *parent)
     auto *box = new QMessageBox(parent);
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setIcon(QMessageBox::Information);
-    box->setWindowTitle(uiText("Chatterino by Mist1X update"));
+    box->setWindowTitle(uiText("Chatterino Noctis update"));
     box->setText(updates.buildUpdateAvailableText());
 
     auto notes = updates.getReleaseNotes();

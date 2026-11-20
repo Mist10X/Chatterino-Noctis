@@ -11,7 +11,7 @@ class QTableWidget;
 
 namespace chatterino {
 
-/// Who uses Chatterino by Mist1X, from the users' service (test version).
+/// Who uses Chatterino Noctis, from the users' service (test version).
 /// Only for the build's author: the list needs the admin key kept in
 /// Settings/mist1x-admin.key on their computer.
 class Mist1XUsersDialog : public QDialog

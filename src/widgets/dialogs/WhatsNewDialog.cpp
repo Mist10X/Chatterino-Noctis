@@ -44,7 +44,7 @@ struct Section {
     QStringList points;
 };
 
-/// "Chatterino by Mist1X 1.2.4" / "=====" / "- point" (continued on indented
+/// "Chatterino Noctis 1.2.4" / "=====" / "- point" (continued on indented
 /// lines), newest first.
 QList<Section> readNotes()
 {
@@ -55,11 +55,13 @@ QList<Section> readNotes()
         return {};
     }
     static const QRegularExpression heading(
-        QStringLiteral(R"(^Chatterino by Mist1X (\d+(?:\.\d+)+)\s*$)"));
+        QStringLiteral(R"(^Chatterino Noctis (\d+(?:\.\d+)+)\s*$)"));
     QList<Section> sections;
     for (const auto &raw : QString::fromUtf8(file.readAll()).split(u'\n'))
     {
-        const auto line = raw.trimmed();
+        auto line = raw.trimmed();
+        line.replace(QStringLiteral("Chatterino by Mist1X"),
+                     QStringLiteral("Chatterino Noctis"));
         if (auto match = heading.match(line); match.hasMatch())
         {
             sections.append({QVersionNumber::fromString(match.captured(1)), {}});
@@ -127,7 +129,7 @@ QPushButton#done { background: %1; border-color: %1; color: #16161c;
     layout->setContentsMargins(24, 20, 24, 18);
     layout->setSpacing(6);
     auto *heading = new QLabel(
-        uiText("Chatterino by Mist1X has been updated to %1")
+        uiText("Chatterino Noctis has been updated to %1")
             .arg(QStringLiteral(MIST1X_VERSION)));
     heading->setObjectName("heading");
     heading->setWordWrap(true);
@@ -179,7 +181,7 @@ QPushButton#done { background: %1; border-color: %1; color: #16161c;
     auto *all = new QPushButton(uiText("All changes"));
     QObject::connect(all, &QPushButton::clicked, dialog, [] {
         QDesktopServices::openUrl(QUrl(QStringLiteral(
-            "https://github.com/Mist10X/chatterino-by-mist1x/releases")));
+            "https://github.com/Mist10X/chatterino-noctis/releases")));
     });
     buttons->addWidget(all);
     buttons->addStretch(1);

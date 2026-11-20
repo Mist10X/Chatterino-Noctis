@@ -4,7 +4,7 @@
 
 #pragma once
 
-/// The version of Chatterino by Mist1X: what its GitHub releases are numbered
+/// The version of Chatterino Noctis: what its GitHub releases are numbered
 /// by and what the update check compares with. Leafyrino's own version stays
 /// CHATTERINO_VERSION. tools/release/build-release.ps1 refuses to build a
 /// release whose number differs from this one.

@@ -15,7 +15,7 @@ namespace chatterino {
 struct Emote;
 using EmotePtr = std::shared_ptr<const Emote>;
 
-/// Who else uses Chatterino by Mist1X, without any server: messages sent
+/// Who else uses Chatterino Noctis, without any server: messages sent
 /// over IRC carry a client-nonce like Twitch's web chat (32 hex digits) whose
 /// last 8 digits sign the first 24. Another copy of this build that sees such
 /// a message remembers the sender's Twitch ID and shows the build's badge at

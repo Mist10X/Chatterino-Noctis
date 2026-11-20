@@ -63,8 +63,8 @@ void checkWebp()
     if (!messages.empty())
     {
         QMessageBox::warning(
-            nullptr, u"Chatterino by Mist1X - Sanity Check"_s,
-            u"Your Chatterino by Mist1X instance is not able to load WEBP files.\nMake "
+            nullptr, u"Chatterino Noctis - Sanity Check"_s,
+            u"Your Chatterino Noctis instance is not able to load WEBP files.\nMake "
             u"sure you have qtimageformats installed.\n\n" %
                 messages.join(u"\n\n"));
     }

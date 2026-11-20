@@ -67,7 +67,7 @@ Mist1XUsersDialog::Mist1XUsersDialog(QWidget *parent)
     , table_(new QTableWidget(0, 4, this))
     , status_(new QLabel(this))
 {
-    this->setWindowTitle(uiText("Chatterino by Mist1X users"));
+    this->setWindowTitle(uiText("Chatterino Noctis users"));
     // sized so every column fits, no resizing by hand
     this->resize(640, 470);
     auto *layout = new QVBoxLayout(this);

@@ -241,7 +241,7 @@ void Window::addCustomTitlebarButtons()
         },
         TitleBarButtonStyle::Settings);
 
-    // shown only while a newer Chatterino by Mist1X is out
+    // shown only while a newer Chatterino Noctis is out
     auto *update = this->addTitleBarButton<PixmapButton>([] {});
     initUpdateButton(*update, [] {}, this->signalHolder_);
     if (!getApp()->getArgs().uiSnapshot && !getApp()->getArgs().dontSaveSettings)
