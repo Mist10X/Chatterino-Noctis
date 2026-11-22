@@ -781,11 +781,13 @@ void SelectChannelDialog::themeChangedEvent()
     const auto &t = *getTheme();
     applyMoltorinoDialogPalette(this, t);
     this->getLayoutContainer()->setStyleSheet(QStringLiteral(R"(
-        QLabel, QRadioButton, QCheckBox { color: %1; background: transparent; }
+        QLabel, QRadioButton, QCheckBox {
+            color: %1; background: transparent; font-weight: 600;
+        }
         QLineEdit, QComboBox, QListWidget, QTableView {
             color: %1; background: %2; border: 1px solid %3;
             border-radius: 6px; padding: 5px 8px;
-            selection-background-color: %4;
+            selection-background-color: %4; font-weight: 600;
         }
         QLineEdit:focus, QComboBox:focus { border-color: %5; }
         QRadioButton, QCheckBox { spacing: 7px; padding: 3px 2px; }
@@ -805,7 +807,7 @@ void SelectChannelDialog::themeChangedEvent()
         QScrollArea { border: 0; background: transparent; }
         QPushButton, QToolButton {
             color: %1; background: %2; border: 1px solid %3;
-            border-radius: 6px; padding: 5px 13px;
+            border-radius: 6px; padding: 5px 13px; font-weight: 600;
         }
         QPushButton:hover, QToolButton:hover { background: %4; border-color: %5; }
         QPushButton:pressed, QToolButton:pressed { background: %4; }
@@ -820,8 +822,12 @@ void SelectChannelDialog::scaleChangedEvent(float newScale)
     BaseWindow::scaleChangedEvent(newScale);
 
     // Match the real chat typography, preserving readability on a small UI scale.
-    this->getLayoutContainer()->setFont(getApp()->getFonts()->getFont(
-        FontStyle::ChatMedium, std::clamp(newScale, 1.0F, 1.4F)));
+    auto font = getApp()->getFonts()->getFont(
+        FontStyle::ChatMedium, std::clamp(newScale, 1.0F, 1.4F));
+    // The dialog's labels and controls must stay readable even when the
+    // profile uses a lighter chat font. Keep the family and point size.
+    font.setWeight(std::max(font.weight(), QFont::DemiBold));
+    this->getLayoutContainer()->setFont(font);
 }
 
 void SelectChannelDialog::addShortcuts()

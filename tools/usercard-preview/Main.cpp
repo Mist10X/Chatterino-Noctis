@@ -50,6 +50,7 @@
 #    include "widgets/dialogs/TwitchBadgePickerDialog.hpp"
 #    include "widgets/dialogs/EmotePopup.hpp"
 #    include "widgets/dialogs/SelectChannelDialog.hpp"
+#    include "widgets/helper/ResizingTextEdit.hpp"
 #    include "widgets/buttons/LabelButton.hpp"
 #    include "widgets/helper/ChannelAvatarLabel.hpp"
 #    include "widgets/Notebook.hpp"
@@ -101,6 +102,7 @@
 #include <QPainter>
 #include <QPointer>
 #include <QPushButton>
+#include <QVBoxLayout>
 #include <QSaveFile>
 #include <QScreen>
 #include <QScrollArea>
@@ -226,6 +228,51 @@ struct EmotePickerPreviewCheck {
             largestBatch = std::max(largestBatch, batch);
         }
         const bool lateCatalog = catalogCount == 121 && largestBatch <= 48;
+        // Deliver real Tab key events to a visible chat editor with a
+        // focusable neighbour: an ignored key would escape to its parent.
+        popup.hide();
+        QWidget focusHost;
+        auto *focusLayout = new QVBoxLayout(&focusHost);
+        auto *editor = new ResizingTextEdit;
+        auto *nextControl = new QPushButton("Next", &focusHost);
+        focusLayout->addWidget(editor);
+        focusLayout->addWidget(nextControl);
+        auto tabRoom = std::make_shared<TwitchChannel>("tab_completion_fixture");
+        editor->setCompleter(new QCompleter(tabRoom->completionModel));
+        focusHost.show();
+        focusHost.activateWindow();
+        QApplication::setActiveWindow(&focusHost);
+        editor->setFocus(Qt::OtherFocusReason);
+        owntimeout::pump(100);
+        const bool initiallyFocused = editor->hasFocus();
+        editor->setPlainText("Fixture_12");
+        editor->moveCursor(QTextCursor::End);
+        QKeyEvent tabKey(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+        QApplication::sendEvent(editor, &tabKey);
+        owntimeout::pump(50);
+        std::fprintf(stderr, "Tab event: initially-focused=%d accepted=%d focused=%d text=%s\n",
+                     initiallyFocused, tabKey.isAccepted(), editor->hasFocus(),
+                     qPrintable(editor->toPlainText()));
+        const bool completedAndFocused = tabKey.isAccepted() && editor->hasFocus() &&
+            editor->toPlainText().startsWith("Fixture_12") &&
+            editor->toPlainText().endsWith(' ') &&
+            editor->toPlainText() != "Fixture_12";
+        QKeyEvent typedKey(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, "a");
+        if (auto *focused = QApplication::focusWidget())
+        {
+            QApplication::sendEvent(focused, &typedKey);
+        }
+        const bool continuedTyping = editor->hasFocus() && editor->toPlainText().endsWith(" a");
+        editor->setPlainText("zqNoctisUnknownEmote");
+        editor->moveCursor(QTextCursor::End);
+        QKeyEvent backTabKey(QEvent::KeyPress, Qt::Key_Backtab, Qt::ShiftModifier);
+        QApplication::sendEvent(editor, &backTabKey);
+        const bool noMatchFocused = backTabKey.isAccepted() && editor->hasFocus();
+        const bool tabFocus = completedAndFocused && continuedTyping && noMatchFocused;
+        focusHost.close();
+        popup.show();
+        std::fprintf(stderr, "Tab focus: completed=%d typing=%d no-match=%d\n",
+                     completedAndFocused, continuedTyping, noMatchFocused);
         getApp()->getBttvEmotes()->setEmotes(previousCatalog);
         owntimeout::pump(420);
         auto sub = popup.subEmotesView_->underlyingChannel();
@@ -317,25 +364,52 @@ struct EmotePickerPreviewCheck {
                      bannerTitles, resizedBanners);
         split.grab().save(path + ".banners.png");
         split.setChannel(IndirectChannel(Channel::getEmpty()));
+        // Exercise the real compact selector with a light chat preference,
+        // rather than the enlarged font used for the banner test above.
+        const auto previousChatWeight = getSettings()->chatFontWeight.getValue();
+        const auto previousChatSize = getSettings()->chatFontSize.getValue();
+        getSettings()->chatFontWeight.setValue(QFont::Normal);
+        getSettings()->chatFontSize.setValue(previousChatSize - 4);
         SelectChannelDialog selector;
         selector.setSelectedChannel({});
         selector.setAttribute(Qt::WA_DontShowOnScreen);
         selector.show();
         owntimeout::pump(100);
+        bool controlsReadable = true;
+        int visibleControls = 0;
+        for (auto *widget : selector.getLayoutContainer()->findChildren<QWidget *>())
+        {
+            if (widget->isVisible() &&
+                (qobject_cast<QRadioButton *>(widget) ||
+                 qobject_cast<QCheckBox *>(widget) ||
+                 qobject_cast<QLineEdit *>(widget) ||
+                 qobject_cast<QPushButton *>(widget) ||
+                 qobject_cast<QLabel *>(widget)))
+            {
+                ++visibleControls;
+                controlsReadable &= widget->font().weight() >= QFont::DemiBold;
+            }
+        }
         const bool selectorStyled =
             selector.getLayoutContainer()->styleSheet().contains("border-radius") &&
             selector.getLayoutContainer()->font().family() ==
                 getApp()->getFonts()->getFont(FontStyle::ChatMedium, 1).family() &&
+            selector.getLayoutContainer()->font().weight() >= QFont::DemiBold &&
+            visibleControls >= 10 && controlsReadable &&
             selector.width() <= 650 && selector.height() <= 750;
         selector.grab().save(path + ".channel-selector.png");
         selector.close();
+        getSettings()->chatFontSize.setValue(previousChatSize);
+        getSettings()->chatFontWeight.setValue(previousChatWeight);
+        std::fprintf(stderr, "selector typography: visible=%d readable=%d\n",
+                     visibleControls, controlsReadable);
         std::fprintf(stderr, "late emote catalog=%d count=%zu batch=%zu; selector styled=%d\n",
                      lateCatalog, catalogCount, largestBatch, selectorStyled);
         std::fprintf(stderr, "emote picker title=%d search-style=%d compact=%d tab=%d/%d insertion=%d/%d search=%d/%d pause=%d room-modes=%d\n",
                      title, searchStyle, compact, animated, finished, selection, selectionFinished, search, restored, paused, roomModes);
         return title && searchStyle && compact && animated && finished && selection && selectionFinished && search && restored && paused && roomModes &&
             favouritesLocalized && componentLocalized && pinAligned && bannerTitles && resizedBanners &&
-            lateCatalog && selectorStyled;
+            lateCatalog && selectorStyled && tabFocus;
     }
 };
 struct BadgePickerPreviewCheck {

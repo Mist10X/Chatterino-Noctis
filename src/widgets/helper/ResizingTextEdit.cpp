@@ -63,6 +63,7 @@ ResizingTextEdit::ResizingTextEdit()
     });
 
     this->setFocusPolicy(Qt::ClickFocus);
+    this->setTabChangesFocus(false);
     this->installEventFilter(this);
 }
 
@@ -398,6 +399,10 @@ void ResizingTextEdit::keyPressEvent(QKeyEvent *event)
 
     if (doComplete)
     {
+        // Tab belongs to chat completion, even when there are no results.
+        // Leaving it ignored propagates it to the parent window, where Qt
+        // may treat it as focus traversal and move the caret out of the chat.
+        event->accept();
         // check if there is a completer
         if (!this->completer_)
         {
