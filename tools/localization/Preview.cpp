@@ -9,6 +9,7 @@
 #include "messages/MessageBuilder.hpp"
 #include "widgets/helper/ChannelView.hpp"
 #include "widgets/helper/MenuStyle.hpp"
+#include "widgets/helper/UpdateBanner.hpp"
 #include "widgets/Scrollbar.hpp"
 #include "common/Version.hpp"
 #include "controllers/tray/TrayController.hpp"
@@ -101,6 +102,8 @@
 #include <QScrollBar>
 #include <QSlider>
 #include <QPushButton>
+#include <QDialog>
+#include <QTextEdit>
 #include <QStyleFactory>
 #include <QTabBar>
 #include <QTabWidget>
@@ -735,6 +738,81 @@ int main(int argc, char **argv)
         app.theme.themeName.setValue(previewTheme);
     }
     installMenuStyle();
+    if (argc > 2 && QByteArray(argv[2]) == "--update-prompt")
+    {
+        auto notes = QStringLiteral("# Chatterino Noctis 2.0\n\n");
+        for (int i = 0; i < 12; ++i)
+            notes += QStringLiteral("- Новый дизайн и более удобная работа с чатом: "
+                                    "изменение %1, сохранение настроек и истории.\n").arg(i + 1);
+        notes += QStringLiteral("- Последний пункт — <img src=https://example.invalid/never.png>.");
+        int actions = 0;
+        const auto available = QApplication::primaryScreen()->availableGeometry();
+        for (const auto language : {QStringLiteral("ru"), QStringLiteral("en")})
+        {
+            initializeUiLanguage(language);
+            for (const float scale : {0.5F, 1.3F, 4.F})
+            {
+                app.settings.uiScale.setValue(scale);
+                const auto title = uiText("Version %1 is available (you have %2).").arg("2.0.0", "1.3.9");
+                QPointer<QDialog> dialog(createUpdatePrompt(nullptr, title, notes,
+                    false, false, [&]{ ++actions; }));
+                dialog->show();
+                qt.processEvents();
+                auto *text = dialog->findChild<QTextEdit *>("UpdateNotes");
+                auto *primary = dialog->findChild<QPushButton *>("UpdatePrimary");
+                auto *later = dialog->findChild<QPushButton *>("UpdateLater");
+                check(text && text->isReadOnly() &&
+                      text->toPlainText().startsWith("Chatterino Noctis 2.0") &&
+                      text->toPlainText().contains("•  Новый дизайн") &&
+                      text->toPlainText().contains("Последний пункт") &&
+                      text->toPlainText().contains("<img src="),
+                      "release text is complete, formatted and inert");
+                check(text && text->verticalScrollBar()->maximum() > 0 &&
+                      text->horizontalScrollBar()->maximum() == 0 &&
+                      text->verticalScrollBar()->value() == 0 &&
+                      dialog->width() <= available.width() &&
+                      dialog->height() <= available.height(),
+                      QStringLiteral("long notes scroll from the beginning without overflowing the desktop (%1/%2, %3x%4, scroll %5/%6)")
+                          .arg(language).arg(scale).arg(dialog->width()).arg(dialog->height())
+                          .arg(text ? text->verticalScrollBar()->value() : -1)
+                          .arg(text ? text->verticalScrollBar()->maximum() : -1));
+                check(primary && later &&
+                      primary->text() == uiText("Open the download page") &&
+                      later->text() == uiText("Later") &&
+                      primary->isVisible() && later->isVisible(),
+                      "portable actions remain accessible and localized");
+                if (language == "ru" && scale == 1.3F)
+                    dialog->grab().save(output + "/update-prompt.png");
+                const auto previous = actions;
+                later->click();
+                qt.processEvents();
+                check(actions == previous, "Later does not start an update");
+            }
+        }
+        auto *installed = createUpdatePrompt(nullptr, "2.0.0", "Short notes",
+                                             true, false, [&] { ++actions; });
+        installed->show();
+        qt.processEvents();
+        auto *primary = installed->findChild<QPushButton *>("UpdatePrimary");
+        check(primary && primary->text() == uiText("Update now"), "installed update button");
+        primary->click();
+        qt.processEvents();
+        check(actions == 1, "update action invoked once");
+        auto *downloading = createUpdatePrompt(nullptr, "2.0.0", notes, true, true,
+                                               [&] { ++actions; });
+        downloading->show();
+        qt.processEvents();
+        check(!downloading->findChild<QPushButton *>("UpdatePrimary") &&
+              !downloading->findChild<QTextEdit *>("UpdateNotes"),
+              "download in progress cannot initiate another update");
+        downloading->close();
+        qt.processEvents();
+        QFile report(output + "/update-prompt-results.json");
+        report.open(QIODevice::WriteOnly | QIODevice::Truncate);
+        report.write(QJsonDocument(QJsonObject{{"checks", checks}, {"failures", failures}}).toJson());
+        markAppAboutToQuit();
+        return failures ? 1 : 0;
+    }
     if (argc > 2 && QByteArray(argv[2]) == "--branding")
     {
         for (const auto &language : {QStringLiteral("en"), QStringLiteral("ru")})

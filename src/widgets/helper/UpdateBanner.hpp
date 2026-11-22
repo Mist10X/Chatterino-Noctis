@@ -6,6 +6,11 @@
 
 #include <pajlada/signals/signalholder.hpp>
 
+#include <functional>
+
+class QDialog;
+class QString;
+
 class QWidget;
 
 namespace chatterino {
@@ -17,5 +22,11 @@ void initUpdateBanner(QWidget *window, pajlada::Signals::SignalHolder &holder);
 
 /// What is new in the available version, with "Update now" / "Later".
 void showUpdatePrompt(QWidget *parent);
+
+// Presentation only. The supplied action is invoked exclusively by the
+// primary button; the updater itself owns all download/installation logic.
+QDialog *createUpdatePrompt(QWidget *parent, const QString &versionText,
+                            const QString &notes, bool installed,
+                            bool downloading, std::function<void()> update);
 
 }  // namespace chatterino
