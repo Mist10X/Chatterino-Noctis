@@ -34,6 +34,7 @@ public:
         QString userID;
         QString clientID;
         QString oauthToken;
+        QString displayName;
     };
 
     std::shared_ptr<TwitchAccount> getCurrent();
@@ -48,6 +49,7 @@ public:
     void load();
 
     bool isLoggedIn() const;
+    void refreshDisplayNames();
 
     pajlada::Settings::Setting<QString> currentUsername{"/accounts/current",
                                                         ""};
@@ -59,6 +61,7 @@ public:
     boost::signals2::signal<void()> currentUserChanged;
     pajlada::Signals::NoArgSignal userListUpdated;
     pajlada::Signals::NoArgSignal currentUserNameChanged;
+    pajlada::Signals::NoArgSignal currentUserDisplayNameChanged;
 
     /// Fired when the IRC server sends a "Login authentication failed" notice,
     /// indicating the current OAuth token has expired.
@@ -76,6 +79,7 @@ private:
     };
     AddUserResponse addUser(const UserData &data);
     bool removeUser(TwitchAccount *account);
+    void refreshDisplayName(const std::shared_ptr<TwitchAccount> &account);
 
     std::shared_ptr<TwitchAccount> currentUser_;
 

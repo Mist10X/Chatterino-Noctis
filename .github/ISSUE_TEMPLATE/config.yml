@@ -3,6 +3,6 @@ contact_links:
   - name: Issue about the Chatterino Browser Extension
     url: https://github.com/Chatterino/chatterino-browser-ext/issues
     about: Make a suggestion or report a bug about the Chatterino browser extension.
-  - name: Help
+  - name: Upstream Chatterino 2 help
     url: https://github.com/chatterino/chatterino2/discussions/categories/q-a
-    about: Chatterino2 not working as you'd expect? Not sure it's a bug? Check the Q&A section!
+    about: Ask questions about the original Chatterino 2 client.

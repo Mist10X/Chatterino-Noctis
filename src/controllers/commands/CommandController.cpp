@@ -573,59 +573,6 @@ CommandController::CommandController(const Paths &paths)
     this->registerCommand("/c2-set-logging-rules", &commands::setLoggingRules);
     this->registerCommand("/c2-theme-autoreload", &commands::toggleThemeReload);
 
-    this->registerCommand("/bot", [](const CommandContext &ctx) -> QString {
-        if (!ctx.twitchChannel)
-        {
-            ctx.channel->addSystemMessage(
-                "/bot only works in Twitch channels.");
-            return "";
-        }
-
-        auto &s = *getSettings();
-        const auto usage = QStringLiteral("Usage: /bot <message>");
-        const bool botBadgeConfigured =
-            !s.botBadgeAppAccessToken.getValue().trimmed().isEmpty() &&
-            !s.botBadgeClientID.getValue().trimmed().isEmpty() &&
-            !s.botBadgeUserID.getValue().trimmed().isEmpty();
-        const auto lockedMessage = [&usage] {
-            return QStringLiteral("Bot mode is locked. Ask Molto about it. ") +
-                   usage;
-        };
-
-        if (ctx.words.size() < 2)
-        {
-            const bool enabling = !s.botBadgeAlwaysUse.getValue();
-            if (enabling && !botBadgeConfigured)
-            {
-                ctx.channel->addSystemMessage(lockedMessage());
-                return "";
-            }
-
-            s.botBadgeAlwaysUse = enabling;
-            s.requestSave();
-
-            ctx.channel->addSystemMessage(
-                enabling
-                    ? (s.botBadgeOverrideAllAccounts.getValue()
-                           ? QStringLiteral(
-                                 "Bot mode enabled for all accounts.")
-                           : QStringLiteral(
-                                 "Bot mode enabled for the bot account only."))
-                    : QStringLiteral("Bot mode disabled."));
-            return "";
-        }
-
-        if (!botBadgeConfigured)
-        {
-            ctx.channel->addSystemMessage(lockedMessage());
-            return "";
-        }
-
-        auto message = ctx.words.mid(1).join(' ');
-        ctx.twitchChannel->sendBotMessage(message);
-
-        return "";
-    });
 }
 
 void CommandController::save()

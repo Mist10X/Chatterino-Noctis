@@ -27,16 +27,21 @@
 #include "providers/twitch/TwitchAccount.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/Settings.hpp"
+#include "singletons/Fonts.hpp"
 #include "singletons/Theme.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/Helpers.hpp"
 #include "util/QStringHash.hpp"
 #include "widgets/helper/ChannelView.hpp"
+#include "widgets/helper/ChannelAvatarLabel.hpp"
 #include "widgets/Notebook.hpp"
 #include "widgets/Scrollbar.hpp"
 
 #include <QAbstractButton>
 #include <QHBoxLayout>
+#include <QGraphicsOpacityEffect>
+#include <QPropertyAnimation>
+#include <QCursor>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QStringBuilder>
@@ -117,6 +122,32 @@ auto makeTitleMessage(const QString &title)
     builder.emplace<TextElement>(title, MessageElementFlag::Text);
     builder->flags.set(MessageFlag::Centered);
     return builder.release();
+}
+
+void showEmoteSelectionFeedback(QWidget *view)
+{
+    auto *feedback = new QWidget(view);
+    feedback->setObjectName("EmotePickerSelectionFeedback");
+    feedback->setAttribute(Qt::WA_TransparentForMouseEvents);
+    feedback->setFocusPolicy(Qt::NoFocus);
+    const auto center = view->mapFromGlobal(QCursor::pos());
+    const int size = std::max(22, qRound(30 * getSettings()->getClampedUiScale()));
+    feedback->setGeometry(QRect(center - QPoint(size / 2, size / 2), QSize(size, size)));
+    feedback->setAttribute(Qt::WA_StyledBackground);
+    feedback->setStyleSheet(QStringLiteral("background: transparent; border: 1px solid %1; border-radius: %2px;")
+                                .arg(getTheme()->splits.header.focusedBorder.name())
+                                .arg(size / 2));
+    auto *opacity = new QGraphicsOpacityEffect(feedback);
+    feedback->setGraphicsEffect(opacity);
+    auto *animation = new QPropertyAnimation(opacity, "opacity", feedback);
+    animation->setStartValue(0.8);
+    animation->setEndValue(0.0);
+    animation->setDuration(180);
+    animation->setEasingCurve(QEasingCurve::OutCubic);
+    QObject::connect(animation, &QPropertyAnimation::finished, feedback, &QWidget::deleteLater);
+    feedback->show();
+    feedback->raise();
+    animation->start();
 }
 
 auto makeEmoteMessageSorted(const std::vector<EmotePtr> &emotes,
@@ -301,13 +332,13 @@ void loadEmojis(ChannelView &view, const std::vector<EmojiPtr> &emojiMap)
             continue;
         }
 
-        emojiChannel->addMessage(makeTitleMessage(it.first),
+        emojiChannel->addMessage(makeTitleMessage(uiText(it.first)),
                                  MessageContext::Original);
         emojiChannel->addMessage(makeEmojiMessage(it.second),
                                  MessageContext::Original);
     }
 
-    emojiChannel->addMessage(makeTitleMessage("Component"),
+    emojiChannel->addMessage(makeTitleMessage(uiText("Component")),
                              MessageContext::Original);
     emojiChannel->addMessage(makeEmojiMessage(emoteCategoryMap["Component"]),
                              MessageContext::Original);
@@ -412,13 +443,38 @@ EmotePopup::EmotePopup(QWidget *parent)
     QRegularExpression searchRegex(R"((?:tag:\S+ )*\S+(?: tag:\S+)*)");
     searchRegex.setPatternOptions(QRegularExpression::CaseInsensitiveOption);
 
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
+    layout->setContentsMargins(7, 2, 7, 5);
+    layout->setSpacing(3);
 
-    auto *layout2 = new QHBoxLayout();
-    layout2->setContentsMargins(8, 8, 8, 8);
-    layout2->setSpacing(8);
+    this->setObjectName("NoctisEmotePicker");
+    this->titleRow_ = new QWidget(this);
+    this->titleRow_->setObjectName("EmotePickerTitle");
+    this->titleRow_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *titleLayout = new QHBoxLayout(this->titleRow_);
+    titleLayout->setContentsMargins(8, 0, 0, 0);
+    titleLayout->setSpacing(5);
+    auto prefix = uiText("Emotes in #");
+    if (prefix.endsWith('#'))
+        prefix.chop(1);
+    this->titlePrefix_ = new QLabel(prefix.trimmed(), this->titleRow_);
+    this->titleChannel_ = new QLabel(this->titleRow_);
+    this->titleChannel_->setObjectName("EmotePickerChannel");
+    this->titleChannel_->setMinimumWidth(0);
+    this->titleChannel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    this->titleAvatar_ = new ChannelAvatarLabel(this->titleChannel_, this->titleRow_);
+    titleLayout->addWidget(this->titlePrefix_);
+    titleLayout->addWidget(this->titleAvatar_);
+    titleLayout->addWidget(this->titleChannel_, 1);
+    if (!this->setCustomTitlebarContent(this->titleRow_))
+        layout->addWidget(this->titleRow_);
 
+    this->searchRow_ = new QWidget(this->getLayoutContainer());
+    this->searchRow_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *layout2 = new QHBoxLayout(this->searchRow_);
+    layout2->setContentsMargins(1, 2, 1, 4);
+    layout2->setSpacing(0);
+
+    this->search_->setObjectName("EmotePickerSearch");
     this->search_->setPlaceholderText(uiText("Search all emotes..."));
     this->search_->setValidator(new QRegularExpressionValidator(searchRegex));
     this->search_->setClearButtonEnabled(true);
@@ -427,13 +483,15 @@ EmotePopup::EmotePopup(QWidget *parent)
     this->search_->installEventFilter(this);
     layout2->addWidget(this->search_);
 
-    layout->addLayout(layout2);
+    layout->addWidget(this->searchRow_);
 
     QObject::connect(this->search_, &QLineEdit::textChanged, this,
                      &EmotePopup::filterEmotes);
 
     auto clicked = [this](const MessageLayoutElement *hoveredElement,
                           Qt::KeyboardModifiers modifiers) {
+        if (!hoveredElement)
+            return;
         if (modifiers.testFlag(Qt::KeyboardModifier::ControlModifier))
         {
             if (hoveredElement == nullptr)
@@ -478,7 +536,15 @@ EmotePopup::EmotePopup(QWidget *parent)
             }
         }
 
-        this->linkClicked.invoke(hoveredElement->getLink());
+        const auto &link = hoveredElement->getLink();
+        if (link.type == Link::InsertText)
+        {
+            auto *view = this->searchView_->isVisible()
+                ? this->searchView_ : this->notebook_->getSelectedPage();
+            if (view)
+                showEmoteSelectionFeedback(view);
+        }
+        this->linkClicked.invoke(link);
     };
 
     auto makeView = [&](QString tabTitle, bool addToNotebook = true) {
@@ -488,6 +554,7 @@ EmotePopup::EmotePopup(QWidget *parent)
             MessageElementFlag::Default, MessageElementFlag::AlwaysShow,
             MessageElementFlag::EmoteImage});
         view->setEnableScrollingToBottom(false);
+        view->setOverrideSeparateMessages(false);
         // We can safely ignore this signal connection since the ChannelView is deleted
         // either when the notebook is deleted, or when our main layout is deleted.
         std::ignore = view->elementClicked.connect(clicked);
@@ -567,10 +634,9 @@ EmotePopup::EmotePopup(QWidget *parent)
 
     this->searchView_ = makeView("", false);
     this->searchView_->hide();
-    layout->addWidget(this->searchView_);
+    layout->addWidget(this->searchView_, 1);
 
-    layout->addWidget(this->notebook_);
-    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(this->notebook_, 1);
 
     this->favouritesView_ = makeView("Favourite");
     this->subEmotesView_ = makeView("Subs");
@@ -705,7 +771,11 @@ void EmotePopup::loadChannel(ChannelPtr channel)
     this->twitchChannel_ = dynamic_cast<TwitchChannel *>(this->channel_.get());
     this->kickChannel_ = dynamic_cast<KickChannel *>(this->channel_.get());
 
-    this->setWindowTitle(uiText("Emotes in #") + this->channel_->getName());
+    const auto displayChannel = this->channel_->getName();
+    this->titleChannel_->setText(displayChannel);
+    this->titleAvatar_->setChannel(displayChannel, this->channel_->isTwitchOrKickChannel(),
+                                  this->kickChannel_ != nullptr);
+    this->setWindowTitle(this->titlePrefix_->text() + ' ' + displayChannel);
 
     this->globalEmotesView_->setChannel(
         std::make_shared<Channel>("", Channel::Type::None));
@@ -809,8 +879,8 @@ void EmotePopup::updateFavouriteEmotesAndEmojis()
     if (this->favouriteEmotes_.empty() && this->favouriteEmojis_.empty())
     {
         auto msg = makeInfoTextMessage(
-            "No favourites. You can add them by Ctrl+clicking on an Emote or "
-            "marking it as favourite in the context menu");
+            uiText("No favourites. You can add them by Ctrl+clicking on an Emote or "
+                   "marking it as favourite in the context menu"));
         chan->addMessage(msg, MessageContext::Original);
 
         return;
@@ -1276,6 +1346,42 @@ void EmotePopup::themeChangedEvent()
     BasePopup::themeChangedEvent();
 
     this->setPalette(getTheme()->palette);
+    this->refreshChrome();
+}
+
+void EmotePopup::scaleChangedEvent(float scale)
+{
+    BasePopup::scaleChangedEvent(scale);
+    this->refreshChrome();
+}
+
+void EmotePopup::refreshChrome()
+{
+    if (!this->titleRow_ || !this->searchRow_)
+        return;
+    const auto *theme = getTheme();
+    const auto scale = this->scale();
+    auto *fonts = getApp()->getFonts();
+    this->titlePrefix_->setFont(fonts->getFont(FontStyle::ChatMedium, scale));
+    this->titleChannel_->setFont(fonts->getFont(FontStyle::ChatMediumBold, scale));
+    this->titleAvatar_->setChannel(this->titleChannel_->text(), this->channel_ && this->channel_->isTwitchOrKickChannel(),
+                                  this->kickChannel_ != nullptr);
+    this->search_->setFont(fonts->getFont(FontStyle::ChatMedium, scale));
+    const int radius = std::max(4, qRound(6 * scale));
+    const int pad = std::max(5, qRound(6 * scale));
+    this->search_->setMinimumHeight(this->search_->fontMetrics().height() + 2 * pad);
+    this->titleRow_->setStyleSheet(QStringLiteral("QLabel { color: %1; background: transparent; }")
+                                     .arg(theme->window.text.name()));
+    this->search_->setStyleSheet(QStringLiteral(R"(
+        QLineEdit {
+            background: %1; color: %2; border: 1px solid %3;
+            border-radius: %4px; padding: 0 %5px;
+            selection-background-color: %6;
+        }
+        QLineEdit:focus { border-color: %6; }
+    )").arg(theme->splits.input.background.name(), theme->window.text.name(),
+            theme->splits.header.border.name(), QString::number(radius),
+            QString::number(pad), theme->splits.header.focusedBorder.name()));
 }
 
 void EmotePopup::closeEvent(QCloseEvent *event)

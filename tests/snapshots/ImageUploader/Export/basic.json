@@ -13,7 +13,7 @@
         "Headers": {
             "My-Header": "Foo"
         },
-        "Name": "Chatterino Image Uploader Settings",
+        "Name": "Chatterino Noctis Image Uploader Settings",
         "RequestMethod": "POST",
         "RequestURL": "http://example.com",
         "URL": "foo{bar}baz",

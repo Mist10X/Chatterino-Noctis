@@ -396,7 +396,7 @@ void YouTubeMessageBuilder::buildMembership(const YouTubeChatItem &item,
 
 void YouTubeMessageBuilder::appendChannelName()
 {
-    QString channelName(u'#' % this->channel()->getName());
+    const QString channelName = this->channel()->getName();
     Link link(Link::JumpToChannel, this->channel()->getName());
 
     this->emplace<TextElement>(channelName, MessageElementFlag::ChannelName,

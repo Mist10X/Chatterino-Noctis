@@ -41,6 +41,18 @@ void MessageThread::addToThread(const std::weak_ptr<const Message> &message)
     this->replies_.push_back(message);
 }
 
+void MessageThread::replaceReply(const std::shared_ptr<const Message> &oldReply,
+                                 const std::shared_ptr<const Message> &replacement)
+{
+    for (auto &reply : this->replies_)
+    {
+        if (reply.lock() == oldReply)
+        {
+            reply = replacement;
+        }
+    }
+}
+
 size_t MessageThread::liveCount() const
 {
     size_t count = 0;

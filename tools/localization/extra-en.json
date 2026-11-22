@@ -1,0 +1,13 @@
+{
+  "%1 д": "%1 d",
+  "вчера": "yesterday",
+  "История пользователя": "User history",
+  "Вся история": "All history",
+  "сегодня ": "today ",
+  "%1 ч": "%1 h",
+  "%1 с": "%1 s",
+  "Уточняется Twitch ID пользователя…": "Resolving Twitch user ID…",
+  "%1 мин": "%1 min",
+  "Публичные логи чата. Прокрутите вверх, чтобы загрузить ещё": "Public chat logs. Scroll up to load more",
+  "Включите публичные логи в настройках": "Enable public logs in settings"
+}

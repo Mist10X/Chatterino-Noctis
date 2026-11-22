@@ -275,6 +275,9 @@ public:
             return;
         }
 
+        // Qt Charts paints axes in its graphics scene, outside QWidget font inheritance.
+        axis->setLabelsFont(this->chartView->font());
+        axis->setTitleFont(this->chartView->font());
         if (this->axisLabelColor.has_value())
         {
             axis->setLabelsColor(*this->axisLabelColor);
@@ -583,7 +586,7 @@ ChannelPointsChartView::ChannelPointsChartView(QWidget *parent)
         listView->setSpacing(2);
         listView->setMouseTracking(true);
     }
-    this->d_->rangeCombo->setToolTip(
+    this->d_->rangeCombo->setAccessibleDescription(
         uiText(QStringLiteral("Show only points recorded in the selected period")));
 
     this->d_->resetButton =

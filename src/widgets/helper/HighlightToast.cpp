@@ -6,23 +6,34 @@
 
 #include "Application.hpp"
 #include "common/Channel.hpp"
+#include "common/UiLanguage.hpp"
+#include "common/UiScale.hpp"
 #include "messages/Message.hpp"
+#include "messages/Selection.hpp"
+#include "messages/layouts/MessageLayoutContainer.hpp"
+#include "messages/layouts/MessageLayoutContext.hpp"
+#include "messages/layouts/MessageLayoutElement.hpp"
+#include "providers/colors/ColorProvider.hpp"
 #include "singletons/Fonts.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "singletons/WindowManager.hpp"
 #include "widgets/helper/ChannelView.hpp"
+#include "widgets/helper/TabAvatars.hpp"
+#include "widgets/helper/RoundAvatar.hpp"
 #include "widgets/Notebook.hpp"
 #include "widgets/splits/Split.hpp"
 #include "widgets/splits/SplitContainer.hpp"
 #include "widgets/Window.hpp"
 
 #include <QEvent>
+#include <QGraphicsOpacityEffect>
 #include <QFontMetricsF>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPointer>
+#include <QPropertyAnimation>
 #include <QTimer>
 
 #include <vector>
@@ -97,17 +108,30 @@ public:
         this->setAttribute(Qt::WA_DeleteOnClose);
         this->setMouseTracking(true);
         this->setCursor(Qt::PointingHandCursor);
-        this->setToolTip(this->message_->messageText);
         this->lifetime_->setSingleShot(true);
         QObject::connect(this->lifetime_, &QTimer::timeout, this, [this] {
             this->dismiss();
         });
         this->lifetime_->start(LIFETIME_MS);
+        QObject::connect(&TabAvatars::instance(), &TabAvatars::loaded, this,
+                         [this](const QString &login) {
+                             if (login.compare(this->avatarLogin(), Qt::CaseInsensitive) == 0)
+                                 this->update();
+                         });
+        auto *refresh = new QTimer(this);
+        QObject::connect(refresh, &QTimer::timeout, this, [this] { this->update(); });
+        refresh->start(120);
     }
 
     float scale() const
     {
-        return std::max(0.5F, getSettings()->getClampedUiScale());
+        return contentUiScale(getSettings()->getClampedUiScale());
+    }
+
+    QString avatarLogin() const
+    {
+        return this->channelName_ == "/whispers"
+                   ? this->message_->loginName : this->channelName_;
     }
 
     QSize sizeHint() const override
@@ -117,7 +141,7 @@ public:
             this->parentWidget() ? this->parentWidget()->width() - int(24 * s)
                                  : int(440 * s);
         return {std::min(int(440 * s), std::max(int(220 * s), available)),
-                int(58 * s)};
+                int(70 * s)};
     }
 
     void dismiss()
@@ -131,39 +155,56 @@ protected:
     {
         const auto s = this->scale();
         QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setRenderHints(QPainter::Antialiasing |
+                               QPainter::SmoothPixmapTransform);
         const QRectF card = QRectF(this->rect()).adjusted(0.5, 0.5, -0.5, -0.5);
         const bool light = getTheme()->isLightTheme();
-        painter.setPen(QPen(QColor(light ? "#b9a3e3" : "#5b4a82"), 1));
-        painter.setBrush(QColor(light ? "#f4f0fb" : (this->hovered_ ? "#2a2535" : "#221f2b")));
-        painter.drawRoundedRect(card, 8 * s, 8 * s);
-        // accent strip on the left
-        QPainterPath strip;
-        strip.addRoundedRect(QRectF(card.left(), card.top(), 4 * s, card.height()),
-                             2 * s, 2 * s);
-        painter.fillPath(strip, QColor("#a884f2"));
+        painter.setPen(QPen(QColor(light ? "#d9d2e5" : "#38354a"), 1));
+        painter.setBrush(QColor(light ? "#f6f3fa" : (this->hovered_ ? "#242331" : "#1c1c27")));
+        painter.drawRoundedRect(card, 14 * s, 14 * s);
 
         auto *fonts = getApp()->getFonts();
         const qreal pad = 12 * s;
         const qreal closeSize = 16 * s;
-        const qreal textWidth = card.width() - 2 * pad - closeSize;
+        const qreal avatarSize = 24 * s;
+        const qreal textWidth = card.width() - 2 * pad - closeSize - avatarSize - 8 * s;
         const auto bold = fonts->getFont(FontStyle::ChatMediumBold, s);
         const auto normal = fonts->getFont(FontStyle::ChatMedium, s);
         const QFontMetricsF boldMetrics(bold);
         const QFontMetricsF normalMetrics(normal);
 
-        // #channel · author
-        const QString channel = QStringLiteral("#") + this->channelName_;
+        // channel · author
+        const bool whisper = this->channelName_ == "/whispers";
+        const QString channel = whisper ? uiText("Whisper") : this->channelName_;
         const QString author = this->message_->displayName.isEmpty()
                                    ? this->message_->loginName
                                    : this->message_->displayName;
-        qreal x = card.left() + pad;
-        const qreal top = card.top() + 7 * s;
+        const qreal top = card.top() + 10 * s;
+        const QRectF avatarRect(card.left() + pad, top, avatarSize, avatarSize);
+        const auto avatar = TabAvatars::instance().circle(
+            this->avatarLogin(),
+            avatarPixelSize(avatarSize, this->devicePixelRatioF()));
+        if (!avatar.isNull())
+            painter.drawPixmap(avatarRect, avatar, avatar.rect());
+        else
+        {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(light ? "#e1d9ec" : "#353047"));
+            painter.drawEllipse(avatarRect);
+            painter.setPen(QColor(light ? "#684aa0" : "#b7a3e8"));
+            painter.setFont(bold);
+            painter.drawText(avatarRect, Qt::AlignCenter,
+                             whisper ? author.left(1).toUpper()
+                                     : this->channelName_.left(1).toUpper());
+        }
+        qreal x = avatarRect.right() + 8 * s;
+        const qreal textLeft = x;
+        const qreal headerY = top + (avatarSize - boldMetrics.height()) / 2 + boldMetrics.ascent();
         painter.setFont(bold);
         painter.setPen(QColor(light ? "#684aa0" : "#c4abf5"));
         const auto channelText =
             boldMetrics.elidedText(channel, Qt::ElideRight, textWidth / 2);
-        painter.drawText(QPointF(x, top + boldMetrics.ascent()), channelText);
+        painter.drawText(QPointF(x, headerY), channelText);
         x += boldMetrics.horizontalAdvance(channelText + QStringLiteral("  "));
         auto color = this->message_->usernameColor;
         if (!color.isValid())
@@ -171,18 +212,82 @@ protected:
             color = light ? QColor("#333") : QColor("#ddd");
         }
         painter.setPen(color);
-        painter.drawText(QPointF(x, top + boldMetrics.ascent()),
+        painter.drawText(QPointF(x, headerY),
                          boldMetrics.elidedText(author, Qt::ElideRight,
-                                                card.left() + pad + textWidth - x));
+                                                textLeft + textWidth - x));
 
         // the message
         painter.setFont(normal);
         painter.setPen(light ? QColor("#222") : QColor("#e6e3ee"));
-        const qreal second = top + boldMetrics.height() + 3 * s;
+        const qreal second = top + avatarSize + 5 * s;
+        const int bodyWidth = int(card.width() - 2 * pad);
+        const auto bodyFlags = MessageElementFlags{MessageElementFlag::Text, MessageElementFlag::EmoteImage,
+                                                  MessageElementFlag::EmojiImage, MessageElementFlag::Mention,
+                                                  MessageElementFlag::TwitchGif};
+        MessageColors colors;
+        colors.applyTheme(getTheme(), false, 100);
+        MessageLayoutContainer content;
+        const MessageLayoutContext layout{.messageColors = colors, .flags = bodyFlags,
+                                           .width = bodyWidth, .scale = s,
+                                           .imageScale = s, .emoteScale = 0.85F,
+                                           .message = *this->message_};
+        content.beginLayout(bodyWidth, s, s, 0.85F, 1.F, false, {});
+        bool hasBody = false;
+        bool pastWhisperHeader = !whisper;
+        for (const auto &element : this->message_->elements)
+        {
+            if (!pastWhisperHeader)
+            {
+                if (dynamic_cast<LinebreakElement *>(element.get()))
+                    pastWhisperHeader = true;
+                continue;
+            }
+            if (whisper && dynamic_cast<WhisperReplyElement *>(element.get()))
+                continue;
+            const auto flags = element->getFlags();
+            if (!flags.hasAny(bodyFlags) || flags.hasAny(MessageElementFlag::Username,
+                MessageElementFlag::KickUsername, MessageElementFlag::Badges,
+                MessageElementFlag::RepliedMessage, MessageElementFlag::Timestamp,
+                MessageElementFlag::ChannelName))
+                continue;
+            element->addToContainer(content, layout);
+            hasBody = true;
+        }
+        content.endLayout();
+        const auto visibleBodyHeight = card.bottom() - second - 4 * s;
+        const bool bodyClipped =
+            hasBody ? content.getLineCount() > 1 || content.isCollapsed() ||
+                          content.getContentBounds().bottom() > visibleBodyHeight
+                    : normalMetrics.horizontalAdvance(
+                          this->message_->messageText.simplified()) > bodyWidth;
+        const auto tooltip =
+            bodyClipped ? QStringLiteral("<qt>%1</qt>")
+                              .arg(this->message_->messageText.toHtmlEscaped())
+                        : QString();
+        if (this->toolTip() != tooltip)
+        {
+            this->setToolTip(tooltip);
+        }
+        if (hasBody)
+        {
+            painter.save();
+            painter.setClipRect(QRectF(card.left() + pad, second, bodyWidth,
+                                       visibleBodyHeight));
+            painter.translate(card.left() + pad, second);
+            const Selection selection;
+            const MessagePreferences preferences;
+            const MessagePaintContext paint{.painter = painter, .selection = selection,
+                .colorProvider = ColorProvider::instance(), .messageColors = colors,
+                .preferences = preferences, .canvasWidth = bodyWidth, .isCollapsed = true};
+            content.paintElements(painter, paint);
+            content.paintAnimatedElements(painter, 0, true);
+            painter.restore();
+        }
+        else
         painter.drawText(QPointF(card.left() + pad, second + normalMetrics.ascent()),
                          normalMetrics.elidedText(
                              this->message_->messageText.simplified(),
-                             Qt::ElideRight, textWidth));
+                             Qt::ElideRight, bodyWidth));
 
         // close cross
         const QRectF cross(card.right() - pad - closeSize * 0.7, card.top() + 9 * s,
@@ -258,6 +363,13 @@ void Stack::add(Card *card)
     }
     card->show();
     card->raise();
+    auto *effect = new QGraphicsOpacityEffect(card);
+    card->setGraphicsEffect(effect);
+    auto *fade = new QPropertyAnimation(effect, "opacity", card);
+    fade->setDuration(140);
+    fade->setStartValue(0.0);
+    fade->setEndValue(1.0);
+    fade->start(QAbstractAnimation::DeleteWhenStopped);
     this->relayout();
 }
 

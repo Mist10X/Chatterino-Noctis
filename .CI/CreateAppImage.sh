@@ -7,9 +7,9 @@ set -x
 
 _QT_DIR=""
 
-if [ -f ./bin/Leafyrino ] && [ -x ./bin/Leafyrino ]; then
-    app_binary="./bin/Leafyrino"
-    app_executable="Leafyrino"
+if [ -f ./bin/chatterino-noctis ] && [ -x ./bin/chatterino-noctis ]; then
+    app_binary="./bin/chatterino-noctis"
+    app_executable="chatterino-noctis"
 elif [ -f ./bin/chatterino ] && [ -x ./bin/chatterino ]; then
     app_binary="./bin/chatterino"
     app_executable="chatterino"
@@ -131,19 +131,17 @@ export QT_QPA_PLATFORM_PLUGIN_PATH="$here/usr/plugins"
 
 # Find the system certificates location
 # https://gitlab.com/probono/platformissues/blob/master/README.md#certificates
-possible_locations=(
-    "/etc/ssl/certs/ca-certificates.crt"                # Debian/Ubuntu/Gentoo etc.
-    "/etc/pki/tls/certs/ca-bundle.crt"                  # Fedora/RHEL
-    "/etc/ssl/ca-bundle.pem"                            # OpenSUSE
-    "/etc/pki/tls/cacert.pem"                           # OpenELEC
-    "/etc/ssl/certs"                                    # SLES10/SLES11, https://golang.org/issue/12139
-    "/usr/share/ca-certs/.prebuilt-store/"              # Clear Linux OS; https://github.com/knapsu/plex-media-player-appimage/issues/17#issuecomment-437710032
-    "/system/etc/security/cacerts"                      # Android
-    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem" # CentOS/RHEL 7
-    "/etc/ssl/cert.pem"                                 # Alpine Linux
-)
-
-for location in "${possible_locations[@]}"; do
+for location in \
+    "/etc/ssl/certs/ca-certificates.crt" \
+    "/etc/pki/tls/certs/ca-bundle.crt" \
+    "/etc/ssl/ca-bundle.pem" \
+    "/etc/pki/tls/cacert.pem" \
+    "/etc/ssl/certs" \
+    "/usr/share/ca-certs/.prebuilt-store/" \
+    "/system/etc/security/cacerts" \
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem" \
+    "/etc/ssl/cert.pem"
+do
     if [ -r "${location}" ]; then
     export SSL_CERT_FILE="${location}"
     break
@@ -152,6 +150,7 @@ done
 
 cd "$here/usr"
 exec "$here/usr/bin/'"$app_executable"'" "$@"' > appdir/AppRun
+sh -n appdir/AppRun
 chmod a+x appdir/AppRun
 
 echo "New AppRun:"

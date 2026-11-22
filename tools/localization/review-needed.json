@@ -1662,9 +1662,6 @@
   "/unvip ": [
     "src\\widgets\\dialogs\\UserInfoPopup.cpp:2261"
   ],
-  "LeafyrinoArchive-test-": [
-    "src\\widgets\\dialogs\\UserInfoPopup.cpp:2460"
-  ],
   " <span style='color:%1'>#%2</span>": [
     "src\\widgets\\dialogs\\UserInfoPopup.cpp:2761"
   ],
@@ -1681,8 +1678,7 @@
     "src\\widgets\\dialogs\\UserInfoPopup.cpp:3355"
   ],
   "d MMMM": [
-    "src\\widgets\\dialogs\\UserInfoPopup.cpp:4536",
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:78"
+    "src\\widgets\\dialogs\\UserInfoPopup.cpp:4536"
   ],
   "No saved Leafyrino moderator login found.": [
     "src\\widgets\\dialogs\\UserInfoPopup.cpp:4850"
@@ -1753,47 +1749,10 @@
   "Ban this user in other channels you moderate": [
     "src\\widgets\\dialogs\\UserInfoPopup.cpp:7193"
   ],
-  "dd.MM.yyyy HH:mm:ss": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:32"
-  ],
-  "<p class='section'>": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:42"
-  ],
-  "d MMMM yyyy": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:79"
-  ],
-  "dd.MM.yyyy HH:mm": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:88"
-  ],
-  "<a class='quiet' href='": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:108"
-  ],
-  "<p class='row'>": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:325",
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:391"
-  ],
-  " <span class='chan'>#": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:325",
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:390"
-  ],
-  "<p class='quote'>": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:330"
-  ],
-  "<p class='quote muted'><span class='am'>AutoMod</span> · ": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:334"
-  ],
-  "<p class='day' align='center'>": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:375"
-  ],
-  "<span class='time'>": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:383"
-  ],
-  "&nbsp; ": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:391"
-  ],
-  "<p class='muted' style='margin-top:10px;'>": [
-    "src\\widgets\\helper\\ArchiveUserCard.cpp:409"
-  ],
+  "<p class='section'>": [],
+  "<p class='quote'>": [],
+  "<p class='quote muted'><span class='am'>AutoMod</span> · ": [],
+  "<p class='muted' style='margin-top:10px;'>": [],
   "2 characters minimum": [
     "src\\widgets\\helper\\ChannelCategoryPicker.cpp:146"
   ],
@@ -2189,11 +2148,11 @@
     "src\\widgets\\settingspages\\KeyboardSettingsPage.cpp:143"
   ],
   "badge hq": [
-    "src\\widgets\\settingspages\\LeafyrinoPage.cpp:76"
+    "src\\widgets\\settingspages\\NoctisPage.cpp:76"
   ],
   "super chat": [
-    "src\\widgets\\settingspages\\LeafyrinoPage.cpp:94",
-    "src\\widgets\\settingspages\\LeafyrinoPage.cpp:101"
+    "src\\widgets\\settingspages\\NoctisPage.cpp:94",
+    "src\\widgets\\settingspages\\NoctisPage.cpp:101"
   ],
   "Bytes": [
     "src\\widgets\\settingspages\\ModerationPage.cpp:53"
@@ -2369,9 +2328,6 @@
   "Chat session only": [
     "src\\widgets\\settingspages\\MoltorinoPage.cpp:1369"
   ],
-  "Bot Badge": [
-    "src\\widgets\\settingspages\\MoltorinoPage.cpp:1409"
-  ],
   "Developer": [
     "src\\widgets\\settingspages\\MoltorinoPage.cpp:1409"
   ],
@@ -2394,12 +2350,6 @@
   "not issued": [
     "src\\widgets\\settingspages\\MoltorinoPage.cpp:1573"
   ],
-  "Bot badge panel visible. Click Verify to test the setup.": [
-    "src\\widgets\\settingspages\\MoltorinoPage.cpp:1584"
-  ],
-  "Bot badge setup saved. Click Verify to check it.": [
-    "src\\widgets\\settingspages\\MoltorinoPage.cpp:1585"
-  ],
   "Client ID is required before opening Twitch authorization.": [
     "src\\widgets\\settingspages\\MoltorinoPage.cpp:1615"
   ],
@@ -2418,26 +2368,14 @@
   "You must enter a Bot Username or be logged into Twitch in Chatterino to verify.": [
     "src\\widgets\\settingspages\\MoltorinoPage.cpp:1661"
   ],
-  "Checking bot badge account @%1...": [
-    "src\\widgets\\settingspages\\MoltorinoPage.cpp:1678"
-  ],
   "Could not verify the app. Check the Client Secret.": [
     "src\\widgets\\settingspages\\MoltorinoPage.cpp:1710"
   ],
   "Client-ID": [
     "src\\widgets\\settingspages\\MoltorinoPage.cpp:1721"
   ],
-  "Bot badge account could not be found.": [
-    "src\\widgets\\settingspages\\MoltorinoPage.cpp:1739"
-  ],
-  "Bot badge account @%1 verified.": [
-    "src\\widgets\\settingspages\\MoltorinoPage.cpp:1764"
-  ],
   "Verification failed: ": [
     "src\\widgets\\settingspages\\MoltorinoPage.cpp:1778"
-  ],
-  "Could not verify bot badge setup: ": [
-    "src\\widgets\\settingspages\\MoltorinoPage.cpp:1793"
   ],
   "look at the manual": [
     "src\\widgets\\settingspages\\PluginsPage.cpp:59"

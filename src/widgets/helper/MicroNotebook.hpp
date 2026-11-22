@@ -21,6 +21,7 @@ public:
     bool isSelected(QWidget *page) const;
 
     void setShowHeader(bool showHeader);
+    int headerHeightHint() const;
 
 private:
     struct Item {

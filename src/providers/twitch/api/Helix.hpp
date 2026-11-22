@@ -529,7 +529,7 @@ struct HelixSentMessage {
     explicit HelixSentMessage(const QJsonObject &jsonObject)
         : id(jsonObject["message_id"].toString())
         , isSent(jsonObject["is_sent"].toBool())
-        , dropReason(jsonObject.contains("drop_reason")
+        , dropReason(jsonObject["drop_reason"].isObject()
                          ? std::optional(HelixDropReason(
                                jsonObject["drop_reason"].toObject()))
                          : std::nullopt)
@@ -568,6 +568,8 @@ struct HelixSendMessageArgs {
     QString message;
 
     QString replyParentMessageID;
+    QString clientId;
+    QString oauthToken;
 };
 
 struct HelixPollChoice {

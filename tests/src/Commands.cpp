@@ -7,6 +7,7 @@
 #include "controllers/commands/CommandContext.hpp"
 #include "controllers/commands/CommandController.hpp"
 #include "controllers/commands/common/ChannelAction.hpp"
+#include "controllers/twitch/LiveController.hpp"
 #include "mocks/BaseApplication.hpp"
 #include "mocks/EmoteController.hpp"
 #include "mocks/Helix.hpp"
@@ -33,6 +34,12 @@ using ::testing::_;
 using ::testing::StrictMock;
 
 namespace {
+
+class MockLiveController : public ITwitchLiveController
+{
+public:
+    MOCK_METHOD(void, add, (const std::shared_ptr<TwitchChannel> &), (override));
+};
 
 class MockApplication : public mock::BaseApplication
 {
@@ -80,6 +87,12 @@ public:
         return &this->pubSub;
     }
 
+    ITwitchLiveController *getTwitchLiveController() override
+    {
+        return &this->liveController;
+    }
+
+    ::testing::NiceMock<MockLiveController> liveController;
     mock::EmptyLogging chatLogger;
     AccountController accounts;
     WindowManager windowManager;
@@ -899,6 +912,7 @@ TEST(Commands, E2E)
 
     EXPECT_CALL(mockHelix, update).Times(1);
     EXPECT_CALL(mockHelix, loadBlocks).Times(1);
+    EXPECT_CALL(mockHelix, getChannelBadges(QString("11148817"), _, _)).Times(1);
 
     auto account = std::make_shared<TwitchAccount>(
         testaccount420["login"].toString(), "token", "oauthclient",

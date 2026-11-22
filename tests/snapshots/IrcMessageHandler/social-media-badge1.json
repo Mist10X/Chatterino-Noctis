@@ -18,7 +18,7 @@
                     "trailingSpace": true,
                     "type": "TextElement",
                     "words": [
-                        "#pajlada"
+                        "pajlada"
                     ]
                 },
                 {
@@ -82,7 +82,7 @@
                     "flags": "Username",
                     "link": {
                         "type": "UserInfo",
-                        "value": "Gunny_Q"
+                        "value": "gunny_q"
                     },
                     "style": "ChatMediumBold",
                     "tooltip": "",

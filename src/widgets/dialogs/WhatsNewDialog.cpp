@@ -9,8 +9,9 @@
 #include "common/UiLanguage.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
+#include "singletons/Fonts.hpp"
 #include "singletons/Paths.hpp"
-#include "singletons/Theme.hpp"
+#include "singletons/Settings.hpp"
 
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -26,6 +27,8 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QVersionNumber>
+
+#include <algorithm>
 
 namespace chatterino {
 
@@ -110,20 +113,19 @@ void showWhatsNewDialog(QWidget *parent, const QString &sinceVersion)
     dialog->setWindowTitle(uiText("What's new"));
     dialog->setMinimumWidth(560);
     dialog->resize(600, 520);
-    const auto accent = getTheme()->accent.name();
+    const auto scale = std::max(1.F, getSettings()->getClampedUiScale());
+    auto *fonts = getApp()->getFonts();
+    dialog->setFont(fonts->getFont(FontStyle::ChatMedium, scale));
     dialog->setStyleSheet(QStringLiteral(R"(
-QDialog, QScrollArea, QWidget#notes { background: #16161c; }
-QLabel { color: #e6e5ee; font-size: 13px; }
-QLabel#heading { font-size: 20px; font-weight: 600; color: #f4f3fa; }
-QLabel#version { font-size: 14px; font-weight: 600; color: %1; }
-QLabel#muted { color: #a9a7b6; }
-QPushButton { background: #25252e; border: 1px solid #363642; border-radius: 6px;
-              padding: 5px 14px; color: #e6e6ee; }
-QPushButton:hover { background: #2f2f3a; }
-QPushButton#done { background: %1; border-color: %1; color: #16161c;
-                   font-weight: 600; }
-)")
-                              .arg(accent));
+QDialog, QScrollArea, QWidget#notes { background: palette(window); }
+QLabel { color: palette(window-text); }
+QLabel#version, QLabel#bullet { color: palette(link); }
+QLabel#muted { color: palette(placeholder-text); }
+QPushButton { background: palette(button); border: 1px solid palette(mid); border-radius: 6px;
+              padding: 5px 14px; color: palette(button-text); }
+QPushButton:hover { background: palette(highlight); color: palette(highlighted-text); }
+QPushButton#done, QPushButton:focus { border-color: palette(link); }
+)"));
 
     auto *layout = new QVBoxLayout(dialog);
     layout->setContentsMargins(24, 20, 24, 18);
@@ -132,6 +134,9 @@ QPushButton#done { background: %1; border-color: %1; color: #16161c;
         uiText("Chatterino Noctis has been updated to %1")
             .arg(QStringLiteral(MIST1X_VERSION)));
     heading->setObjectName("heading");
+    auto headingFont = fonts->getFont(FontStyle::ChatLarge, scale);
+    headingFont.setWeight(QFont::DemiBold);
+    heading->setFont(headingFont);
     heading->setWordWrap(true);
     layout->addWidget(heading);
     auto *intro = new QLabel(uiText("Here is what changed:"));
@@ -151,6 +156,7 @@ QPushButton#done { background: %1; border-color: %1; color: #16161c;
             auto *version = new QLabel(
                 uiText("Version %1").arg(section.version.toString()));
             version->setObjectName("version");
+            version->setFont(fonts->getFont(FontStyle::ChatMediumBold, scale));
             notesLayout->addSpacing(4);
             notesLayout->addWidget(version);
         }
@@ -159,7 +165,7 @@ QPushButton#done { background: %1; border-color: %1; color: #16161c;
             auto *row = new QHBoxLayout;
             row->setSpacing(8);
             auto *bullet = new QLabel(QStringLiteral("•"));
-            bullet->setStyleSheet(QStringLiteral("color: %1;").arg(accent));
+            bullet->setObjectName("bullet");
             row->addWidget(bullet, 0, Qt::AlignTop);
             auto *text = new QLabel(point);
             text->setWordWrap(true);

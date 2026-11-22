@@ -29,8 +29,6 @@ class SplitHeader final : public BaseWidget
 public:
     explicit SplitHeader(Split *split);
 
-    void setAddButtonVisible(bool value);
-
     void updateChannelText();
     void updateIcons();
     void updateSendTargetButton();
@@ -70,7 +68,6 @@ private:
     void resetThumbnail();
 
     void handleChannelChanged();
-    void toggleFollow();
 
     Split *const split_{};
     QString tooltipText_{};
@@ -91,7 +88,6 @@ private:
     QAction *modeActionSetR9k{};
     QAction *modeActionSetFollowers{};
 
-    SvgButton *followButton_{};
     SvgButton *manageChannelButton_{};
 
     SvgButton *moderationButton_{};
@@ -99,7 +95,6 @@ private:
     SvgButton *statsButton_{};
     SvgButton *youtubeRefreshButton_{};
     LabelButton *sendTargetButton_{};
-    DrawnButton *addButton_{};
 
     QPoint dragStart_{};
     bool dragging_{false};

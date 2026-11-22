@@ -20,10 +20,12 @@
 #include "messages/Message.hpp"
 #include "providers/emoji/Emojis.hpp"
 #include "providers/links/ImagePreview.hpp"
+#include "providers/links/LinkResolver.hpp"
 #include "providers/twitch/ClipPreview.hpp"
 #include "providers/twitch/TwitchEmotes.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
+#include "singletons/StreamerMode.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/DebugCount.hpp"
 #include "util/Variant.hpp"
@@ -1726,8 +1728,9 @@ namespace {
 QString titleFromTooltip(const QString &tooltip)
 {
     static const QRegularExpression bold(
-        QStringLiteral("<b>(.*?)</b>"),
-        QRegularExpression::DotMatchesEverythingOption);
+        QStringLiteral(R"(<(?:b|strong)\b[^>]*>(.*?)</(?:b|strong)>)"),
+        QRegularExpression::DotMatchesEverythingOption |
+            QRegularExpression::CaseInsensitiveOption);
     const auto match = bold.match(tooltip);
     if (!match.hasMatch())
     {
@@ -1768,6 +1771,24 @@ void LinkElement::watchLinkInfo()
     QObject::connect(
         &this->linkInfo_, &LinkInfo::stateChanged, &this->linkInfo_,
         [this](LinkInfo::State state) {
+            if (state == LinkInfo::State::Errored &&
+                this->linkInfo_.isTransientFailure() &&
+                getSettings()->showLinkTitles && this->titleText_.isEmpty() &&
+                !this->autoTitleRetryScheduled_)
+            {
+                // A temporary failure must not turn automatic titles into
+                // hover-only titles. Retry once after the resolver's cooldown.
+                this->autoTitleRetryScheduled_ = true;
+                QTimer::singleShot(std::max(0, this->linkInfo_.retryDelay()) + 50,
+                                   Qt::PreciseTimer, &this->linkInfo_, [this] {
+                    if (!isAppAboutToQuit() && tryGetApp() &&
+                        getSettings()->showLinkTitles &&
+                        this->linkInfo_.canResolve())
+                    {
+                        getApp()->getLinkResolver()->resolve(&this->linkInfo_);
+                    }
+                });
+            }
             if (state != LinkInfo::State::Resolved)
             {
                 return;
@@ -1782,6 +1803,10 @@ void LinkElement::watchLinkInfo()
             {
                 host = host.mid(4);
             }
+            if (title.compare(host, Qt::CaseInsensitive) == 0 || title.endsWith(u':'))
+            {
+                return;
+            }
             this->titleText_ = host.isEmpty()
                                    ? title
                                    : title + QStringLiteral(" (") + host +
@@ -1793,12 +1818,19 @@ void LinkElement::watchLinkInfo()
 void LinkElement::addToContainer(MessageLayoutContainer &container,
                                  const MessageLayoutContext &ctx)
 {
+    if (this->matchesFlags(ctx.flags) && this->linkInfo_.canResolve() &&
+        ((getSettings()->showLinkTitles && this->titleText_.isEmpty()) ||
+         getSettings()->unshortLinks))
+    {
+        getApp()->getLinkResolver()->resolve(&this->linkInfo_);
+    }
     const auto &source =
         getSettings()->lowercaseDomains ? this->lowercase_ : this->original_;
 
     // "Page title (domain)" instead of the address, like Chatterino+.
     if (!this->titleText_.isEmpty() && getSettings()->showLinkTitles)
     {
+        container.markLinkTitle(this, this->linkInfo_.originalUrl());
         this->words_ = this->titleText_.split(u' ', Qt::SkipEmptyParts);
         TextElement::addToContainer(container, ctx);
         this->words_ = source;
@@ -1847,29 +1879,15 @@ void LinkElement::addToContainer(MessageLayoutContainer &container,
         }
     }
 
-    this->words_ = segments;
-
-    // Temporarily disable trailing space so URL segments render contiguously
-    // (no visible gap between "example.com" and "/path").
-    bool originalTrailingSpace = this->trailingSpace;
-    this->trailingSpace = false;
-
-    // Lay out all segments except the last with no trailing space
-    if (!this->words_.isEmpty())
+    // TextElement inserts spaces BETWEEN its words. Feed it one URL segment
+    // at a time so wrapping and copying preserve the original address.
+    const bool originalTrailingSpace = this->trailingSpace;
+    for (qsizetype i = 0; i < segments.size(); ++i)
     {
-        QStringList allButLast = this->words_.mid(0, this->words_.size() - 1);
-        QString lastWord = this->words_.last();
-
-        this->words_ = allButLast;
-        TextElement::addToContainer(container, ctx);
-
-        // Lay out the last segment with the original trailing space setting
-        this->trailingSpace = originalTrailingSpace;
-        this->words_ = {lastWord};
+        this->words_ = {segments[i]};
+        this->trailingSpace = originalTrailingSpace && i + 1 == segments.size();
         TextElement::addToContainer(container, ctx);
     }
-
-    // Restore words_ for any subsequent use (e.g. copy, tooltip)
     this->words_ = source;
     this->trailingSpace = originalTrailingSpace;
 }
@@ -2656,12 +2674,25 @@ std::string_view WhisperReplyElement::type() const
 ImagePreviewElement::ImagePreviewElement(QString url)
     : MessageElement(MessageElementFlag::Text)
     , url_(std::move(url))
+    , previewInfo_(this->url_)
 {
     this->setLink({Link::Url, this->url_});
-    if (getSettings()->showImagePreviews)
-    {
-        imagepreview::request(this->url_);
-    }
+    QObject::connect(&this->previewInfo_, &LinkInfo::stateChanged, &this->previewInfo_,
+                     [this](LinkInfo::State state) {
+                         if (state == LinkInfo::State::Resolved && this->previewInfo_.hasThumbnail())
+                         {
+                             scheduleRelayout();
+                         }
+                         else if (state == LinkInfo::State::Errored && !this->recoveryScheduled_ &&
+                                  this->previewInfo_.isTransientFailure())
+                         {
+                             // Ask visible views to reconsider a transient failure once,
+                             // even in a quiet chat. Destruction of this message cancels it.
+                             this->recoveryScheduled_ = true;
+                             QTimer::singleShot(this->previewInfo_.retryDelay() + 100,
+                                                Qt::PreciseTimer, &this->previewInfo_, &scheduleRelayout);
+                         }
+                     });
 }
 
 void ImagePreviewElement::addToContainer(MessageLayoutContainer &container,
@@ -2671,7 +2702,14 @@ void ImagePreviewElement::addToContainer(MessageLayoutContainer &container,
     {
         return;
     }
-    auto image = imagepreview::get(this->url_);
+    if (getSettings()->streamerModeHideLinkThumbnails)
+    {
+        if (auto *mode = getApp()->getStreamerMode(); mode && mode->isEnabled())
+        {
+            return;
+        }
+    }
+    auto image = imagepreview::getOrRequest(this->previewInfo_);
     if (!image)
     {
         return;
@@ -2685,22 +2723,19 @@ void ImagePreviewElement::addToContainer(MessageLayoutContainer &container,
     // on a line of its own: the room is the whole width, not what the text
     // left over
     container.breakLine();
-    // the thumbnail is at most 300 px wide; small pictures stay small
+    // Keep a small inset around the picture even in narrow splits.
     QSizeF size = QSizeF(pixmap->size()) * scale;
-    const QSizeF most(std::min<qreal>(container.remainingWidth(), 280 * scale),
-                      160 * scale);
+    const auto inset = 3 * scale;
+    const QSizeF most(std::max<qreal>(1, std::min<qreal>(container.remainingWidth(), 300 * scale) - 2 * inset),
+                      172 * scale);
     if (size.width() > most.width() || size.height() > most.height())
     {
         size.scale(most, Qt::KeepAspectRatio);
     }
-    if (size.width() < 12 * scale || size.height() < 12 * scale)
-    {
-        return;
-    }
     container.addElement(
         (new ImagePreviewLayoutElement(
              *this, std::move(image),
-             QSizeF(size.width(), size.height() + 5 * scale), scale))
+             QSizeF(size.width() + 2 * inset, size.height() + 2 * inset + 5 * scale), scale))
             ->setLink(this->getLink()));
 }
 

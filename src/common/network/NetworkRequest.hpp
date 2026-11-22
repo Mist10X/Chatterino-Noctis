@@ -50,7 +50,9 @@ public:
     NetworkRequest hideRequestBody() &&;
 
     NetworkRequest payload(const QByteArray &payload) &&;
-    NetworkRequest cache() &&;
+    /// A non-idempotent POST must not rewind or follow a redirect.
+    NetworkRequest singleUseUpload() &&;
+    NetworkRequest cache(bool refresh = false) &&;
 
     NetworkRequest caller(const QObject *caller) &&;
     NetworkRequest header(const char *headerName, const char *value) &&;

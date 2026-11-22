@@ -230,7 +230,18 @@ QSize ResizingTextEdit::sizeHint() const
 QSize ResizingTextEdit::minimumSizeHint() const
 {
     auto hint = QTextEdit::minimumSizeHint();
-    hint.setHeight(this->heightForWidth(hint.width()));
+    // The minimum width is a hypothetical, very narrow scroll-area hint,
+    // not the width the parent has actually allocated. Measuring the current
+    // text there can force several lines of minimum height even when the
+    // same text fits on one line in the real input. The minimum is one line;
+    // heightForWidth() still sizes the real content (including emotes) at
+    // the width chosen by the layout.
+    const auto margins = this->contentsMargins();
+    const auto padding = this->viewportMargins();
+    const auto lineHeight = QFontMetricsF(this->font()).height() +
+                            2 * this->document()->documentMargin();
+    hint.setHeight(margins.top() + padding.top() + qCeil(lineHeight) +
+                   padding.bottom() + margins.bottom() + 5);
     return hint;
 }
 

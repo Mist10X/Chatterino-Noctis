@@ -27,6 +27,7 @@ namespace chatterino {
 class ChannelView;
 class MessageView;
 class SplitHeader;
+class WhisperConversationPicker;
 class PinnedMessageBanner;
 class PollBanner;
 class PredictionBanner;
@@ -76,6 +77,10 @@ public:
     IndirectChannel getIndirectChannel() const;
     ChannelPtr getChannel() const;
     ChannelPtr getSelectedChannel() const;
+    QString whisperPeer() const;
+    /// Select a local whisper conversation without overwriting another
+    /// conversation's unsent draft or sending anything.
+    bool selectWhisperPeer(const QString &login);
     void setChannel(IndirectChannel newChannel);
 
     void setFilters(const QList<QUuid> ids);
@@ -106,7 +111,6 @@ public:
     /// re-applies the channel's current data, then refreshes visibility.
     void recoverDismissedBanners();
     void updateLastReadMessage();
-    void setIsTopRightSplit(bool value);
     void scheduleDeferredTwitchRefresh(bool interactive = false);
 
     void drag();
@@ -216,7 +220,6 @@ private:
     bool perSplitHidePinnedMessage_{};
     bool perSplitHidePrediction_{};
     bool perSplitHidePoll_{};
-    bool isTopRightSplit_{};
 
     bool isMouseOver_{};
     bool isDragging_{};
@@ -231,6 +234,7 @@ private:
 
     QVBoxLayout *const vbox_;
     SplitHeader *const header_;
+    WhisperConversationPicker *whisperConversations_{};
     PinnedMessageBanner *const pinnedBanner_;
     PredictionBanner *const predictionBanner_;
     PollBanner *const pollBanner_;

@@ -39,56 +39,15 @@ void SwitchSplitItem::action()
 
 void SwitchSplitItem::paint(QPainter *painter, const QRect &rect) const
 {
-    painter->save();
-
-    painter->setRenderHint(QPainter::Antialiasing, true);
-
-    painter->setPen(getApp()->getThemes()->splits.header.text);
-    painter->setBrush(Qt::SolidPattern);
-    painter->setFont(
-        getApp()->getFonts()->getFont(FontStyle::UiMediumBold, 1.0));
-
-    QRect iconRect(rect.topLeft(), ICON_SIZE);
-    this->icon_.paint(painter, iconRect, Qt::AlignLeft | Qt::AlignVCenter);
-
     if (this->split_)
     {
-        const auto availableTextWidth = rect.width() - iconRect.width();
-        const auto &channelName = this->split_->getChannel()->getName();
-        const auto channelNameWidth =
-            std::min(painter->fontMetrics().horizontalAdvance(channelName),
-                     availableTextWidth);
-        QRect leftTextRect = QRect(iconRect.topRight(),
-                                   QSize(channelNameWidth, iconRect.height()));
-
-        painter->drawText(leftTextRect, Qt::AlignLeft | Qt::AlignVCenter,
-                          channelName);
-
-        QRect rightTextRect = QRect(
-            leftTextRect.topRight(),
-            QSize(availableTextWidth - channelNameWidth, iconRect.height()));
-
-        painter->setFont(
-            getApp()->getFonts()->getFont(FontStyle::UiMedium, 1.0));
-        painter->drawText(rightTextRect, Qt::AlignRight | Qt::AlignVCenter,
-                          this->container_->getTab()->getTitle());
+        this->paintRow(painter, rect, this->split_->getChannel()->getName(),
+                       this->container_->getTab()->getTitle());
     }
-    else if (!this->split_ && this->container_)
+    else
     {
-        QRect textRect =
-            QRect(iconRect.topRight(),
-                  QSize(rect.width() - iconRect.width(), iconRect.height()));
-
-        painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter,
-                          this->container_->getTab()->getTitle());
+        this->paintRow(painter, rect, this->container_->getTab()->getTitle());
     }
-
-    painter->restore();
-}
-
-QSize SwitchSplitItem::sizeHint(const QRect &rect) const
-{
-    return QSize(rect.width(), ICON_SIZE.height());
 }
 
 }  // namespace chatterino

@@ -75,7 +75,7 @@ QString errorResultToString(const sol::protected_function_result &result)
 
     return u"(no error message) "
            "Unless an error without a message string was explicitly thrown, "
-           "this is a bug in Chatterino. Please report this."_s;
+           "this is a bug in Chatterino Noctis. Please report this."_s;
 }
 
 void logError(Plugin *plugin, QStringView context, const QString &msg)

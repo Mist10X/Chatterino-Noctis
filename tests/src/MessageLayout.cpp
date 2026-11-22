@@ -138,8 +138,7 @@ protected:
     void SetUp() override
     {
         this->app.settings.clientDetectionIcon = false;
-        // This mock has no 7TV paint provider. Real IRC notices contain
-        // username links, whose animated paint hook otherwise consults it.
+        // Keep animated username paints out of these moderation marker images.
         this->app.settings.displaySevenTVPaints = false;
         this->app.settings.hideModerated = false;
         this->app.settings.hideModerationActions = false;
@@ -197,21 +196,23 @@ protected:
                 std::move(copied)};
     }
 
-    static QRect redBounds(const QImage &image)
+    static QRect indicatorBounds(const QImage &image, float scale = 1.F)
     {
-        // The punishment box's left edge sits in the margin before the
-        // timestamp; any tinted pixel there means a box was drawn.
-        const QColor bg(24, 25, 32);
+        // The box starts inside the eight-unit text margin. Compare with the
+        // same row outside it so whole-row moderation and selection overlays
+        // cannot masquerade as an indicator, including on high-DPI displays.
+        const int margin = int(8 * scale * image.devicePixelRatio());
         QRect bounds;
         for (int y = 0; y < image.height(); ++y)
         {
-            for (int x = 0; x < std::min(8, image.width()); ++x)
+            const QColor bg = image.pixelColor(0, y);
+            for (int x = 1; x < std::min(margin, image.width()); ++x)
             {
                 const auto color = image.pixelColor(x, y);
                 if (std::abs(color.red() - bg.red()) +
                         std::abs(color.green() - bg.green()) +
                         std::abs(color.blue() - bg.blue()) >
-                    30)
+                    4)
                 {
                     const QRect pixel(x, y, 1, 1);
                     bounds = bounds.isNull() ? pixel : bounds.united(pixel);
@@ -276,7 +277,7 @@ TEST_F(PunishmentIndicatorTest, UsesTypedFlagsRatherThanSystemOrMessageText)
     for (const auto &test : cases)
     {
         SCOPED_TRACE(test.name);
-        EXPECT_EQ(!redBounds(this->paint(indicatorMessage(test.flags)).image)
+        EXPECT_EQ(!indicatorBounds(this->paint(indicatorMessage(test.flags)).image)
                        .isNull(),
                   test.stripe);
     }
@@ -296,7 +297,7 @@ TEST_F(PunishmentIndicatorTest, BoxDoesNotChangeLayoutOrCopyText)
             ASSERT_EQ(marked.height, plain.height);
             ASSERT_EQ(marked.lines, plain.lines);
             ASSERT_EQ(marked.copyText, plain.copyText);
-            EXPECT_FALSE(redBounds(marked.image).isNull());
+            EXPECT_FALSE(indicatorBounds(marked.image, scale).isNull());
         }
     }
 }
@@ -307,7 +308,7 @@ TEST_F(PunishmentIndicatorTest, SurvivesSelectionHistoryFadeAndDisabledOverlay)
         indicatorMessage({MessageFlag::Timeout, MessageFlag::Disabled,
                           MessageFlag::RecentMessage}),
         1.F, 1., true);
-    EXPECT_FALSE(redBounds(marked.image).isNull());
+    EXPECT_FALSE(indicatorBounds(marked.image).isNull());
 }
 
 TEST_F(PunishmentIndicatorTest, HiddenActionsDoNotLeaveAnIndicator)
@@ -317,7 +318,7 @@ TEST_F(PunishmentIndicatorTest, HiddenActionsDoNotLeaveAnIndicator)
         this->paint(indicatorMessage({MessageFlag::System, MessageFlag::Timeout,
                                       MessageFlag::ModerationAction}));
     EXPECT_EQ(hidden.lines, 0);
-    EXPECT_TRUE(redBounds(hidden.image).isNull());
+    EXPECT_TRUE(indicatorBounds(hidden.image).isNull());
 }
 
 TEST_F(PunishmentIndicatorTest,
@@ -340,7 +341,7 @@ TEST_F(PunishmentIndicatorTest,
         ASSERT_TRUE(message->flags.has(MessageFlag::Timeout));
         [&] {
             SCOPED_TRACE("render IRC punishment");
-            EXPECT_FALSE(redBounds(this->paint(message).image).isNull());
+            EXPECT_FALSE(indicatorBounds(this->paint(message).image).isNull());
         }();
         addOrReplaceChannelTimeout(
             messages, message, time,
@@ -355,7 +356,7 @@ TEST_F(PunishmentIndicatorTest,
     ASSERT_EQ(messages.size(), 1);
     EXPECT_EQ(messages.front()->count, 2U);
     EXPECT_TRUE(messages.front()->flags.has(MessageFlag::Timeout));
-    EXPECT_FALSE(redBounds(this->paint(messages.front()).image).isNull());
+    EXPECT_FALSE(indicatorBounds(this->paint(messages.front()).image).isNull());
 
     auto original = indicatorMessage({});
     original->loginName = "user";
@@ -365,7 +366,7 @@ TEST_F(PunishmentIndicatorTest,
     auto deletion = MessageBuilder::makeDeletionMessageFromIRC(original);
     EXPECT_TRUE(deletion->flags.has(MessageFlag::Deletion));
     EXPECT_FALSE(original->flags.has(MessageFlag::Deletion));
-    EXPECT_FALSE(redBounds(this->paint(deletion).image).isNull());
+    EXPECT_FALSE(indicatorBounds(this->paint(deletion).image).isNull());
 }
 
 TEST_F(PunishmentIndicatorTest,
@@ -391,7 +392,7 @@ TEST_F(PunishmentIndicatorTest,
     auto deletion = builder.release();
     ASSERT_TRUE(deletion->flags.has(MessageFlag::Deletion));
     EXPECT_TRUE(deletion->toJson()["flags"].toString().endsWith("|Deletion"));
-    EXPECT_FALSE(redBounds(this->paint(deletion).image).isNull());
+    EXPECT_FALSE(indicatorBounds(this->paint(deletion).image).isNull());
 }
 
 }  // namespace

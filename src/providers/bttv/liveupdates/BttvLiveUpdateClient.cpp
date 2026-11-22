@@ -8,10 +8,12 @@
 #include "providers/bttv/BttvBadges.hpp"
 #include "providers/bttv/BttvLiveUpdates.hpp"
 #include "providers/bttv/liveupdates/BttvLiveUpdateMessages.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QSet>
 #include <QStringBuilder>
 
 namespace chatterino {
@@ -91,7 +93,13 @@ void BttvLiveUpdateClient::onMessage(const QByteArray &msg)
         {
             auto *bttvBadges = app->getBttvBadges();
             auto badgeID = bttvBadges->registerBadge(message.badgeObject);
-            bttvBadges->assignBadgeToUser(badgeID, UserId{message.userID});
+            const UserId userID{message.userID};
+            const auto previous = bttvBadges->getBadge(userID);
+            bttvBadges->assignBadgeToUser(badgeID, userID);
+            if (previous != bttvBadges->getBadge(userID))
+            {
+                notifyChatBadgesChangedForUsers({userID.string});
+            }
         }
     }
     else

@@ -170,18 +170,10 @@ private:
             return;
         }
 
-        QString color = "#9aa0a6";
-        if (isValid)
-        {
-            color = "#47d16c";
-        }
-        else if (isError)
-        {
-            color = "#ff7b72";
-        }
-
         label->setText(uiText(text));
-        label->setStyleSheet(QString("QLabel { color: %1; }").arg(color));
+        label->setForegroundRole(isValid   ? QPalette::Link
+                                 : isError ? QPalette::BrightText
+                                           : QPalette::PlaceholderText);
     }
 
     static QTableWidgetItem *readOnlyItem(const QString &text)
@@ -223,7 +215,7 @@ private:
         layout->setSpacing(8);
 
         auto *description = new QLabel(
-            uiText("Sign in with Device Login. Leafyrino will open Twitch Activate "
+            uiText("Sign in with Device Login. Chatterino Noctis will open Twitch Activate "
             "and copy an 8-character code for you to paste there."),
             tab);
         description->setWordWrap(true);
@@ -242,8 +234,8 @@ private:
         codeRow->setSpacing(8);
         this->deviceCodeLabel_ = new QLabel(DEVICE_CODE_PLACEHOLDER, tab);
         this->deviceCodeLabel_->setStyleSheet(
-            "QLabel { font-family: monospace; font-size: 14px; font-weight: "
-            "700; color: #efeff1; background: #18181b; padding: 4px 10px; "
+            "QLabel { font-family: monospace; font-weight: 600; "
+            "color: palette(text); background: palette(base); padding: 4px 10px; "
             "border-radius: 4px; }");
         this->deviceCodeLabel_->setMinimumWidth(
             this->deviceCodeLabel_->fontMetrics().horizontalAdvance(
@@ -501,7 +493,7 @@ private:
         if (!opened)
         {
             box.setInformativeText(
-                uiText("Leafyrino could not open Twitch automatically. Open "
+                uiText("Chatterino Noctis could not open Twitch automatically. Open "
                 "https://www.twitch.tv/ yourself, then follow the same steps."));
         }
         box.exec();
@@ -614,7 +606,7 @@ private:
                     box.setWindowTitle(uiText("Browser Error"));
                     box.setIcon(QMessageBox::Warning);
                     box.setText(
-                        uiText("Leafyrino could not open your browser automatically."));
+                        uiText("Chatterino Noctis could not open your browser automatically."));
                     box.setInformativeText(uiText("Please go to ") + verificationUri +
                                            uiText(" and enter the code displayed."));
                     box.exec();
@@ -728,7 +720,7 @@ private:
         {
             this->devicePollIntervalMs_ += 5000;
             setLabelStatus(this->deviceStatusLabel_,
-                           uiText("Twitch asked Leafyrino to poll more slowly. "
+                           uiText("Twitch asked Chatterino Noctis to poll more slowly. "
                            "Still waiting for approval..."));
             this->devicePollTimer_->start(this->devicePollIntervalMs_);
             return;

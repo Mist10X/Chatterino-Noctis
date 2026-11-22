@@ -2,10 +2,13 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "Chatterino Noctis"
-#define MyAppVersion "2.5.5"
+#ifndef NOCTIS_VERSION
+#error Pass the Noctis version from src/common/Mist1XVersion.hpp using /DNOCTIS_VERSION.
+#endif
+#define MyAppVersion NOCTIS_VERSION
 #define MyAppPublisher "Mist1X"
 #define MyAppURL "https://github.com/Mist10X/chatterino-noctis"
-#define MyAppExeName "Leafyrino.exe"
+#define MyAppExeName "Chatterino Noctis.exe"
 #define MyAppProductName "Chatterino Noctis"
 #define MyAppDescription "Chatterino Noctis Installer"
 #define MyAppCopyright "Copyright (C) Leafyzito"
@@ -17,25 +20,25 @@
 #endif
 
 #ifndef STAGING_DIR_NAME
-#define STAGING_DIR_NAME "Leafyrino"
+#define STAGING_DIR_NAME "ChatterinoNoctis"
 #endif
 #ifndef VCRT_ARCH
 #define VCRT_ARCH "x64"
 #endif
 
 ; Set to the build part of the VCRT version
-#ifndef SHIPPED_VCRT_BUILD
-#define SHIPPED_VCRT_BUILD 0
+#ifndef SHIPPED_VCRT_MINOR
+#define SHIPPED_VCRT_MINOR 0
 #endif
 ; Set to the string representation of the VCRT version
 #ifndef SHIPPED_VCRT_VERSION
-#define SHIPPED_VCRT_VERSION ?
+#define SHIPPED_VCRT_VERSION "Visual C++ Runtime"
 #endif
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
-AppId={{F5FE6614-04D4-4D32-8600-0ABA0AC113A4}
+AppId={{0599F313-9171-4ABA-9366-C234F95C7018}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 VersionInfoVersion={#MyAppVersion}
@@ -44,30 +47,28 @@ VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppDescription}
 VersionInfoProductName={#MyAppProductName}
 VersionInfoCopyright={#MyAppCopyright}
-VersionInfoOriginalFileName=Leafyrino Updater.exe
+VersionInfoOriginalFileName=Chatterino Noctis Updater.exe
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 AppCopyright={#MyAppCopyright}
-DefaultDirName={autopf}\Leafyrino
+DefaultDirName={localappdata}\Programs\Chatterino Noctis
 UninstallDisplayName={#MyAppName}
 DisableProgramGroupPage=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 #ifdef IS_ARM
 ArchitecturesAllowed=arm64
 #endif
-;Uncomment the following line to run in non administrative install mode (install for current user only.)
-;PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequired=lowest
 OutputDir=out
 ; This is defined by the build-installer.ps1 script,
 ; but kept optional for regular use.
 #ifdef INSTALLER_BASE_NAME
 OutputBaseFilename={#INSTALLER_BASE_NAME}
 #else
-OutputBaseFilename=Leafyrino.Installer
+OutputBaseFilename=ChatterinoNoctis.Installer
 #endif
 #ifdef SETUP_ICON_FILE
 SetupIconFile={#SETUP_ICON_FILE}
@@ -93,7 +94,6 @@ SetupWindowTitle=Setup - %1 (Nightly)
 Name: "vcredist"; Description: "Install the required {#SHIPPED_VCRT_VERSION} ({code:VCRTDescription})"; Check: NeedsNewVCRT();
 ; GroupDescription: "{cm:AdditionalIcons}"; 
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
-Name: "freshinstall"; Description: "Fresh install (delete old settings/logs)"; Flags: unchecked
 
 [Files]
 Source: "{#WORKING_DIR}{#STAGING_DIR_NAME}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -109,16 +109,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; AppUserMo
 Filename: {tmp}\vc_redist.{#VCRT_ARCH}.exe; Parameters: "/install /passive /norestart"; StatusMsg: "Installing 64-bit Windows Universal Runtime..."; Flags: waituntilterminated; Tasks: vcredist
 ; Run chatterino
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall runasoriginaluser
-
-[InstallDelete]
-; Delete cache on install
-Type: filesandordirs; Name: "{userappdata}\Chatterino2\Cache"
-; Delete %appdata%\Chatterino2 on freshinstall
-Type: filesandordirs; Name: "{userappdata}\Chatterino2"; Tasks: freshinstall
-
-[UninstallDelete]
-; Delete cache on uninstall
-Type: filesandordirs; Name: "{userappdata}\Chatterino2\Cache"
 
 [Code]
 // Get the VCRT version as a string. Null if the version could not be found.

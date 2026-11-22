@@ -68,14 +68,37 @@ void PluginController::initialize(Settings &settings)
         }
         else
         {
-            this->plugins_.clear();
+            this->unloadPlugins();
         }
     });
 }
 
+void PluginController::unregisterCommands(const AnyPlugin &value)
+{
+    if (const auto *oPlugin = std::get_if<PluginPtr>(&value))
+    {
+        const auto &plugin = *oPlugin;
+
+        for (const auto &[cmd, _] : plugin->ownedCommands)
+        {
+            getApp()->getCommands()->unregisterPluginCommand(cmd);
+        }
+    }
+}
+
+void PluginController::unloadPlugins()
+{
+    for (const auto &[id, plugin] : this->plugins_)
+    {
+        this->unregisterCommands(plugin);
+    }
+    this->plugins_.clear();
+    this->queueChangeNotification();
+}
+
 void PluginController::loadPlugins()
 {
-    this->plugins_.clear();
+    this->unloadPlugins();
     auto dir = QDir(this->paths.pluginsDirectory);
     qCDebug(chatterinoLua) << "Loading plugins in" << dir.path();
     for (const auto &info :
@@ -340,15 +363,7 @@ bool PluginController::reload(const QString &id)
         return false;
     }
 
-    if (const auto *oPlugin = std::get_if<PluginPtr>(&it->second))
-    {
-        const auto &plugin = *oPlugin;
-
-        for (const auto &[cmd, _] : plugin->ownedCommands)
-        {
-            getApp()->getCommands()->unregisterPluginCommand(cmd);
-        }
-    }
+    this->unregisterCommands(it->second);
 
     const auto loadDir = std::visit(variant::Overloaded{
                                         [&](const PluginPtr &plugin) {

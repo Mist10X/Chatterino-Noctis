@@ -2,6 +2,7 @@
 
 #include "Application.hpp"
 #include "common/Channel.hpp"
+#include "common/UiLanguage.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "controllers/emotes/EmoteController.hpp"
 #include "controllers/highlights/HighlightController.hpp"
@@ -730,13 +731,32 @@ MessagePtrMut KickMessageBuilder::makePinnedMessage(KickChannel *channel,
 
     KickMessageBuilder builder(systemMessage, channel,
                                QDateTime::currentDateTime());
+    builder->channelNotice = Message::ChannelNotice::Pinned;
     QString text;
-    builder.appendMentionedUser(creator, text);
-    builder.appendOrEmplaceSystemTextAndUpdate(u"pinned"_s, text);
-    builder
-        .emplace<TextElement>(messageText, MessageElementFlag::Text,
-                              MessageColor::Text)
-        ->setLink({Link::JumpToMessage, messageID});
+    QString action;
+    if (creator.isEmpty())
+    {
+        action = messageText.isEmpty() ? uiText("A message was pinned.")
+                                       : uiText("Pinned message:");
+    }
+    else
+    {
+        builder.appendMentionedUser(creator, text);
+        action = messageText.isEmpty() ? uiText("pinned a message.")
+                                       : uiText("pinned:");
+    }
+    builder.appendOrEmplaceText(action, MessageColor::System);
+    text += action;
+    if (!messageText.isEmpty())
+    {
+        auto *preview = builder.emplace<TextElement>(
+            messageText, MessageElementFlag::Text, MessageColor::Text);
+        if (!messageID.isEmpty())
+        {
+            preview->setLink({Link::JumpToMessage, messageID});
+        }
+        text += u' ' + messageText;
+    }
 
     builder->searchText = text;
     builder->messageText = text;
@@ -998,7 +1018,7 @@ MessagePtrMut KickMessageBuilder::makeRoomModeMessage(
 
 void KickMessageBuilder::appendChannelName()
 {
-    QString channelName('#' + this->channel()->getName());
+    const QString channelName = this->channel()->getName();
     Link link(Link::JumpToChannel, u":kick:" % this->channel()->getName());
 
     this->emplace<TextElement>(channelName, MessageElementFlag::ChannelName,

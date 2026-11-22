@@ -15,7 +15,7 @@
             "KeyOnly\nX-My-Header": "1",
             "My-Header": "Foo"
         },
-        "Name": "Chatterino Image Uploader Settings",
+        "Name": "Chatterino Noctis Image Uploader Settings",
         "RequestMethod": "POST",
         "RequestURL": "https://example.com",
         "URL": "foo{bar}baz",

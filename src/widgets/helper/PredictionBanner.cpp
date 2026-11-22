@@ -5,10 +5,12 @@
 
 #include "Application.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
+#include "singletons/Fonts.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "util/Helpers.hpp"
 #include "widgets/dialogs/PredictionDialog.hpp"
+#include "widgets/helper/BannerText.hpp"
 #include "widgets/splits/Split.hpp"
 
 #include <QCursor>
@@ -32,9 +34,6 @@ namespace chatterino {
 
 namespace {
 constexpr int BASE_ICON_SIZE = 14;
-constexpr int BASE_HEADER_FONT_SIZE = 11;
-constexpr int BASE_TITLE_FONT_SIZE = 15;
-constexpr int BASE_OUTCOME_FONT_SIZE = 12;
 constexpr int BASE_BAR_HEIGHT = 4;
 constexpr int BASE_TOP_MARGIN = 4;
 constexpr int BASE_BOTTOM_MARGIN = 13;
@@ -220,15 +219,10 @@ PredictionBanner::PredictionBanner(Split *split, QWidget *parent)
     this->metadataLabel_->setMinimumWidth(0);
     this->metadataLabel_->setSizePolicy(QSizePolicy::Expanding,
                                         QSizePolicy::Preferred);
-    this->metadataLabel_->setStyleSheet(
-        QString("font-size: %1px;").arg(BASE_HEADER_FONT_SIZE));
     this->topLayout_->addWidget(this->metadataLabel_, 1, Qt::AlignBottom);
 
     this->timerLabel_ = new QLabel(this);
     this->timerLabel_->setObjectName("PredictionTimer");
-    this->timerLabel_->setStyleSheet(
-        QString("font-size: %1px; font-weight: bold;")
-            .arg(BASE_HEADER_FONT_SIZE));
     this->timerLabel_->setContentsMargins(0, 0, 4, 0);
     this->timerLabel_->setAlignment(Qt::AlignRight | Qt::AlignBottom);
     this->timerLabel_->hide();
@@ -272,14 +266,12 @@ PredictionBanner::PredictionBanner(Split *split, QWidget *parent)
     this->titleLabel_ = new QLabel(this);
     this->titleLabel_->setObjectName("PredictionTitle");
     this->titleLabel_->setContentsMargins(0, 0, 0, 0);
+    this->titleLabel_->setTextFormat(Qt::PlainText);
     this->titleLabel_->setWordWrap(false);
     this->titleLabel_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     this->titleLabel_->setMinimumWidth(0);
     this->titleLabel_->setSizePolicy(QSizePolicy::Ignored,
                                      QSizePolicy::Preferred);
-    this->titleLabel_->setStyleSheet(
-        QString("font-size: %1px; font-weight: bold;")
-            .arg(BASE_TITLE_FONT_SIZE));
     this->contentLayout_->addWidget(this->titleLabel_);
 
     this->outcomeRowLayout_ = new QHBoxLayout();
@@ -294,8 +286,6 @@ PredictionBanner::PredictionBanner(Split *split, QWidget *parent)
     this->leftOutcomeLabel_->setMinimumWidth(0);
     this->leftOutcomeLabel_->setSizePolicy(QSizePolicy::Ignored,
                                            QSizePolicy::Preferred);
-    this->leftOutcomeLabel_->setStyleSheet(
-        QString("font-size: %1px;").arg(BASE_OUTCOME_FONT_SIZE));
     this->outcomeRowLayout_->addWidget(this->leftOutcomeLabel_, 1);
 
     this->rightOutcomeLabel_ = new QLabel(this);
@@ -307,8 +297,6 @@ PredictionBanner::PredictionBanner(Split *split, QWidget *parent)
     this->rightOutcomeLabel_->setMinimumWidth(0);
     this->rightOutcomeLabel_->setSizePolicy(QSizePolicy::Ignored,
                                             QSizePolicy::Preferred);
-    this->rightOutcomeLabel_->setStyleSheet(
-        QString("font-size: %1px;").arg(BASE_OUTCOME_FONT_SIZE));
     this->outcomeRowLayout_->addWidget(this->rightOutcomeLabel_, 1);
     this->contentLayout_->addLayout(this->outcomeRowLayout_);
 
@@ -346,6 +334,13 @@ PredictionBanner::PredictionBanner(Split *split, QWidget *parent)
             this->update();
         },
         this->managedConnections_);
+
+    this->signalHolder_.managedConnect(getApp()->getFonts()->fontChanged, [this] {
+        if (this->isVisible())
+        {
+            this->scaleChangedEvent(this->scale());
+        }
+    });
 
     getSettings()->predictionBannerContentScale.connect(
         [this](const float &, auto) {
@@ -761,10 +756,7 @@ void PredictionBanner::updateTimer()
         {
             this->timerLabel_->setText(uiText("LIVE"));
             this->timerLabel_->show();
-            this->timerLabel_->setStyleSheet(
-                QString("font-size: %1px; color: %2; font-weight: 700;")
-                    .arg(this->headerFontSize_)
-                    .arg(predictionpalette::accent().name()));
+            setBannerTextColor(this->timerLabel_, predictionpalette::accent());
             return;
         }
 
@@ -795,10 +787,7 @@ void PredictionBanner::updateTimer()
             timerColor = predictionpalette::locked();
         }
 
-        this->timerLabel_->setStyleSheet(
-            QString("font-size: %1px; color: %2; font-weight: 700;")
-                .arg(this->headerFontSize_)
-                .arg(timerColor.name()));
+        setBannerTextColor(this->timerLabel_, timerColor);
     }
     else
     {
@@ -807,30 +796,21 @@ void PredictionBanner::updateTimer()
             this->timerLabel_->setText(
                 stateTextForPrediction(*this->prediction_));
             this->timerLabel_->show();
-            this->timerLabel_->setStyleSheet(
-                QString("font-size: %1px; color: %2; font-weight: 700;")
-                    .arg(this->headerFontSize_)
-                    .arg(predictionpalette::locked().name()));
+            setBannerTextColor(this->timerLabel_, predictionpalette::locked());
         }
         else if (this->prediction_->status == "RESOLVED")
         {
             this->timerLabel_->setText(
                 stateTextForPrediction(*this->prediction_));
             this->timerLabel_->show();
-            this->timerLabel_->setStyleSheet(
-                QString("font-size: %1px; color: %2; font-weight: 700;")
-                    .arg(this->headerFontSize_)
-                    .arg(predictionpalette::won().name()));
+            setBannerTextColor(this->timerLabel_, predictionpalette::won());
         }
         else if (this->prediction_->status == "CANCELED")
         {
             this->timerLabel_->setText(
                 stateTextForPrediction(*this->prediction_));
             this->timerLabel_->show();
-            this->timerLabel_->setStyleSheet(
-                QString("font-size: %1px; color: %2; font-weight: 700;")
-                    .arg(this->headerFontSize_)
-                    .arg(predictionpalette::muted().name()));
+            setBannerTextColor(this->timerLabel_, predictionpalette::muted());
         }
         else
         {
@@ -851,12 +831,6 @@ void PredictionBanner::scaleChangedEvent(float scale)
     BaseWidget::scaleChangedEvent(scale);
 
     int iconSize = scaledInt(BASE_ICON_SIZE * scale);
-    this->headerFontSize_ = scaledInt(BASE_HEADER_FONT_SIZE * scale);
-    const float contentScale = predictionBannerContentScale();
-    this->titleFontSize_ =
-        scaledInt(BASE_TITLE_FONT_SIZE * scale * contentScale);
-    this->outcomeFontSize_ =
-        scaledInt(BASE_OUTCOME_FONT_SIZE * scale * contentScale);
 
     this->icon_->setFixedSize(iconSize, iconSize);
     this->closeButton_->setFixedSize(iconSize, iconSize);
@@ -924,27 +898,20 @@ void PredictionBanner::themeChangedEvent()
 
 void PredictionBanner::updateLabelStyles()
 {
-    QColor textColor = this->theme->splits.header.text;
-    auto dimColor = QString("rgba(%1, %2, %3, 0.55)")
-                        .arg(textColor.red())
-                        .arg(textColor.green())
-                        .arg(textColor.blue());
-    int hfs = this->headerFontSize_;
-    int tfs = this->titleFontSize_;
-    int ofs = this->outcomeFontSize_;
-
-    this->metadataLabel_->setStyleSheet(
-        QString("font-size: %1px; color: %2;").arg(hfs).arg(dimColor));
-    // the question reads like chat text, the rest stays quiet
-    this->titleLabel_->setStyleSheet(
-        QString("font-size: %1px; font-weight: bold; color: %2;")
-            .arg(tfs)
-            .arg(this->theme->messages.textColors.regular.name()));
-    this->leftOutcomeLabel_->setStyleSheet(
-        QString("font-size: %1px;").arg(ofs));
-    this->rightOutcomeLabel_->setStyleSheet(
-        QString("font-size: %1px;").arg(ofs));
-    this->timerLabel_->setStyleSheet(QString("font-size: %1px;").arg(hfs));
+    auto *fonts = getApp()->getFonts();
+    const auto scale = this->scale();
+    const auto contentScale = scale * predictionBannerContentScale();
+    const auto caption = fonts->getFont(FontStyle::ChatMediumSmall, scale);
+    auto timerFont = caption;
+    timerFont.setWeight(QFont::DemiBold);
+    this->metadataLabel_->setFont(caption);
+    this->timerLabel_->setFont(timerFont);
+    this->titleLabel_->setFont(fonts->getFont(FontStyle::ChatMediumBold, contentScale));
+    const auto outcome = fonts->getFont(FontStyle::ChatMedium, contentScale);
+    this->leftOutcomeLabel_->setFont(outcome);
+    this->rightOutcomeLabel_->setFont(outcome);
+    setBannerTextColor(this->metadataLabel_, this->theme->messages.textColors.system);
+    setBannerTextColor(this->titleLabel_, this->theme->messages.textColors.regular);
 }
 
 void PredictionBanner::paintEvent(QPaintEvent * /*event*/)

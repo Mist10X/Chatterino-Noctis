@@ -65,6 +65,8 @@ public:
 
 private:
     void loadPlugins();
+    void unregisterCommands(const AnyPlugin &plugin);
+    void unloadPlugins();
     void load(const QFileInfo &index, const QDir &pluginDir,
               const PluginMeta &meta);
 

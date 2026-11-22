@@ -63,7 +63,7 @@ bool hasAvatarForChannel(const QString &channelName)
 bool isRunningFromBuildTree()
 {
     const QFileInfo appFile(QCoreApplication::applicationFilePath());
-    if (appFile.fileName().compare(u"Leafyrino.exe"_s, Qt::CaseInsensitive) !=
+    if (appFile.fileName().compare(u"Chatterino Noctis.exe"_s, Qt::CaseInsensitive) !=
         0)
     {
         return false;

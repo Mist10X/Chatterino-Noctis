@@ -484,10 +484,15 @@ ExpectedStr<WindowLayout> WindowLayout::loadFromFile(const QString &path)
         if (windowObj.value("state") == "minimized")
         {
             window.state_ = WindowDescriptor::State::Minimized;
+            window.restoreMaximized_ = windowObj.value("restoreMaximized").toBool(false);
         }
         else if (windowObj.value("state") == "maximized")
         {
             window.state_ = WindowDescriptor::State::Maximized;
+        }
+        else if (windowObj.value("state") == "fullscreen")
+        {
+            window.state_ = WindowDescriptor::State::FullScreen;
         }
 
         // Load window geometry
@@ -498,6 +503,13 @@ ExpectedStr<WindowLayout> WindowLayout::loadFromFile(const QString &path)
             int height = windowObj.value("height").toInt(-1);
 
             window.geometry_ = QRect(x, y, width, height);
+            const auto native = windowObj.value("nativeNormalGeometry").toObject();
+            window.nativeNormalGeometry_ = QRect(native.value("x").toInt(),
+                native.value("y").toInt(), native.value("width").toInt(),
+                native.value("height").toInt());
+            const auto visible = windowObj.value("nativeVisibleGeometry").toObject();
+            window.nativeVisibleGeometry_ = QRect(visible.value("x").toInt(),
+                visible.value("y").toInt(), visible.value("width").toInt(), visible.value("height").toInt());
         }
 
         // Load popup ID

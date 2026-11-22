@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+#include "common/network/ServiceHealth.hpp"
 #include "providers/seventv/SeventvEmotes.hpp"
 
 #include "Application.hpp"
@@ -379,8 +380,14 @@ void SeventvEmotes::loadChannelEmotes(
                 auto cleanup = qScopeGuard([loadAttempt] {
                     *loadAttempt = {};
                 });
-                writeProviderEmotesCache(channelId, "seventv", raw);
+                servicehealth::success(servicehealth::SevenTV);
                 const auto emoteSet = json["emote_set"].toObject();
+                if (!emoteSet["emotes"].isArray())
+                {
+                    qCWarning(chatterinoSeventv) << "Invalid channel emote set response";
+                    return;
+                }
+                writeProviderEmotesCache(channelId, "seventv", raw);
                 const auto parsedEmotes = emoteSet["emotes"].toArray();
 
                 auto emoteMap =
@@ -391,7 +398,7 @@ void SeventvEmotes::loadChannelEmotes(
                     << "Loaded" << emoteMap.size() << "7TV Channel Emotes for"
                     << channelId << "manual refresh:" << manualRefresh;
 
-                if (hasEmotes)
+                if (callback)
                 {
                     auto user = json["user"].toObject();
 
@@ -405,12 +412,9 @@ void SeventvEmotes::loadChannelEmotes(
                         connectionIdx++;
                     }
 
-                    if (callback)
-                    {
-                        callback(std::move(emoteMap),
-                                 {user["id"].toString(),
-                                  emoteSet["id"].toString(), connectionIdx});
-                    }
+                    callback(std::move(emoteMap),
+                             {user["id"].toString(),
+                              emoteSet["id"].toString(), connectionIdx});
                 }
 
                 auto shared = channel.lock();
@@ -457,8 +461,11 @@ void SeventvEmotes::loadChannelEmotes(
                         {
                             return;
                         }
+                        servicehealth::failed(servicehealth::SevenTV,
+                            QUrl(QStringLiteral("https://7tv.io/v3/users/twitch/") + channelId), result);
                         if (result.status() == 404)
                         {
+                            servicehealth::success(servicehealth::SevenTV);
                             qCWarning(chatterinoSeventv)
                                 << "Error occurred fetching 7TV emotes: "
                                 << result.parseJson();
@@ -473,6 +480,7 @@ void SeventvEmotes::loadChannelEmotes(
                             qCWarning(chatterinoSeventv)
                                 << "Error fetching 7TV emotes for channel"
                                 << channelId << ", error" << errorString;
+                            if (!manualRefresh && servicehealth::relevant(result)) return;
                             shared->addSystemMessage(
                                 QStringLiteral("Failed to fetch 7TV channel "
                                                "emotes. (Error: %1)")
@@ -512,9 +520,14 @@ void SeventvEmotes::loadKickChannelEmotes(
                 auto cleanup = qScopeGuard([loadAttempt] {
                     *loadAttempt = {};
                 });
+                const auto emoteSet = json["emote_set"].toObject();
+                if (!emoteSet["emotes"].isArray())
+                {
+                    qCWarning(chatterinoSeventv) << "Invalid channel emote set response";
+                    return;
+                }
                 writeProviderEmotesCache(u"kick." % QString::number(userID),
                                          "seventv", raw);
-                const auto emoteSet = json["emote_set"].toObject();
                 const auto parsedEmotes = emoteSet["emotes"].toArray();
 
                 auto emoteMap =
@@ -525,7 +538,7 @@ void SeventvEmotes::loadKickChannelEmotes(
                     << "Loaded" << emoteMap.size() << "7TV Channel Emotes for"
                     << userID << "manual refresh:" << manualRefresh;
 
-                if (hasEmotes)
+                if (callback)
                 {
                     auto user = json["user"].toObject();
 
@@ -539,12 +552,9 @@ void SeventvEmotes::loadKickChannelEmotes(
                         connectionIdx++;
                     }
 
-                    if (callback)
-                    {
-                        callback(std::move(emoteMap),
-                                 {user["id"].toString(),
-                                  emoteSet["id"].toString(), connectionIdx});
-                    }
+                    callback(std::move(emoteMap),
+                             {user["id"].toString(),
+                              emoteSet["id"].toString(), connectionIdx});
                 }
 
                 auto shared = channel.lock();

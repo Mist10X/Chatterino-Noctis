@@ -11,13 +11,12 @@
 #include "providers/kick/KickApi.hpp"
 #include "providers/twitch/api/Helix.hpp"
 #include "singletons/Paths.hpp"
+#include "widgets/helper/RoundAvatar.hpp"
 
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QImage>
-#include <QPainter>
 #include <QTimer>
 #include <QUrl>
 
@@ -55,28 +54,6 @@ bool isFresh(const QFileInfo &file)
     auto age = std::chrono::milliseconds(
         file.lastModified().msecsTo(QDateTime::currentDateTime()));
     return age < FRESH_FOR;
-}
-
-QPixmap roundCrop(const QPixmap &source, int size)
-{
-    QImage image = source.toImage().scaled(size, size,
-                                           Qt::KeepAspectRatioByExpanding,
-                                           Qt::SmoothTransformation);
-    QImage out(size, size, QImage::Format_ARGB32_Premultiplied);
-    out.fill(Qt::transparent);
-
-    QPainter painter(&out);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(Qt::white);
-    painter.drawEllipse(QRectF(0, 0, size, size));
-    painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    painter.drawImage(QPoint((size - image.width()) / 2,
-                             (size - image.height()) / 2),
-                      image);
-    painter.end();
-
-    return QPixmap::fromImage(out);
 }
 
 }  // namespace
@@ -121,7 +98,7 @@ QPixmap TabAvatars::circle(const QString &login, int size)
     {
         return *circle;
     }
-    return *this->circles_.insert(key, roundCrop(it->pixmap, size));
+    return *this->circles_.insert(key, roundAvatarPixmap(it->pixmap, size));
 }
 
 void TabAvatars::queueLookup(const QString &login)

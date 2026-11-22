@@ -202,7 +202,7 @@ void TechnorinoPage::initExtra()
                                         shortenString(newPath, 50) + "</a>";
 
                 cachePath->setText(pathShortened);
-                cachePath->setToolTip(newPath);
+                cachePath->setToolTip(newPath.size() > 50 ? newPath : QString{});
             });
     }
 }

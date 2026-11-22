@@ -15,7 +15,7 @@ class Settings;
 class Updates;
 class Modes;
 
-bool activateExistingGuiInstance(const Paths &paths);
+bool activateExistingGuiInstance(const Paths &paths, const QString &channel);
 
 /// Local socket that a second start of this same profile uses to bring the
 /// running window forward; unique per profile folder.

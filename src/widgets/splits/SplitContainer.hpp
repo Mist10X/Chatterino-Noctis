@@ -204,6 +204,8 @@ public:
     void setSelected(Split *split);
 
     std::vector<Split *> getSplits() const;
+    void setPermanentWhispersTab();
+    bool isPermanentWhispersTab() const;
 
     void refreshTab();
 
@@ -244,7 +246,6 @@ private:
 
     void addSplit(Split *split);
 
-    Split *getTopRightSplit(Node &node);
 
     void refreshTabTitle();
     void refreshTabLiveStatus();
@@ -256,7 +257,6 @@ private:
 
     std::shared_ptr<Node> baseNode_;
     Split *selected_{};
-    Split *topRight_{};
     bool disableLayouting_{};
 
     NotebookTab *tab_;

@@ -22,6 +22,7 @@
 #include "singletons/Theme.hpp"
 #include "util/Helpers.hpp"
 #include "util/MultiChannel.hpp"
+#include "widgets/helper/NoctisTooltip.hpp"
 
 #include <pajlada/signals/signal.hpp>
 #include <QAbstractListModel>
@@ -29,6 +30,7 @@
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QHelpEvent>
 #include <QHBoxLayout>
 #include <QItemSelectionModel>
 #include <QJsonArray>
@@ -729,10 +731,6 @@ public:
         {
             return platformName(it->platform);
         }
-        if (role == Qt::ToolTipRole)
-        {
-            return QStringLiteral("@%1").arg(it->login);
-        }
         return {};
     }
 
@@ -1067,6 +1065,9 @@ public:
         this->font_ = font;
         this->boldFont_ = boldFont;
         this->scale_ = scale;
+        this->rowHeight_ = std::max(qRound(28 * scale),
+            std::max(QFontMetrics(font).height(), QFontMetrics(boldFont).height()) +
+                qRound(6 * scale));
         this->showPlatforms_ = showPlatforms;
         this->showChannels_ = showChannels;
     }
@@ -1074,7 +1075,7 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &,
                    const QModelIndex &) const override
     {
-        return {0, std::max(22, qRound(28 * this->scale_))};
+        return {0, this->rowHeight_};
     }
 
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
@@ -1098,16 +1099,19 @@ public:
         const auto content = option.rect.adjusted(padding, 0, -padding, 0);
         if (kind == RowKind::Group)
         {
+            const auto count = localizeNumbers(index.data(GroupCountRole).toInt());
+            const auto countWidth = QFontMetrics(this->font_).horizontalAdvance(count);
+            const auto title = content.adjusted(0, 0, -countWidth - padding, 0);
             painter->setFont(this->boldFont_);
             painter->setPen(this->accent_);
-            painter->drawText(content, Qt::AlignLeft | Qt::AlignVCenter,
-                              index.data(Qt::DisplayRole).toString());
+            painter->drawText(title, Qt::AlignLeft | Qt::AlignVCenter,
+                              painter->fontMetrics().elidedText(
+                                  index.data(Qt::DisplayRole).toString(),
+                                  Qt::ElideRight, std::max(0, title.width())));
 
             painter->setFont(this->font_);
             painter->setPen(this->muted_);
-            painter->drawText(
-                content, Qt::AlignRight | Qt::AlignVCenter,
-                localizeNumbers(index.data(GroupCountRole).toInt()));
+            painter->drawText(content, Qt::AlignRight | Qt::AlignVCenter, count);
         }
         else if (kind == RowKind::Status)
         {
@@ -1119,35 +1123,12 @@ public:
         else
         {
             const auto display = index.data(DisplayNameRole).toString();
-            const auto login = index.data(LoginRole).toString();
             painter->setFont(this->font_);
             painter->setPen(this->text_);
 
             const QFontMetrics metrics(this->font_);
             const auto displayWidth = metrics.horizontalAdvance(display);
-            const auto showLogin =
-                display.compare(login, Qt::CaseInsensitive) != 0;
-            QStringList secondaryParts;
-            if (showLogin)
-            {
-                secondaryParts.push_back(QStringLiteral("@%1").arg(login));
-            }
-            if (this->showPlatforms_)
-            {
-                secondaryParts.push_back(
-                    index.data(PlatformNameRole).toString());
-            }
-            if (this->showChannels_)
-            {
-                const auto channel =
-                    index.data(ChannelDisplayNameRole).toString();
-                if (!channel.isEmpty())
-                {
-                    secondaryParts.push_back(
-                        QStringLiteral("#%1").arg(channel));
-                }
-            }
-            const auto secondary = secondaryParts.join(QStringLiteral(" · "));
+            const auto secondary = this->secondaryText(index);
             const auto showSecondary = !secondary.isEmpty();
             const auto available = content.width();
             const auto titleWidth =
@@ -1175,7 +1156,61 @@ public:
         painter->restore();
     }
 
+    bool helpEvent(QHelpEvent *event, QAbstractItemView *view,
+                   const QStyleOptionViewItem &option,
+                   const QModelIndex &index) override
+    {
+        if (event->type() != QEvent::ToolTip ||
+            static_cast<RowKind>(index.data(RowKindRole).toInt()) !=
+                RowKind::User)
+        {
+            return QStyledItemDelegate::helpEvent(event, view, option, index);
+        }
+
+        const QFontMetrics metrics(this->font_);
+        const int padding = qRound(8 * this->scale_);
+        const int available = option.rect.width() - 2 * padding;
+        const auto display = index.data(DisplayNameRole).toString();
+        const int displayWidth = metrics.horizontalAdvance(display);
+        const auto secondary = this->secondaryText(index);
+        const auto titleWidth =
+            secondary.isEmpty()
+                ? available
+                : std::min(displayWidth, std::max(80, available * 2 / 3));
+        if (displayWidth > titleWidth ||
+            (!secondary.isEmpty() &&
+             metrics.horizontalAdvance(secondary) >
+                 std::max(0, available - titleWidth - padding)))
+        {
+            const auto hint = secondary.isEmpty() ? display
+                                                 : display + '\n' + secondary;
+            noctistooltip::showText(event->globalPos(), hint,
+                                    view->viewport(), option.rect);
+            return true;
+        }
+        noctistooltip::hideText();
+        return true;
+    }
+
 private:
+    QString secondaryText(const QModelIndex &index) const
+    {
+        QStringList parts;
+        const auto display = index.data(DisplayNameRole).toString();
+        const auto login = index.data(LoginRole).toString();
+        if (display.compare(login, Qt::CaseInsensitive) != 0)
+            parts.push_back(QStringLiteral("@%1").arg(login));
+        if (this->showPlatforms_)
+            parts.push_back(index.data(PlatformNameRole).toString());
+        if (this->showChannels_)
+        {
+            const auto channel = index.data(ChannelDisplayNameRole).toString();
+            if (!channel.isEmpty())
+                parts.push_back(channel);
+        }
+        return parts.join(QStringLiteral(" · "));
+    }
+
     QColor background_;
     QColor hover_;
     QColor selected_;
@@ -1185,6 +1220,7 @@ private:
     QFont font_;
     QFont boldFont_;
     float scale_ = 1.F;
+    int rowHeight_ = 28;
     bool showPlatforms_ = false;
     bool showChannels_ = false;
 };
@@ -1287,7 +1323,7 @@ public:
         this->search->setPlaceholderText(uiText("Search User..."));
         this->search->setClearButtonEnabled(true);
         this->refresh = new QPushButton(uiText(QStringLiteral("Refresh")), this->q);
-        this->refresh->setToolTip(
+        this->refresh->setAccessibleDescription(
             uiText(QStringLiteral("Refresh all available sources")));
         tools->addWidget(this->search, 1);
         tools->addWidget(this->refresh);
@@ -1317,6 +1353,8 @@ public:
         summary->setSpacing(1);
         this->counts = new QLabel(this->q);
         this->sources = new QLabel(this->q);
+        this->counts->setWordWrap(true);
+        this->sources->setWordWrap(true);
         this->sources->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         summary->addWidget(this->counts);
         summary->addWidget(this->sources);
@@ -2200,11 +2238,19 @@ public:
         this->sources->setPalette(mutedPalette);
 
         const auto font =
-            getApp()->getFonts()->getFont(FontStyle::UiMedium, scale);
+            getApp()->getFonts()->getFont(FontStyle::ChatMedium, scale);
         const auto boldFont =
-            getApp()->getFonts()->getFont(FontStyle::UiMediumBold, scale);
+            getApp()->getFonts()->getFont(FontStyle::ChatMediumBold, scale);
         this->q->setFont(font);
         this->counts->setFont(boldFont);
+        this->q->getLayoutContainer()->setStyleSheet(QStringLiteral(
+            "QLineEdit, QPushButton { border: 1px solid palette(mid); "
+            "border-radius: %1px; padding: %2px %3px; }"
+            "QLineEdit { background: palette(base); color: palette(text); }"
+            "QPushButton { background: palette(base); color: palette(button-text); }"
+            "QPushButton:hover, QPushButton:checked { background: palette(highlight); }"
+            "QLineEdit:focus, QPushButton:focus { border-color: palette(link); }")
+            .arg(qRound(6 * scale)).arg(qRound(3 * scale)).arg(qRound(7 * scale)));
         this->delegate->setAppearance(
             theme->tabs.regular.backgrounds.regular,
             theme->tabs.regular.backgrounds.hover,
@@ -2269,6 +2315,9 @@ ChatterListWidget::ChatterListWidget(std::shared_ptr<Channel> channel,
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->setMinimumSize(360, 360);
     this->d_->initialize();
+    this->signalHolder_.managedConnect(getApp()->getFonts()->fontChanged, [this] {
+        this->d_->applyTheme(this->scale());
+    });
     this->themeChangedEvent();
 }
 

@@ -10,12 +10,12 @@ namespace chatterino {
 
 class GeneralPageView;
 
-class LeafyrinoPage : public SettingsPage
+class NoctisPage : public SettingsPage
 {
     Q_OBJECT
 
 public:
-    LeafyrinoPage();
+    NoctisPage();
 
     bool filterElements(const QString &query) override;
 

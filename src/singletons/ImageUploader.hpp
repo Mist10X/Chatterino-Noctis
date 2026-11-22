@@ -8,8 +8,10 @@
 #include <QHash>
 #include <QMimeData>
 #include <QMutex>
+#include <QSet>
 #include <QString>
 #include <QStringView>
+#include <QTextCursor>
 
 #include <functional>
 #include <memory>
@@ -20,6 +22,7 @@ namespace chatterino {
 class ResizingTextEdit;
 class Channel;
 class NetworkResult;
+struct Message;
 using ChannelPtr = std::shared_ptr<Channel>;
 
 }  // namespace chatterino
@@ -72,6 +75,9 @@ public:
     /// earlier session), or empty.
     QString deletionLinkFor(const QString &imageLink);
 
+    /// Public URLs uploaded from this installation and posted by a saved Twitch account.
+    QStringList deletableImages(const Message &message);
+
     /// Deletes a picture uploaded from here. kappa.lol and its sister sites
     /// are asked directly; for other sites the deletion page is opened in
     /// the browser. `done` gets an error text on failure (GUI thread).
@@ -99,9 +105,11 @@ private:
                    const QString &deletionLink, ChannelPtr channel);
 
     QMutex uploadMutex_;
+    QTextCursor pastePosition_;
     std::queue<RawImageData> uploadQueue_;
     /// imagepreview::key of the picture -> its deletion link
     QHash<QString, QString> deletionLinks_;
+    QSet<QString> deletionsInFlight_;
     bool deletionLinksLoaded_ = false;
 };
 }  // namespace chatterino

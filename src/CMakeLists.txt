@@ -16,7 +16,6 @@ set(SOURCE_FILES
         RunGui.cpp
         RunGui.hpp
 
-
         common/Args.cpp
         common/Args.hpp
         common/ChannelChatters.cpp
@@ -654,6 +653,8 @@ set(SOURCE_FILES
         providers/twitch/TwitchIrc.hpp
         providers/twitch/TwitchIrcServer.cpp
         providers/twitch/TwitchIrcServer.hpp
+        providers/twitch/ModdexRoles.cpp
+        providers/twitch/ModdexRoles.hpp
         providers/twitch/TwitchNameHistory.cpp
         providers/twitch/TwitchNameHistory.hpp
         providers/twitch/TwitchReadConnectionPool.cpp
@@ -728,6 +729,7 @@ set(SOURCE_FILES
         singletons/Toasts.hpp
         singletons/Updates.cpp
         singletons/Updates.hpp
+        singletons/UpdateCheckPolicy.hpp
         singletons/WindowManager.cpp
         singletons/WindowManager.hpp
 
@@ -1016,7 +1018,10 @@ set(SOURCE_FILES
         widgets/helper/KickAccountSwitchWidget.hpp
         widgets/helper/LiveIndicator.cpp
         widgets/helper/LiveIndicator.hpp
+        widgets/helper/MessageMenu.hpp
         widgets/helper/MessageView.cpp
+        widgets/helper/NoctisTooltip.cpp
+        widgets/helper/NoctisTooltip.hpp
         widgets/helper/MessageView.hpp
         widgets/helper/MicroNotebook.cpp
         widgets/helper/MicroNotebook.hpp
@@ -1065,6 +1070,8 @@ set(SOURCE_FILES
         widgets/helper/ScrollbarHighlight.hpp
         widgets/helper/SearchPopup.cpp
         widgets/helper/SearchPopup.hpp
+        widgets/helper/UsercardRolesPage.cpp
+        widgets/helper/UsercardRolesPage.hpp
         widgets/helper/SettingsDialogTab.cpp
         widgets/helper/SettingsDialogTab.hpp
         widgets/helper/ColorSwatch.cpp
@@ -1103,8 +1110,8 @@ set(SOURCE_FILES
         widgets/settingspages/GeneralPage.hpp
         widgets/settingspages/GeneralPageView.cpp
         widgets/settingspages/GeneralPageView.hpp
-        widgets/settingspages/LeafyrinoPage.cpp
-        widgets/settingspages/LeafyrinoPage.hpp
+        widgets/settingspages/NoctisPage.cpp
+        widgets/settingspages/NoctisPage.hpp
         widgets/settingspages/TechnorinoPage.cpp
         widgets/settingspages/TechnorinoPage.hpp
         widgets/settingspages/HighlightingPage.cpp
@@ -1113,8 +1120,6 @@ set(SOURCE_FILES
         widgets/settingspages/IgnoresPage.hpp
         widgets/settingspages/KeyboardSettingsPage.cpp
         widgets/settingspages/KeyboardSettingsPage.hpp
-        widgets/settingspages/LeafyrinoPage.cpp
-        widgets/settingspages/LeafyrinoPage.hpp
         widgets/settingspages/ModerationPage.cpp
         widgets/settingspages/ModerationPage.hpp
         widgets/settingspages/MoltorinoPage.cpp
@@ -1142,6 +1147,8 @@ set(SOURCE_FILES
         widgets/splits/InputHighlighter.hpp
         widgets/splits/Split.cpp
         widgets/splits/Split.hpp
+        widgets/splits/WhisperConversationPicker.cpp
+        widgets/splits/WhisperConversationPicker.hpp
         widgets/splits/SplitCommon.hpp
         widgets/splits/SplitMpsOverlay.cpp
         widgets/splits/SplitMpsOverlay.hpp
@@ -1297,7 +1304,7 @@ function(set_target_directory_hierarchy TARGET)
         PROPERTIES
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/${ARGV1}"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/${ARGV1}"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${ARGV1}"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${ARGV1}$<0:>"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/${ARGV1}"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/${ARGV1}"
         RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/bin/${ARGV1}"
@@ -1332,7 +1339,23 @@ if (BUILD_APP)
     target_link_libraries(${EXECUTABLE_PROJECT} PUBLIC ${LIBRARY_PROJECT})
 
     set_target_directory_hierarchy(${EXECUTABLE_PROJECT})
-    set_target_properties(${EXECUTABLE_PROJECT} PROPERTIES OUTPUT_NAME "Leafyrino")
+    if (WIN32 OR APPLE)
+        set_target_properties(chatterino PROPERTIES OUTPUT_NAME "Chatterino Noctis")
+    else()
+        set_target_properties(chatterino PROPERTIES OUTPUT_NAME "chatterino-noctis")
+    endif()
+
+    if (WIN32)
+        add_executable(noctis-legacy-launcher WIN32 ../tools/release/LegacyLauncher.cpp
+            "${CMAKE_BINARY_DIR}/autogen/compatibility.rc")
+        set_target_directory_hierarchy(noctis-legacy-launcher)
+        set_target_properties(noctis-legacy-launcher PROPERTIES OUTPUT_NAME "Leafyrino")
+        if (MINGW)
+            target_link_options(noctis-legacy-launcher PRIVATE -municode)
+        endif()
+        add_dependencies(chatterino noctis-legacy-launcher)
+        install(TARGETS noctis-legacy-launcher RUNTIME DESTINATION .)
+    endif()
 
     if (WIN32)
         if (WINDEPLOYQT_PATH)
@@ -1371,7 +1394,8 @@ if (BUILD_APP)
             # windeployqt expects to find openssl in '/bin' but we deploy it in '/'.
             list(APPEND WINDEPLOYQT_COMMAND_ARGV --force-openssl)
         endif()
-        string(REPLACE ";" " " WINDEPLOYQT_COMMAND "${WINDEPLOYQT_COMMAND_ARGV}")
+        list(JOIN WINDEPLOYQT_COMMAND_ARGV "\" \"" WINDEPLOYQT_COMMAND)
+        set(WINDEPLOYQT_COMMAND "\"${WINDEPLOYQT_COMMAND}\"")
 
         set(MOLTORINO_SUPPORT_7ZIP_DIR "${CMAKE_SOURCE_DIR}/tools/support/7zip")
         if (EXISTS "${MOLTORINO_SUPPORT_7ZIP_DIR}/7z.exe")
@@ -1402,7 +1426,7 @@ if (BUILD_APP)
             DESTINATION .
             OPTIONAL)
 
-        install(CODE "message(\"-- Running: ${WINDEPLOYQT_COMMAND} --dir \\\"\${CMAKE_INSTALL_PREFIX}\\\"\")")
+        install(CODE "message(STATUS \"Deploying Qt runtime\")")
         install(CODE "execute_process(COMMAND ${WINDEPLOYQT_COMMAND} --dir \"\${CMAKE_INSTALL_PREFIX}\" COMMAND_ERROR_IS_FATAL ANY)")
     elseif (APPLE)
         install(TARGETS ${EXECUTABLE_PROJECT}
@@ -1522,14 +1546,15 @@ if (MSVC)
 endif ()
 
 if (APPLE AND BUILD_APP)
-    set_target_properties(${EXECUTABLE_PROJECT} PROPERTIES MACOSX_BUNDLE TRUE)
+    set_target_properties(${EXECUTABLE_PROJECT} PROPERTIES MACOSX_BUNDLE TRUE
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<0:>")
     set_target_properties(${EXECUTABLE_PROJECT}
         PROPERTIES
         MACOSX_BUNDLE_BUNDLE_NAME "Chatterino Noctis"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.leafyzito.leafyrino"
-        MACOSX_BUNDLE_LONG_VERSION_STRING "${PROJECT_VERSION}"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
-        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_LONG_VERSION_STRING "${NOCTIS_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${NOCTIS_VERSION}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${NOCTIS_VERSION}"
         MACOSX_BUNDLE_ICON_FILE chatterino.icns
         )
 endif ()

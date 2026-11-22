@@ -45,7 +45,9 @@ public:
     bool hasCaller{};
     QPointer<QObject> caller;
     bool cache{};
+    bool refreshCache{};
     bool executeConcurrently{};
+    bool singleUseUpload{};
     /// Hide the request body in logs
     bool hideRequestBody = false;
 
@@ -74,6 +76,11 @@ public:
     void emitFinally();
 
     QString typeString() const;
+    QString diagnosticUrl() const
+    {
+        return this->request.url().toString(QUrl::RemoveQuery | QUrl::RemoveFragment |
+                                            QUrl::RemoveUserInfo);
+    }
 
 private:
     QString hash_;

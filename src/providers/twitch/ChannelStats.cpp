@@ -17,10 +17,22 @@
 #include "providers/seventv/SeventvEmotes.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
 #include "providers/twitch/TwitchEmotes.hpp"
+#include "singletons/Paths.hpp"
 #include "util/PostToThread.hpp"
 
 #include <pajlada/signals/scoped-connection.hpp>
 #include <QSet>
+#include <QCoreApplication>
+#include <QDir>
+#include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QRegularExpression>
+#include <QSaveFile>
+#include <QThreadPool>
 #include <QTimer>
 #include <QTimeZone>
 
@@ -36,13 +48,14 @@ namespace {
 /// longer than this is counted for its last day.
 constexpr qint64 KEEP_MINUTES = 24 * 60;
 constexpr int KEEP_NEW_CHATTERS = 500;
+constexpr int MAX_EVENTS = 500000;
 /// A shorter stretch before the first message in the chat is not worth
 /// asking the logs for.
 constexpr qint64 MIN_GAP_MS = 60 * 1000;
 /// The logs are read in pieces of this length (a busy chat writes ~10 MB/h).
-constexpr qint64 WINDOW_MS = 30 * 60 * 1000;
+constexpr qint64 WINDOW_MS = 5 * 60 * 1000;
 constexpr int LOG_TIMEOUT_MS = 60000;
-constexpr int EMOTES_GRACE_MS = 4000;
+
 
 /// rustlog mirrors, fastest first (the same ones the usercard reads)
 const QStringList LOG_MIRRORS{
@@ -71,12 +84,14 @@ struct Item {
     /// from the logs: Twitch emotes (id, name), made into emotes in the GUI
     /// thread
     std::vector<std::pair<QString, QString>> twitchEmotes;
+    QStringList cachedEmotes;
 };
 
 struct Tracked {
     std::weak_ptr<Channel> channel;
     std::unique_ptr<pajlada::Signals::ScopedConnection> appended;
     std::unique_ptr<pajlada::Signals::ScopedConnection> prepended;
+    std::unique_ptr<pajlada::Signals::ScopedConnection> filled;
     std::unique_ptr<pajlada::Signals::ScopedConnection> status;
     /// the stream the numbers are for (empty while offline)
     QString streamId;
@@ -86,6 +101,11 @@ struct Tracked {
     int generation = 0;
     /// some mirror had this channel's messages
     bool logsAnswered = false;
+    bool historyIncomplete = false;
+    qint64 moderationLogUntil = 0;
+    QString cachePath;
+    QByteArray cachePending;
+    bool cacheLoading = false;
     ChannelStatsData data;
 };
 
@@ -98,23 +118,94 @@ std::unordered_map<QString, Tracked> &tracked()
     return *map;
 }
 
+QString statsKey(const QString &login, bool anonymous)
+{
+    return anonymous ? login.toLower() + u":anonymous" : login.toLower();
+}
+
+int nextGeneration()
+{
+    static int next = 0;
+    return ++next;
+}
+
 Tracked *find(const QString &name, int generation)
 {
     auto it = tracked().find(name);
-    if (it == tracked().end() || it->second.generation != generation)
+    if (it == tracked().end() || it->second.generation != generation || it->second.channel.expired())
     {
         return nullptr;
     }
     return &it->second;
 }
 
-void add(Tracked &entry, const Item &item)
+// Only deduplicable chat records go into the local stream journal. It contains
+// statistics (not message bodies) and survives restarts independently of mirrors.
+QByteArray encodeItem(const Item &item)
+{
+    QJsonArray emotes;
+    for (const auto &emote : item.emotes)
+        emotes.append(emote->name.string);
+    for (const auto &name : item.cachedEmotes)
+        emotes.append(name);
+    return QJsonDocument(QJsonArray{item.id, item.login, item.name,
+        item.color.isValid() ? item.color.name() : QString(), item.ms,
+        item.first, emotes}).toJson(QJsonDocument::Compact) + '\n';
+}
+
+std::optional<Item> decodeItem(const QByteArray &line)
+{
+    const auto values = QJsonDocument::fromJson(line).array();
+    if (values.size() != 7 || values[0].toString().isEmpty() ||
+        values[1].toString().isEmpty())
+        return std::nullopt;
+    Item item;
+    item.id = values[0].toString();
+    item.login = values[1].toString();
+    item.name = values[2].toString();
+    item.color = QColor(values[3].toString());
+    item.ms = values[4].toInteger();
+    item.first = values[5].toBool();
+    for (const auto &value : values[6].toArray())
+        item.cachedEmotes.append(value.toString());
+    return item;
+}
+
+void flushCache(Tracked &entry)
+{
+    if (entry.cachePath.isEmpty() || entry.cacheLoading || entry.cachePending.isEmpty())
+        return;
+    QFile file(entry.cachePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append))
+        return;
+    const auto bytes = file.write(entry.cachePending);
+    if (bytes > 0)
+        entry.cachePending.remove(0, bytes);
+    file.flush();
+}
+
+void add(Tracked &entry, const Item &item, bool persist = true)
 {
     auto &data = entry.data;
+    if (data.sinceStreamStart && item.ms < data.since.toMSecsSinceEpoch())
+        return;
+    if (entry.seen.size() >= MAX_EVENTS || data.messages >= MAX_EVENTS)
+    {
+        data.countLimitReached = true;
+        return;
+    }
     if (!item.id.isEmpty())
     {
         if (entry.seen.contains(item.id))
         {
+            // Cached names can initially have no image. A matching live/log
+            // copy may provide its image without recounting the message.
+            for (const auto &emote : item.emotes)
+            {
+                if (auto it = data.emotes.find(emote->name.string);
+                    it != data.emotes.end() && !it->emote)
+                    it->emote = emote;
+            }
             return;
         }
         entry.seen.insert(item.id);
@@ -131,6 +222,8 @@ void add(Tracked &entry, const Item &item)
     }
 
     ++data.messages;
+    if (persist && !entry.cachePath.isEmpty() && !item.id.isEmpty())
+        entry.cachePending.append(encodeItem(item));
     auto &chatter = data.chatters[item.login];
     if (chatter.name.isEmpty() || !item.name.isEmpty())
     {
@@ -152,6 +245,7 @@ void add(Tracked &entry, const Item &item)
 
     const auto minute = item.ms / 60000;
     ++data.perMinute[minute];
+    data.incompleteMinutes.remove(minute);
     while (!data.perMinute.isEmpty() &&
            data.perMinute.lastKey() - data.perMinute.firstKey() > KEEP_MINUTES)
     {
@@ -167,6 +261,8 @@ void add(Tracked &entry, const Item &item)
         }
         ++use.uses;
     }
+    for (const auto &name : item.cachedEmotes)
+        ++data.emotes[name].uses;
 }
 
 std::optional<Item> itemFrom(const Message &message)
@@ -243,6 +339,122 @@ EmoteMaps emoteMapsOf(const std::shared_ptr<Channel> &channel)
     maps.push_back(app->getFfzEmotes()->emotes());
     std::erase(maps, nullptr);
     return maps;
+}
+
+void restoreCachedItems(const QString &name, int generation,
+                        const std::shared_ptr<std::vector<Item>> &items,
+                        size_t index)
+{
+    auto *entry = find(name, generation);
+    if (entry == nullptr)
+        return;
+    const auto maps = emoteMapsOf(entry->channel.lock());
+    const auto end = std::min(index + 1500, items->size());
+    for (; index < end; ++index)
+    {
+        auto &item = (*items)[index];
+        QStringList unresolved;
+        for (const auto &emoteName : item.cachedEmotes)
+        {
+            EmotePtr emote;
+            for (const auto &map : maps)
+            {
+                if (auto it = map->find(EmoteName{emoteName}); it != map->end())
+                {
+                    emote = it->second;
+                    break;
+                }
+            }
+            if (emote)
+                item.emotes.push_back(std::move(emote));
+            else
+                unresolved.append(emoteName);
+        }
+        item.cachedEmotes = std::move(unresolved);
+        add(*entry, item, false);
+    }
+    if (index < items->size())
+    {
+        QTimer::singleShot(0, [name, generation, items, index] {
+            restoreCachedItems(name, generation, items, index);
+        });
+        return;
+    }
+    entry->cacheLoading = false;
+    flushCache(*entry);
+}
+
+void startCache(const QString &name, Tracked &entry)
+{
+    // Twitch logins are safe path components; do not persist special channels.
+    if (name.isEmpty() || entry.streamId.isEmpty() || name.section(u':', 0, 0).contains(QRegularExpression("[^a-z0-9_]")))
+        return;
+    const QDir dir(getApp()->getPaths().settingsDirectory + "/stream-stats");
+    if (!QDir().mkpath(dir.absolutePath()))
+        return;
+    const auto path = dir.filePath(QString(name).replace(u':', u'-') + ".jsonl");
+    const auto header = QJsonDocument(QJsonArray{QStringLiteral("noctis-stats-v1"), entry.streamId})
+                            .toJson(QJsonDocument::Compact) + '\n';
+    bool existing = false;
+    {
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly))
+            existing = file.readLine() == header;
+    }
+    if (!existing)
+    {
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly) || file.write(header) != header.size() || !file.commit())
+            return;
+    }
+    entry.cachePath = path;
+    if (!existing)
+        return;
+    entry.cacheLoading = true;
+    const auto sinceMs = entry.data.since.toMSecsSinceEpoch();
+    QThreadPool::globalInstance()->start([name, path, sinceMs, generation = entry.generation] {
+        auto items = std::make_shared<std::vector<Item>>();
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly))
+        {
+            file.readLine();
+            while (!file.atEnd() && items->size() <= MAX_EVENTS)
+                if (auto item = decodeItem(file.readLine()); item && item->ms >= sinceMs)
+                    items->push_back(std::move(*item));
+        }
+        postToThread([name, generation, items] { restoreCachedItems(name, generation, items, 0); });
+    });
+}
+
+void ensureCacheTimer()
+{
+    static bool started = false;
+    if (started)
+        return;
+    started = true;
+    auto *timer = new QTimer(QCoreApplication::instance());
+    QObject::connect(timer, &QTimer::timeout, [] {
+        for (auto it = tracked().begin(); it != tracked().end();)
+        {
+            auto &entry = it->second;
+            const bool closed = entry.channel.expired();
+            if (closed)
+                entry.cacheLoading = false;
+            flushCache(entry);
+            if (closed)
+                it = tracked().erase(it);
+            else
+                ++it;
+        }
+    });
+    QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, [] {
+        for (auto &[name, entry] : tracked())
+        {
+            entry.cacheLoading = false;
+            flushCache(entry);
+        }
+    });
+    timer->start(2000);
 }
 
 std::vector<QByteArrayView> split(QByteArrayView text, char separator)
@@ -462,8 +674,30 @@ QString utcText(qint64 ms)
         .toString(QStringLiteral("yyyy-MM-dd'T'HH:mm:ss.zzz'Z'"));
 }
 
+struct WindowEvidence {
+    QSet<qint64> minutes;
+    bool answered = false;
+};
+
+// A gap of consecutive full minutes in a response is worth checking with
+// another mirror. Empty responses never establish complete coverage.
+bool needsFallback(const WindowEvidence &evidence, qint64 fromMs, qint64 toMs)
+{
+    if (evidence.minutes.isEmpty())
+        return true;
+    int gap = 0;
+    for (auto minute = (fromMs + 59999) / 60000; minute < toMs / 60000; ++minute)
+    {
+        gap = evidence.minutes.contains(minute) ? 0 : gap + 1;
+        if (gap >= 2)
+            return true;
+    }
+    return false;
+}
+
 void readWindow(const QString &name, int generation, qint64 fromMs,
-                qint64 untilMs, int mirror, int tried, bool failed);
+                qint64 untilMs, int mirror, int tried, bool failed,
+                std::shared_ptr<WindowEvidence> evidence = {});
 
 /// The next piece of the logs, or the end of reading.
 void nextWindow(const QString &name, int generation, qint64 fromMs,
@@ -480,9 +714,10 @@ void nextWindow(const QString &name, int generation, qint64 fromMs,
         // no mirror had any of it: the channel is not logged
         if (entry->data.history == ChannelStatsData::History::Loading)
         {
-            entry->data.history = entry->logsAnswered
-                                      ? ChannelStatsData::History::Done
-                                      : ChannelStatsData::History::Unavailable;
+            entry->data.history = !entry->logsAnswered
+                                      ? ChannelStatsData::History::Unavailable
+                                      : entry->historyIncomplete ? ChannelStatsData::History::Partial
+                                                                 : ChannelStatsData::History::Done;
         }
         return;
     }
@@ -490,11 +725,12 @@ void nextWindow(const QString &name, int generation, qint64 fromMs,
 }
 
 void readWindow(const QString &name, int generation, qint64 fromMs,
-                qint64 untilMs, int mirror, int tried, bool failed)
+                qint64 untilMs, int mirror, int tried, bool failed,
+                std::shared_ptr<WindowEvidence> evidence)
 {
     const auto toMs = std::min(fromMs + WINDOW_MS, untilMs);
     const auto url = QStringLiteral("%1/channel/%2?raw&from=%3&to=%4")
-                         .arg(LOG_MIRRORS[mirror], name, utcText(fromMs),
+                         .arg(LOG_MIRRORS[mirror], name.section(u':', 0, 0), utcText(fromMs),
                               utcText(toMs));
     auto *entry = find(name, generation);
     if (entry == nullptr)
@@ -502,23 +738,28 @@ void readWindow(const QString &name, int generation, qint64 fromMs,
         return;
     }
     auto maps = emoteMapsOf(entry->channel.lock());
+    if (!evidence)
+        evidence = std::make_shared<WindowEvidence>();
 
     // a mirror that does not have this piece: the next one is asked; when
     // none has it, the piece is skipped (404 means "no messages" too)
     const auto tryNext = [name, generation, fromMs, toMs, untilMs, mirror,
-                          tried](bool failure) {
+                          tried, evidence](bool failure) {
         const auto count = int(LOG_MIRRORS.size());
         if (tried + 1 < count)
         {
             readWindow(name, generation, fromMs, untilMs,
-                       (mirror + 1) % count, tried + 1, failure);
+                       (mirror + 1) % count, tried + 1, failure, evidence);
             return;
         }
-        if (failure)
+        if (failure || needsFallback(*evidence, fromMs, toMs))
         {
             if (auto *entry = find(name, generation))
             {
-                entry->data.history = ChannelStatsData::History::Partial;
+                entry->historyIncomplete = true;
+                for (auto minute = fromMs / 60000; minute <= (toMs - 1) / 60000; ++minute)
+                    if (!entry->data.perMinute.contains(minute))
+                        entry->data.incompleteMinutes.insert(minute);
             }
         }
         nextWindow(name, generation, toMs, untilMs, mirror);
@@ -527,20 +768,35 @@ void readWindow(const QString &name, int generation, qint64 fromMs,
     NetworkRequest(QUrl(url))
         .timeout(LOG_TIMEOUT_MS)
         .concurrent()
-        .onSuccess([name, generation, fromMs, toMs, untilMs, mirror,
+        .onSuccess([name, generation, fromMs, toMs, untilMs, mirror, evidence, tryNext,
                     maps = std::move(maps)](const NetworkResult &result) {
             auto items = parseLog(result.getData(), fromMs, toMs, maps);
-            postToThread([name, generation, toMs, untilMs, mirror,
+            postToThread([name, generation, fromMs, toMs, untilMs, mirror, evidence, tryNext,
                           items = std::move(items)]() mutable {
                 auto *entry = find(name, generation);
                 if (entry == nullptr)
                 {
                     return;
                 }
-                entry->logsAnswered = true;
+                if (!items.empty())
+                    entry->logsAnswered = true;
+                const bool alternate = evidence->answered;
+                evidence->answered |= !items.empty();
                 auto *twitchEmotes = getApp()->getEmotes()->getTwitchEmotes();
                 for (auto &item : items)
                 {
+                    if (item.kind == Item::Kind::Chat)
+                        evidence->minutes.insert(item.ms / 60000);
+                    // Moderation notices lack stable message IDs; don't count
+                    // the same event a second time on an overlapping mirror.
+                    if (alternate && item.id.isEmpty())
+                        continue;
+                    // The extended range intentionally overlaps the local
+                    // buffer. Preserve the former boundary for id-less
+                    // moderation events, which can't be deduplicated by ID.
+                    if (item.kind == Item::Kind::Moderation &&
+                        item.id.isEmpty() && item.ms >= entry->moderationLogUntil)
+                        continue;
                     for (const auto &[id, emoteName] : item.twitchEmotes)
                     {
                         item.emotes.push_back(twitchEmotes->getOrCreateEmote(
@@ -548,7 +804,10 @@ void readWindow(const QString &name, int generation, qint64 fromMs,
                     }
                     add(*entry, item);
                 }
-                nextWindow(name, generation, toMs, untilMs, mirror);
+                if (needsFallback(*evidence, fromMs, toMs))
+                    tryNext(false);
+                else
+                    nextWindow(name, generation, toMs, untilMs, mirror);
             });
         })
         .onError([name, generation, failed, tryNext](
@@ -562,8 +821,13 @@ void readWindow(const QString &name, int generation, qint64 fromMs,
                 if (status == 403)
                 {
                     // the channel opted out of being logged
-                    find(name, generation)->data.history =
-                        ChannelStatsData::History::Unavailable;
+                    auto *entry = find(name, generation);
+                    entry->data.history = entry->logsAnswered ? ChannelStatsData::History::Partial
+                                                              : ChannelStatsData::History::Unavailable;
+                    for (auto minute = entry->data.historyRead.toMSecsSinceEpoch() / 60000;
+                         minute <= entry->data.historyUntil.toMSecsSinceEpoch() / 60000; ++minute)
+                        if (!entry->data.perMinute.contains(minute))
+                            entry->data.incompleteMinutes.insert(minute);
                     return;
                 }
                 tryNext(failed || status != 404);
@@ -579,22 +843,26 @@ void readWindow(const QString &name, int generation, qint64 fromMs,
 void restart(const QString &name, Tracked &entry,
              const std::shared_ptr<Channel> &channel)
 {
-    ++entry.generation;
+    entry.cacheLoading = false;
+    flushCache(entry);
+    entry.cachePath.clear();
+    entry.cachePending.clear();
+    entry.generation = nextGeneration();
     entry.seen.clear();
     entry.logsAnswered = false;
+    entry.historyIncomplete = false;
     entry.data = {};
     entry.streamId.clear();
 
     const auto now = QDateTime::currentDateTime();
-    QDateTime start;
+    QDateTime streamStarted;
     auto *twitch = dynamic_cast<TwitchChannel *>(channel.get());
     if (twitch != nullptr && twitch->isLive())
     {
         const auto status = twitch->accessStreamStatus();
         if (status->startedAt.isValid())
         {
-            start = std::max(status->startedAt.toLocalTime(),
-                             now.addSecs(-KEEP_MINUTES * 60));
+            streamStarted = status->startedAt.toLocalTime();
             entry.streamId = status->streamId;
         }
     }
@@ -605,14 +873,23 @@ void restart(const QString &name, Tracked &entry,
         !test.isEmpty())
     {
         const auto parts = test.split(u'/');
-        start = QDateTime::fromString(parts.value(0), Qt::ISODate);
+        streamStarted = QDateTime::fromString(parts.value(0), Qt::ISODate);
         testUntil = QDateTime::fromString(parts.value(1), Qt::ISODate)
                         .toMSecsSinceEpoch();
         entry.streamId = QStringLiteral("test");
     }
+    const auto windowEnd = testUntil ? QDateTime::fromMSecsSinceEpoch(*testUntil) : now;
+    const auto start = streamStarted.isValid()
+                           ? std::max(streamStarted, windowEnd.addSecs(-KEEP_MINUTES * 60))
+                           : QDateTime{};
+    entry.data.streamStarted = streamStarted;
     entry.data.live = start.isValid();
     entry.data.sinceStreamStart = start.isValid();
+    entry.data.since = start;
     const auto startMs = start.isValid() ? start.toMSecsSinceEpoch() : 0;
+    entry.moderationLogUntil = now.toMSecsSinceEpoch();
+    if (start.isValid() && !testUntil)
+        startCache(name, entry);
 
     std::optional<qint64> earliest = testUntil;
     for (const auto &message : channel->getMessageSnapshot())
@@ -642,21 +919,15 @@ void restart(const QString &name, Tracked &entry,
         return;
     }
     entry.data.since = start;
-    const auto untilMs = earliest.value_or(now.toMSecsSinceEpoch());
+    // The earliest buffered message is NOT evidence that the intervening
+    // history is complete: a restored buffer can contain a hole after exit.
+    const auto untilMs = testUntil.value_or(now.toMSecsSinceEpoch());
+    entry.moderationLogUntil = earliest.value_or(untilMs);
     if (untilMs - startMs > MIN_GAP_MS)
     {
-        entry.data.history = ChannelStatsData::History::Loading;
+        entry.data.history = ChannelStatsData::History::Available;
         entry.data.historyUntil = QDateTime::fromMSecsSinceEpoch(untilMs);
         entry.data.historyRead = start;
-        // a moment for the channel's emotes to load: the log lines' words
-        // are looked up in them
-        QTimer::singleShot(EMOTES_GRACE_MS, [name, generation = entry.generation,
-                                             startMs, untilMs] {
-            if (find(name, generation) != nullptr)
-            {
-                readWindow(name, generation, startMs, untilMs, 0, 0, false);
-            }
-        });
     }
 }
 
@@ -678,9 +949,10 @@ void onStatus(const QString &name)
     }
     if (twitch->isLive())
     {
-        const auto status = twitch->accessStreamStatus();
-        const bool newStream =
-            status->startedAt.isValid() && status->streamId != entry.streamId;
+        const bool newStream = [&] {
+            const auto status = twitch->accessStreamStatus();
+            return status->startedAt.isValid() && status->streamId != entry.streamId;
+        }();
         if (newStream)
         {
             restart(name, entry, channel);
@@ -700,7 +972,11 @@ void ChannelStats::attach(const std::shared_ptr<Channel> &channel)
     {
         return;
     }
-    const auto name = channel->getName().toLower();
+    auto *twitchChannel = dynamic_cast<TwitchChannel *>(channel.get());
+    if (!twitchChannel && (!getApp()->isTest() || channel->getType() != Channel::Type::None))
+        return;
+    const auto name = statsKey(channel->getName(), twitchChannel && twitchChannel->isAnonymous());
+    ensureCacheTimer();
     auto &entry = tracked()[name];
     if (entry.channel.lock() == channel)
     {
@@ -738,15 +1014,16 @@ void ChannelStats::attach(const std::shared_ptr<Channel> &channel)
                 const auto startMs =
                     data.sinceStreamStart ? data.since.toMSecsSinceEpoch() : 0;
                 const auto logsUntil =
-                    data.history == ChannelStatsData::History::NotNeeded
+                    data.history == ChannelStatsData::History::NotNeeded ||
+                            data.history == ChannelStatsData::History::Available
                         ? 0
-                        : data.historyUntil.toMSecsSinceEpoch();
+                        : it->second.moderationLogUntil;
                 for (const auto &message : messages)
                 {
                     auto item = message ? itemFrom(*message) : std::nullopt;
                     // the logs count this stretch's subscriptions and bans
                     if (!item || item->ms < startMs ||
-                        (item->kind != Item::Kind::Chat &&
+                        (item->kind != Item::Kind::Chat && item->id.isEmpty() &&
                          item->ms < logsUntil))
                     {
                         continue;
@@ -759,6 +1036,21 @@ void ChannelStats::attach(const std::shared_ptr<Channel> &channel)
                     }
                 }
             }));
+    entry.filled = std::make_unique<pajlada::Signals::ScopedConnection>(
+        channel->filledInMessages.connect([name, weak](const std::vector<MessagePtr> &messages) {
+            auto it = tracked().find(name);
+            if (it == tracked().end() || weak.lock() == nullptr)
+                return;
+            for (const auto &message : messages)
+                if (message)
+                    if (auto item = itemFrom(*message); item && item->kind == Item::Kind::Chat)
+                    {
+                        add(it->second, *item);
+                        auto &data = it->second.data;
+                        if (!data.sinceStreamStart && item->ms < data.since.toMSecsSinceEpoch())
+                            data.since = QDateTime::fromMSecsSinceEpoch(item->ms);
+                    }
+        }));
     if (auto *twitch = dynamic_cast<TwitchChannel *>(channel.get()))
     {
         entry.status = std::make_unique<pajlada::Signals::ScopedConnection>(
@@ -768,14 +1060,136 @@ void ChannelStats::attach(const std::shared_ptr<Channel> &channel)
     }
 }
 
-ChannelStatsData ChannelStats::get(const QString &channelName)
+void ChannelStats::requestHistory(const QString &channelName, bool anonymous)
 {
-    auto it = tracked().find(channelName.toLower());
+    const auto name = statsKey(channelName, anonymous);
+    auto it = tracked().find(name);
+    if (it == tracked().end() || it->second.channel.expired() ||
+        it->second.data.history != ChannelStatsData::History::Available)
+        return;
+    auto &entry = it->second;
+    entry.data.history = ChannelStatsData::History::Loading;
+    readWindow(name, entry.generation, entry.data.since.toMSecsSinceEpoch(),
+               entry.data.historyUntil.toMSecsSinceEpoch(), 0, 0, false);
+}
+
+ChannelStatsData ChannelStats::get(const QString &channelName, bool anonymous)
+{
+    auto it = tracked().find(statsKey(channelName, anonymous));
     if (it == tracked().end())
     {
         return {};
     }
     return it->second.data;
+}
+
+QJsonArray ChannelStats::fixtureChecks()
+{
+    QJsonArray checks;
+    if (!getApp()->isTest())
+        return checks;
+    auto check = [&checks](QString name, bool ok) {
+        checks.append(QJsonObject{{"name", name}, {"ok", ok}});
+    };
+    const auto oldInterval = qgetenv("MIST1X_STATS_TEST_STREAM");
+    const auto streamStart = QDateTime::fromString("2026-01-01T00:00:00Z", Qt::ISODate);
+    const auto windowEnd = streamStart.addDays(3);
+    qputenv("MIST1X_STATS_TEST_STREAM",
+            (streamStart.toString(Qt::ISODate) + u'/' + windowEnd.toString(Qt::ISODate)).toUtf8());
+    auto group = std::make_shared<Channel>("stats_fixture_platform", Channel::Type::None);
+    Tracked longStream;
+    restart(group->getName(), longStream, group);
+    if (oldInterval.isNull())
+        qunsetenv("MIST1X_STATS_TEST_STREAM");
+    else
+        qputenv("MIST1X_STATS_TEST_STREAM", oldInterval);
+    check("three-day stream retains real start and counts the newest day",
+          longStream.data.streamStarted == streamStart && longStream.data.since == windowEnd.addDays(-1));
+    check("opening statistics leaves public history idle until requested",
+          longStream.data.history == ChannelStatsData::History::Available);
+    for (const auto type : {Channel::Type::Kick, Channel::Type::YouTube})
+        attach(std::make_shared<Channel>(group->getName(), type));
+    check("other providers cannot replace the Twitch statistics entry", !tracked().contains(group->getName()));
+    const auto start = QDateTime::currentDateTime().addSecs(-600);
+    const auto ms = start.toMSecsSinceEpoch();
+    const auto minute = ms / 60000;
+    auto item = Item{.id = "a", .login = "synthetic", .name = "Synthetic",
+                     .color = QColor("#b8a7f0"), .ms = ms, .first = true};
+    item.cachedEmotes = {"TestSmile"};
+    Tracked capped;
+    capped.data.messages = MAX_EVENTS;
+    add(capped, item);
+    check("count limit is visible and stops retaining more identities",
+          capped.data.countLimitReached && capped.seen.empty() && capped.data.messages == MAX_EVENTS);
+    const auto restored = decodeItem(encodeItem(item));
+    check("journal roundtrip retains id, login, timestamp and name", restored &&
+          restored->id == item.id && restored->ms == item.ms && restored->name == item.name && restored->login == item.login && restored->cachedEmotes == item.cachedEmotes);
+    check("invalid journal line is ignored", !decodeItem("broken"));
+    Tracked entry;
+    entry.data.since = start;
+    entry.data.sinceStreamStart = true;
+    add(entry, item);
+    add(entry, item);
+    auto second = item;
+    second.id = "b";
+    second.ms += 120000;
+    add(entry, second);
+    auto earlier = item;
+    earlier.id = "prestream";
+    earlier.ms -= 1;
+    add(entry, earlier);
+    check("identity merge and stream boundary", entry.data.messages == 2 && entry.data.chatters["synthetic"].messages == 2);
+    check("messages retain original minutes", entry.data.perMinute.value(minute) == 1 && entry.data.perMinute.value(minute + 2) == 1);
+    check("first-message count is not duplicated", entry.data.firstMessages == 1);
+    WindowEvidence evidence;
+    evidence.minutes = {minute, minute + 3};
+    check("gap inside a successful mirror response triggers fallback", needsFallback(evidence, minute * 60000, (minute + 4) * 60000));
+    evidence.minutes.insert(minute + 1);
+    evidence.minutes.insert(minute + 2);
+    check("merged coverage stops further mirror requests", !needsFallback(evidence, minute * 60000, (minute + 4) * 60000));
+    check("empty success is not complete", needsFallback({}, minute * 60000, (minute + 1) * 60000));
+    auto name = QStringLiteral("stats_fixture_journal");
+    auto journalOwner = std::make_shared<Channel>(name, Channel::Type::None);
+    auto &journal = tracked()[name];
+    journal.channel = journalOwner;
+    check("separate normal and anonymous statistics", statsKey(name, false) != statsKey(name, true));
+    journal.streamId = QString::number(ms);
+    journal.data.since = start;
+    journal.data.sinceStreamStart = true;
+    startCache(name, journal);
+    add(journal, item);
+    add(journal, second);
+    flushCache(journal);
+    const auto path = journal.cachePath;
+    check("journal records written", !path.isEmpty() && QFileInfo(path).size() > 0 && journal.cachePending.isEmpty());
+    ++journal.generation;
+    journal.seen.clear();
+    journal.data = {};
+    journal.data.since = start;
+    journal.data.sinceStreamStart = true;
+    startCache(name, journal);
+    QEventLoop loop;
+    QTimer poll;
+    QObject::connect(&poll, &QTimer::timeout, &loop, [&] {
+        if (!journal.cacheLoading)
+            loop.quit();
+    });
+    poll.start(10);
+    QTimer::singleShot(3000, &loop, &QEventLoop::quit);
+    loop.exec();
+    check("local cache reload restores exact count and minute buckets", !journal.cacheLoading && journal.data.messages == 2 && journal.data.perMinute.value(minute + 2) == 1);
+    add(journal, second);
+    check("live/log overlap after restart is deduplicated", journal.data.messages == 2);
+    auto nextStream = QString::number(ms + 1);
+    journal.streamId = nextStream;
+    ++journal.generation;
+    journal.seen.clear();
+    journal.data = {};
+    startCache(name, journal);
+    check("new stream does not reuse previous stream stats", !journal.cacheLoading && journal.data.messages == 0);
+    journalOwner.reset();
+    check("closed channel rejects old log callbacks", find(name, journal.generation) == nullptr);
+    return checks;
 }
 
 }  // namespace chatterino

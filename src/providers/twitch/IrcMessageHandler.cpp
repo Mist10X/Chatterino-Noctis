@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "providers/twitch/IrcMessageHandler.hpp"
+#include "providers/twitch/WhisperHistory.hpp"
 
 #include "Application.hpp"
 #include "common/Channel.hpp"
@@ -440,7 +441,7 @@ MessagePtr parseNoticeMessage(Communi::IrcNoticeMessage *message)
         QString remainingTime =
             formatTime(message->content().split(" ").value(5));
         QString formattedMessage =
-            QString("You are timed out for %1.")
+            uiText("You are timed out for %1.")
                 .arg(remainingTime.isEmpty() ? "0s" : remainingTime);
 
         return makeSystemMessage(formattedMessage,
@@ -452,8 +453,34 @@ MessagePtr parseNoticeMessage(Communi::IrcNoticeMessage *message)
         return mode;
     }
 
-    // default case
-    return makeSystemMessage(message->content(),
+    const auto id = message->tags().getOrEmpty("msg-id");
+    QString text = message->content();
+    if (auto held = tryMakeAutoModHeldNotice(text, id,
+                                            calculateMessageTime(message).time()))
+    {
+        return held;
+    }
+    if (id == "msg_duplicate")
+        text = uiText("Your message was not sent because it is identical to the previous one you sent, less than 30 seconds ago.");
+    else if (id == "msg_ratelimit")
+        text = uiText("You are sending messages too quickly.");
+    else if (id == "msg_subsonly")
+        text = uiText("This room is in subscribers-only mode.");
+    else if (id == "msg_emoteonly")
+        text = uiText("This room is in emote-only mode.");
+    else if (id == "msg_followersonly")
+        text = uiText("This room is in followers-only mode.");
+    else if (id == "msg_slowmode")
+    {
+        static const QRegularExpression seconds(uR"((\d+) seconds?)"_s);
+        const auto match = seconds.match(text);
+        if (match.hasMatch())
+            text = uiText("Slow mode is enabled. You can send another message in %1 s.").arg(match.captured(1));
+        else
+            text = uiText("You are sending messages too quickly.");
+    }
+    // Preserve unrecognized Twitch notices verbatim.
+    return makeSystemMessage(text,
                              calculateMessageTime(message).time());
 }
 
@@ -907,6 +934,13 @@ void IrcMessageHandler::handleUserStateMessage(Communi::IrcMessage *message)
 
 void IrcMessageHandler::handleWhisperMessage(Communi::IrcMessage *ircMessage)
 {
+    const auto account = getApp()->getAccounts()->twitch.getCurrent();
+    if (account->isAnon() ||
+        ircMessage->parameter(0).compare(account->getUserName(),
+                                         Qt::CaseInsensitive) != 0)
+    {
+        return;
+    }
     MessageParseArgs args;
 
     args.isReceivedWhisper = true;
@@ -920,6 +954,12 @@ void IrcMessageHandler::handleWhisperMessage(Communi::IrcMessage *ircMessage)
     {
         return;
     }
+    if (!message->id.isEmpty() && c->findMessageByID(message->id))
+    {
+        return;
+    }
+    message->whisperPeer = message->loginName.toLower();
+    whisperhistory::append(account->getUserId(), *message, false);
 
     message->flags.set(MessageFlag::Whisper);
     MessageBuilder::makeWhisperCard(*message, uiText("Whisper"),
@@ -1063,10 +1103,21 @@ void IrcMessageHandler::parseUserNoticeMessageInto(Communi::IrcMessage *message,
         return;
     }
 
-    // An incoming raid: no chat line (the corner banner is raised separately).
-    if (getSettings()->hideRaidMessages && msgType == "raid")
+    const bool raid = msgType == u"raid";
+    if (raid)
     {
-        return;
+        if (getSettings()->hideRaidMessages)
+        {
+            return;
+        }
+        // A history batch can overlap live IRC and can contain repeated IDs.
+        const auto id = tags.getOrEmpty("id");
+        if (!id.isEmpty() &&
+            (sink.findMessageByID(id) ||
+             (&sink != channel && channel->findMessageByID(id))))
+        {
+            return;
+        }
     }
 
     if (msgType == "subgift")
@@ -1115,25 +1166,36 @@ void IrcMessageHandler::parseUserNoticeMessageInto(Communi::IrcMessage *message,
         }
     }
 
-    if (auto optSystemMsg = tags.get("system-msg"))
+    if (raid || tags.has("system-msg"))
     {
-        // By default, we return value of system-msg tag
-        QString messageText = *std::move(optSystemMsg);
-
-        auto displayName = [&] {
-            if (msgType == u"raid")
-            {
-                return tags.getOrEmpty("msg-param-displayName");
-            }
-            return tags.getOrEmpty("display-name");
-        }();
+        QString messageText = tags.getOrEmpty("system-msg");
+        auto displayName = tags.getOrEmpty("display-name");
         auto login = tags.getOrEmpty("login");
+        if (raid)
+        {
+            login = tags.getOr("msg-param-login", login);
+            displayName = tags.getOr("msg-param-displayName", displayName);
+        }
         if (displayName.isEmpty())
         {
             displayName = login;
         }
 
-        if (msgType == "bitsbadgetier")
+        if (raid)
+        {
+            messageText = displayName.isEmpty()
+                              ? uiText("Incoming raid")
+                              : uiText("Raid from %1").arg(displayName);
+            bool validCount = false;
+            const int viewers =
+                tags.getOrEmpty("msg-param-viewerCount").toInt(&validCount);
+            if (validCount && viewers >= 0)
+            {
+                messageText += u" · "_s + uiText("Viewers: %1").arg(
+                    QLocale(activeUiLanguage()).toString(viewers));
+            }
+        }
+        else if (msgType == "bitsbadgetier")
         {
             messageText =
                 QString("%1 just earned a new %2 Bits badge!")
@@ -1197,6 +1259,10 @@ void IrcMessageHandler::parseUserNoticeMessageInto(Communi::IrcMessage *message,
             parseTagString(messageText), login, displayName, userColor,
             calculateMessageTime(message).time(), *message, channel);
 
+        if (raid)
+        {
+            msg->id = tags.getOrEmpty("id");
+        }
         msg->giftNotice = msgType == "submysterygift" ||
                           msgType == "anonsubmysterygift" ||
                           msgType == "anonsubgift";

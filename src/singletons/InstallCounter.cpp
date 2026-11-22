@@ -14,14 +14,13 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QJsonObject>
 
 namespace chatterino {
 
 namespace {
 
 const QString COUNTER =
-    QStringLiteral("https://abacus.jasoncameron.dev/%1/chatterino-by-mist1x/"
+    QStringLiteral("https://abacus.jasoncameron.dev/hit/chatterino-by-mist1x/"
                    "installs");
 
 QString countedMarker()
@@ -42,7 +41,7 @@ void countInstallOnce()
     {
         return;
     }
-    NetworkRequest(COUNTER.arg(QStringLiteral("hit")))
+    NetworkRequest(COUNTER)
         .timeout(20000)
         .onSuccess([](const NetworkResult &) {
             QFile marker(countedMarker());
@@ -50,20 +49,6 @@ void countInstallOnce()
             {
                 marker.write("1");
             }
-        })
-        .execute();
-}
-
-void fetchInstallCount(std::function<void(int)> callback)
-{
-    NetworkRequest(COUNTER.arg(QStringLiteral("get")))
-        .timeout(15000)
-        .onSuccess([callback](const NetworkResult &result) {
-            const auto value = result.parseJson().value("value");
-            callback(value.isDouble() ? value.toInt() : -1);
-        })
-        .onError([callback](const NetworkResult &) {
-            callback(-1);
         })
         .execute();
 }

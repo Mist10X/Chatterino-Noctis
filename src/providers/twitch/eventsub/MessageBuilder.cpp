@@ -555,8 +555,10 @@ void makeModerateMessage(EventSubMessageBuilder &builder,
     QString text;
 
     builder.appendUser(event.moderatorUserName, event.moderatorUserLogin, text);
-    builder.emplaceSystemTextAndUpdate("initiated a raid to", text);
+    builder->flags.set(MessageFlag::Raid);
+    builder.emplaceSystemTextAndUpdate(uiText("initiated a raid to"), text);
     builder.appendUser(action.userName, action.userLogin, text, false);
+    builder.emplaceSystemTextAndUpdate(u"."_s, text);
 
     builder.setMessageAndSearchText(text);
 }
@@ -569,8 +571,10 @@ void makeModerateMessage(
     QString text;
 
     builder.appendUser(event.moderatorUserName, event.moderatorUserLogin, text);
-    builder.emplaceSystemTextAndUpdate("canceled the raid to", text);
+    builder->flags.set(MessageFlag::Raid);
+    builder.emplaceSystemTextAndUpdate(uiText("canceled the raid to"), text);
     builder.appendUser(action.userName, action.userLogin, text, false);
+    builder.emplaceSystemTextAndUpdate(u"."_s, text);
 
     builder.setMessageAndSearchText(text);
 }
@@ -657,7 +661,7 @@ std::pair<MessagePtr, HighlightAlert> makeAutomodHoldMessage(
     builder.emplace<LinebreakElement>(MessageElementFlag::Text);
 
     builder
-        .emplace<TextElement>(u'#' + event.broadcasterUserLogin.qt(),
+        .emplace<TextElement>(event.broadcasterUserLogin.qt(),
                               MessageElementFlag::ChannelName,
                               MessageColor::System)
         ->setLink({Link::JumpToChannel, event.broadcasterUserLogin.qt()});
@@ -774,7 +778,7 @@ MessagePtr makeSuspiciousUserMessageBody(
     }
 
     builder
-        .emplace<TextElement>(u'#' + event.broadcasterUserLogin.qt(),
+        .emplace<TextElement>(event.broadcasterUserLogin.qt(),
                               MessageElementFlag::ChannelName,
                               MessageColor::System)
         ->setLink({Link::JumpToChannel, event.broadcasterUserLogin.qt()});
@@ -847,26 +851,22 @@ MessagePtr makeUserMessageHeldMessage(
     TwitchChannel *channel, const QDateTime &time,
     const lib::payload::channel_chat_user_message_hold::v1::Event &event)
 {
-    QString text("AutoMod: Hey! Your message is being checked by mods and has "
-                 "not been sent.");
+    const auto text = uiText("Hey! Your message is being checked by mods and has not been sent.");
     EventSubMessageBuilder builder(channel);
     builder->serverReceivedTime = time;
     builder->id = u"automod_" % event.messageID.qt();
     builder->loginName = u"automod"_s;
     builder->channelName = event.broadcasterUserLogin.qt();
     builder->flags.set(MessageFlag::PubSub, MessageFlag::AutoMod);
+    builder->channelNotice = Message::ChannelNotice::AutoModHeld;
 
-    // AutoMod shield badge
-    builder.emplace<BadgeElement>(makeAutoModBadge(),
-                                  MessageElementFlag::BadgeChannelAuthority);
-    // AutoMod "username"
     builder.emplace<TextElement>("AutoMod:", MessageElementFlag::Text,
-                                 QColor(0, 0, 255), FontStyle::ChatMediumBold);
+                                 MessageColor::Text, FontStyle::ChatMediumBold);
     builder.emplace<TextElement>(
-        "Hey! Your message is being checked by mods and has not been sent.",
+        text,
         MessageElementFlag::Text, MessageColor::Text);
 
-    builder.setMessageAndSearchText(text);
+    builder.setMessageAndSearchText(u"AutoMod: "_s + text);
 
     return builder.release();
 }

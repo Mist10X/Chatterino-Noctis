@@ -120,7 +120,7 @@ QString normalizeFollowError(bool unfollow, const QString &error)
     {
         normalized =
             "This saved login cannot use follow commands. Re-login with "
-            "Device Login in Settings -> Moltorino -> Authentication, then "
+            "Device Login in Settings -> Sign-in for extra features -> Authentication, then "
             "try again.";
     }
     return normalized;
@@ -1719,7 +1719,7 @@ static QString crossChannelAction(const CommandContext &ctx,
             !authError.isEmpty()
                 ? authError
                 : QStringLiteral("%1 needs a saved Twitch account in "
-                                 "Moltorino Authentication.")
+                                 "Settings > Sign-in for extra features.")
                       .arg(feature));
         return "";
     }
@@ -1740,7 +1740,7 @@ static QString crossChannelAction(const CommandContext &ctx,
         ctx.channel->addSystemMessage(
             QStringLiteral(
                 "%1 could not find the saved account for this action. "
-                "Refresh accounts in Moltorino Authentication.")
+                "Refresh accounts in Settings > Sign-in for extra features.")
                 .arg(feature));
         return "";
     }
@@ -2390,7 +2390,7 @@ QString openUsercard(const CommandContext &ctx)
         {
             channel->addSystemMessage(
                 "A usercard can only be displayed for a channel that is "
-                "currently opened in Chatterino.");
+                "currently opened in Chatterino Noctis.");
             return "";
         }
 

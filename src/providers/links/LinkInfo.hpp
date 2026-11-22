@@ -6,6 +6,8 @@
 
 #include "messages/Image.hpp"
 
+#include <QDeadlineTimer>
+
 namespace chatterino {
 
 class LinkInfo : public QObject
@@ -41,6 +43,11 @@ public:
 
     [[nodiscard]] bool isPending() const;
 
+    [[nodiscard]] bool canResolve() const;
+    [[nodiscard]] int retryDelay() const;
+    [[nodiscard]] bool isTransientFailure() const;
+    void deferRetry(qint64 delayMs, bool transient);
+
     [[nodiscard]] bool isLoading() const;
 
     [[nodiscard]] bool isLoaded() const;
@@ -74,6 +81,8 @@ private:
     QString tooltip_;
     ImagePtr thumbnail_;
 
+    QDeadlineTimer retryAfter_;
+    bool transientFailure_ = false;
     State state_ = State::Created;
 };
 

@@ -8,6 +8,7 @@
 #include <pajlada/signals/scoped-connection.hpp>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QToolButton>
 
 #include <vector>
 
@@ -59,17 +60,14 @@ private:
 
     QHBoxLayout *topLayout_{};
     QHBoxLayout *messageLayout_{};
-    SvgButton *icon_{};
     ChannelView *messageView_{};
     ChannelPtr channel_{};
-    QLabel *pinnerLabel_{};
+    QToolButton *pinnerLabel_{};
     QLabel *timerLabel_{};
     QLabel *moreLabel_{};
-    SvgButton *unpinButton_{};
+    QToolButton *unpinButton_{};
     SvgButton *toggleButton_{};
     Split *split_{};
-
-    int headerFontSize_ = 11;
 
     bool isExpanded_ = false;
     bool userManuallyCollapsed_ = false;
@@ -77,7 +75,6 @@ private:
     bool initialLayoutStabilizationQueued_ = false;
     QString dismissedPinId_;
     QString currentPinMessageId_;
-    QString pinnerName_;
 
     std::optional<QDateTime> endsAt_;
     std::optional<QDateTime> pinnedAt_;

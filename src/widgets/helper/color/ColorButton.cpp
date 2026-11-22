@@ -6,7 +6,7 @@
 
 #include "widgets/helper/color/Checkerboard.hpp"
 
-#include <QPainterPath>
+#include <QPixmap>
 
 namespace chatterino {
 
@@ -54,21 +54,33 @@ void ColorButton::paintEvent(QPaintEvent *)
 
     if (this->currentColor_.alpha() != 255)
     {
-        if (!this->checkerboardCacheValid_)
+        const qreal dpr = this->devicePixelRatioF();
+        if (!this->checkerboardCacheValid_ ||
+            !qFuzzyCompare(this->checkerboardCache_.devicePixelRatio(), dpr))
         {
-            QPixmap cache(this->size());
+            const auto pixels = this->size() * dpr;
+            QPixmap cache(pixels);
+            cache.setDevicePixelRatio(dpr);
             cache.fill(Qt::transparent);
 
             QPainter cachePainter(&cache);
-            cachePainter.setRenderHint(QPainter::Antialiasing);
-            QPainterPath path;
-            path.addRoundedRect(QRect(1, 1, this->size().width() - 2,
-                                      this->size().height() - 2),
-                                5, 5);
-            cachePainter.setClipPath(path);
-
             drawCheckerboard(cachePainter, this->size(),
                              std::min(this->height() / 2, 10));
+
+            // Make fractional alpha at the corners rather than clipping the
+            // checkerboard through a rasterized path at logical resolution.
+            QPixmap mask(pixels);
+            mask.setDevicePixelRatio(dpr);
+            mask.fill(Qt::transparent);
+            QPainter maskPainter(&mask);
+            maskPainter.setRenderHint(QPainter::Antialiasing);
+            maskPainter.setPen(Qt::NoPen);
+            maskPainter.setBrush(Qt::white);
+            maskPainter.drawRoundedRect(QRectF(1, 1, this->width() - 2,
+                                               this->height() - 2), 5, 5);
+            maskPainter.end();
+            cachePainter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            cachePainter.drawPixmap(QPointF(0, 0), mask);
             cachePainter.end();
 
             this->checkerboardCache_ = std::move(cache);

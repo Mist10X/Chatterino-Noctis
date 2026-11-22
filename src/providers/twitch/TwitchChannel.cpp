@@ -57,6 +57,7 @@
 
 #include <IrcConnection>
 #include <QDateTime>
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -68,6 +69,7 @@
 #include <rapidjson/document.h>
 
 #include <algorithm>
+#include <deque>
 #include <memory>
 
 using namespace Qt::StringLiterals;
@@ -95,6 +97,15 @@ using detail::isUnknownCommand;
 
 namespace {
 const QString MAGIC_MESSAGE_SUFFIX = u" \u034f"_s;
+
+// One application-wide queue so many channels cannot all consume a frame at once.
+std::deque<std::weak_ptr<TwitchChannel>> historyBadgeRefreshQueue;
+QHash<TwitchChannel *, std::weak_ptr<TwitchChannel>> historyBadgeChannels;
+bool historyBadgeRefreshTimerActive = false;
+std::mutex globalBadgeRefreshMutex;
+bool globalBadgeRefreshQueued = false;
+bool globalBadgeRefreshAll = false;
+QSet<QString> globalBadgeRefreshUsers;
 
 constexpr int CLIP_CREATION_COOLDOWN = 5000;
 constexpr qint64 CHANNEL_POINTS_MIN_REFRESH_INTERVAL_MS = 10'000;
@@ -129,6 +140,8 @@ QString helixSendMessageErrorText(HelixSendMessageError error, QString message)
 
     switch (error)
     {
+        case HelixSendMessageError::DeliveryUnknown:
+            return uiText("Message delivery to Twitch could not be confirmed. No automatic resend.");
         case HelixSendMessageError::MissingText:
             return "You can't send an empty message.";
         case HelixSendMessageError::BadRequest:
@@ -147,6 +160,7 @@ QString helixSendMessageErrorText(HelixSendMessageError error, QString message)
             return "Unknown error: " + message;
     }
 }
+
 const QString CLIPS_FAILURE_CLIPS_DISABLED_TEXT(
     "Failed to create a clip - the streamer has clips disabled in their "
     "channel.");
@@ -161,55 +175,6 @@ const QString CLIPS_FAILURE_NOT_AUTHENTICATED_TEXT(
 const QString CLIPS_FAILURE_UNKNOWN_ERROR_TEXT("Failed to create a clip: %1");
 const QString LOGIN_PROMPT_TEXT("Click here to add your account again.");
 const Link ACCOUNTS_LINK(Link::OpenAccountsPage, QString());
-
-struct BotBadgeSendConfig {
-    QString appToken;
-    QString clientId;
-    QString senderID;
-
-    bool isValid() const
-    {
-        return !this->appToken.isEmpty() && !this->clientId.isEmpty() &&
-               !this->senderID.isEmpty();
-    }
-};
-
-BotBadgeSendConfig getBotBadgeSendConfig()
-{
-    const auto &settings = *getSettings();
-
-    return {
-        settings.botBadgeAppAccessToken.getValue().trimmed(),
-        settings.botBadgeClientID.getValue().trimmed(),
-        settings.botBadgeUserID.getValue().trimmed(),
-    };
-}
-
-bool shouldUseBotBadgeForSelectedAccount()
-{
-    const auto &settings = *getSettings();
-    if (!settings.botBadgeAlwaysUse)
-    {
-        return false;
-    }
-
-    if (settings.botBadgeOverrideAllAccounts)
-    {
-        return true;
-    }
-
-    const auto botUserID = settings.botBadgeUserID.getValue().trimmed();
-    const auto currentAccount = getApp()->getAccounts()->twitch.getCurrent();
-    return currentAccount != nullptr && !botUserID.isEmpty() &&
-           currentAccount->getUserId() == botUserID;
-}
-
-bool selectedAccountIsBotBadgeSender(const QString &senderID)
-{
-    const auto currentAccount = getApp()->getAccounts()->twitch.getCurrent();
-    return currentAccount != nullptr && !senderID.isEmpty() &&
-           currentAccount->getUserId() == senderID;
-}
 
 bool authTokenBelongsToChannel(const MoltorinoAuthToken &auth,
                                const TwitchChannel &channel)
@@ -413,6 +378,14 @@ QString predictionWinnerTitle(const TwitchChannel::PredictionEvent &prediction)
     return {};
 }
 
+void addChannelNotice(Channel &channel, Message::ChannelNotice kind,
+                     const QString &text)
+{
+    MessageBuilder builder(systemMessage, text);
+    builder->channelNotice = kind;
+    channel.addMessage(builder.release(), MessageContext::Original);
+}
+
 QString predictionSystemMessageKind(
     const QString &type, const TwitchChannel::PredictionEvent &prediction)
 {
@@ -563,8 +536,8 @@ bool isWarningAcknowledgeNotice(const QString &text)
 QString chatWarningAuthFallbackText(const QString &channelName)
 {
     return QString("You have an active warning in this channel. "
-                   "Authenticate in Settings -> Moltorino -> Authentication to "
-                   "view and acknowledge it in Leafyrino, or open "
+                   "Authenticate in Settings -> Sign-in for extra features -> Authentication to "
+                   "view and acknowledge it in Chatterino Noctis, or open "
                    "https://www.twitch.tv/%1 in your browser.")
         .arg(channelName);
 }
@@ -573,7 +546,7 @@ QString chatWarningMissingDetailsText(const QString &channelName)
 {
     return QString(
                "Your message was blocked because of an active warning, but "
-               "Leafyrino could not load the warning details yet. Try again in "
+               "Chatterino Noctis could not load the warning details yet. Try again in "
                "a moment, or open https://www.twitch.tv/%1 in your browser to "
                "acknowledge it.")
         .arg(channelName);
@@ -598,7 +571,7 @@ MessagePtr makeChatWarningMessage(const TwitchChannel &channel,
 {
     const auto reason = sanitizeChatWarningReason(warning.reason);
     const auto text =
-        QStringLiteral("Leafyrino: You received a warning: \"%1\" Acknowledge")
+        QStringLiteral("Chatterino Noctis: You received a warning: \"%1\" Acknowledge")
             .arg(reason);
     const auto timestamp = warning.createdAt.isValid()
                                ? warning.createdAt.toLocalTime().time()
@@ -607,9 +580,9 @@ MessagePtr makeChatWarningMessage(const TwitchChannel &channel,
     MessageBuilder builder;
     builder.message().id = chatWarningMessageId(warning);
     builder.message().channelName = channel.getName();
-    builder.message().loginName = QStringLiteral("leafyrino");
-    builder.message().displayName = QStringLiteral("Leafyrino");
-    builder.message().localizedName = QStringLiteral("Leafyrino");
+    builder.message().loginName = QStringLiteral("chatterino-noctis");
+    builder.message().displayName = QStringLiteral("Chatterino Noctis");
+    builder.message().localizedName = QStringLiteral("Chatterino Noctis");
     builder.message().usernameColor = QColor("#FFA500");
     builder.message().serverReceivedTime =
         warning.createdAt.isValid() ? warning.createdAt
@@ -622,7 +595,7 @@ MessagePtr makeChatWarningMessage(const TwitchChannel &channel,
     builder.message().flags.set(MessageFlag::DoNotTriggerNotification);
 
     builder.emplace<TimestampElement>(timestamp);
-    builder.emplace<TextElement>("Leafyrino:", MessageElementFlag::Text,
+    builder.emplace<TextElement>("Chatterino Noctis:", MessageElementFlag::Text,
                                  MessageColor(QColor("#FFA500")),
                                  FontStyle::ChatMediumBold);
     builder.emplace<TextElement>("You received a warning:",
@@ -648,6 +621,33 @@ constexpr auto MAX_CHATTERS_TO_FETCH = 5000;
 constexpr QSize BASE_BADGE_SIZE(18, 18);
 
 }  // namespace
+
+void TwitchChannel::watchChatDelivery(const QString &sender)
+{
+    this->chatDeliveryEvidence_.watch(sender, ChatDeliveryEvidence::Clock::now());
+}
+
+void TwitchChannel::observeChatDelivery(const QString &sender, const QString &id)
+{
+    this->chatDeliveryEvidence_.observe(sender, id, ChatDeliveryEvidence::Clock::now());
+}
+
+void TwitchChannel::confirmChatDelivery(const QString &sender, const QString &id)
+{
+    if (id.isEmpty() || this->chatDeliveryEvidence_.seen(
+                            sender, id, ChatDeliveryEvidence::Clock::now()))
+    {
+        return;
+    }
+    QTimer::singleShot(12000, &this->lifetimeGuard_, [this, sender, id] {
+        if (!this->chatDeliveryEvidence_.seen(
+                sender, id, ChatDeliveryEvidence::Clock::now()))
+        {
+            this->addSystemMessage(uiText(
+                "Twitch accepted your message, but it was not observed in the live chat. No automatic resend."));
+        }
+    });
+}
 
 TwitchChannel::TwitchChannel(const QString &name, bool anonymous)
     : Channel(name, Channel::Type::Twitch)
@@ -723,6 +723,11 @@ TwitchChannel::TwitchChannel(const QString &name, bool anonymous)
     this->bSignals_.emplace_back(
         getApp()->getAccounts()->twitch.currentUserChanged.connect(
             [this, clearPersonalAuthState] {
+                // Queued user actions belong to the former account; do not
+                // release them later under a different login.
+                this->slowQueue_.clear();
+                this->slowQueueTimer_.stop();
+                this->setSendWait(0);
                 this->setMod(false);
                 // the input shows the new account's own timeout, if any
                 this->ownRestrictionChanged.invoke();
@@ -1045,10 +1050,6 @@ void TwitchChannel::refreshTwitchChannelEmotes(bool manualRefresh)
             EmoteSetId{setID}))
     {
         this->localTwitchEmotes_.set(std::make_shared<EmoteMap>());
-        if (getSettings()->showFollowButtonInSplitHeader)
-        {
-            this->refreshFollowingStatus(false);
-        }
         return;
     }
 
@@ -1518,6 +1519,8 @@ void TwitchChannel::updateStreamTitle(const QString &title)
 void TwitchChannel::updateStreamGame(const QString &gameName,
                                      const QString &gameId)
 {
+    QString streamId;
+    QDateTime streamStart;
     {
         auto status = this->streamStatus_.access();
         if (status->game == gameName && status->gameId == gameId)
@@ -1526,6 +1529,11 @@ void TwitchChannel::updateStreamGame(const QString &gameName,
         }
         status->game = gameName;
         status->gameId = gameId;
+        if (status->live)
+        {
+            streamId = status->streamId;
+            streamStart = status->startedAt;
+        }
     }
     this->streamStatusChanged.invoke();
 }
@@ -1848,109 +1856,6 @@ bool TwitchChannel::sendSpamMessageViaHelix(
     return true;
 }
 
-void TwitchChannel::sendBotMessage(const QString &message)
-{
-    if (this->isAnonymous())
-    {
-        if (!message.isEmpty())
-        {
-            this->showAnonymousReadOnlyMessage();
-        }
-
-        return;
-    }
-
-    const auto botConfig = getBotBadgeSendConfig();
-    if (!botConfig.isValid())
-    {
-        this->addSystemMessage(
-            "Bot mode is locked. Ask Molto about it. Usage: /bot <message>");
-        return;
-    }
-
-    const auto broadcasterID = this->roomId();
-    if (broadcasterID.isEmpty())
-    {
-        this->addSystemMessage(
-            "Cannot send message: channel ID not available.");
-        return;
-    }
-
-    QJsonObject json{{
-        {"broadcaster_id", broadcasterID},
-        {"sender_id", botConfig.senderID},
-        {"message", message},
-    }};
-
-    NetworkRequest("https://api.twitch.tv/helix/chat/messages",
-                   NetworkRequestType::Post)
-        .timeout(10000)
-        .header("Accept", "application/json")
-        .header("Authorization", "Bearer " + botConfig.appToken)
-        .header("Client-ID", botConfig.clientId)
-        .header("Content-Type", "application/json")
-        .json(json)
-        .onSuccess([weak = weakOf<Channel>(this)](const NetworkResult &result) {
-            auto channel =
-                std::dynamic_pointer_cast<TwitchChannel>(weak.lock());
-            if (!channel)
-            {
-                return;
-            }
-
-            auto responseJson = result.parseJson();
-            auto data = responseJson.value("data").toArray();
-            if (data.isEmpty())
-            {
-                return;
-            }
-
-            auto first = data.first().toObject();
-            if (first.value("is_sent").toBool())
-            {
-                return;
-            }
-
-            auto dropReason = first.value("drop_reason").toObject();
-            if (!dropReason.isEmpty())
-            {
-                channel->addSystemMessage(
-                    "Bot message dropped: " +
-                    dropReason.value("message").toString());
-            }
-            else
-            {
-                channel->addSystemMessage("Bot message was not sent.");
-            }
-        })
-        .onError([weak = weakOf<Channel>(this)](const NetworkResult &result) {
-            auto channel =
-                std::dynamic_pointer_cast<TwitchChannel>(weak.lock());
-            if (!channel)
-            {
-                return;
-            }
-
-            auto json = result.parseJson();
-            auto msg = json.value("message").toString();
-            if (msg.isEmpty())
-            {
-                msg = result.formatError();
-            }
-
-            if (result.status() && *result.status() == 401)
-            {
-                channel->addSystemMessage(
-                    "Bot badge token expired or invalid.");
-            }
-            else
-            {
-                channel->addSystemMessage("Bot message failed: " + msg);
-            }
-        })
-        .execute();
-}
-
 void TwitchChannel::sendMessage(const QString &message)
 {
     if (this->isAnonymous())
@@ -1991,154 +1896,15 @@ void TwitchChannel::sendMessage(const QString &message)
         return;
     }
 
-    auto sendNormally = [this, &parsedMessage] {
-        bool messageSent = false;
-        this->sendMessageSignal.invoke(parsedMessage, messageSent);
-        this->updateBttvActivity();
-        this->updateSevenTVActivity();
-
-        if (messageSent)
-        {
-            qCDebug(chatterinoTwitch) << "sent";
-            this->lastSentMessage_ = parsedMessage;
-        }
-    };
-
-    // Intercept for Bot Badge mode
-    if (shouldUseBotBadgeForSelectedAccount())
+    bool messageSent = false;
+    this->sendMessageSignal.invoke(parsedMessage, messageSent);
+    this->updateBttvActivity();
+    this->updateSevenTVActivity();
+    if (messageSent)
     {
-        const auto botConfig = getBotBadgeSendConfig();
-        const auto broadcasterID = this->roomId();
-        const auto botSenderID = botConfig.senderID;
-        const bool allowSelectedAccountFallback =
-            selectedAccountIsBotBadgeSender(botSenderID);
-
-        if (botConfig.isValid() && !broadcasterID.isEmpty())
-        {
-            QJsonObject json{{
-                {"broadcaster_id", broadcasterID},
-                {"sender_id", botConfig.senderID},
-                {"message", parsedMessage},
-            }};
-
-            NetworkRequest("https://api.twitch.tv/helix/chat/messages",
-                           NetworkRequestType::Post)
-                .timeout(10000)
-                .header("Authorization", "Bearer " + botConfig.appToken)
-                .header("Client-Id", botConfig.clientId)
-                .header("Content-Type", "application/json")
-                .payload(QJsonDocument(json).toJson())
-                .onSuccess([weak = weakOf<Channel>(this), parsedMessage,
-                            botSenderID](const NetworkResult &result) {
-                    auto channel =
-                        std::dynamic_pointer_cast<TwitchChannel>(weak.lock());
-                    if (!channel)
-                    {
-                        return;
-                    }
-
-                    auto responseJson = result.parseJson();
-                    auto data = responseJson.value("data").toArray();
-                    if (!data.isEmpty())
-                    {
-                        auto first = data.first().toObject();
-                        if (!first.value("is_sent").toBool())
-                        {
-                            qCWarning(chatterinoTwitch)
-                                << "Bot badge send was dropped:"
-                                << first.value("drop_reason").toObject();
-                            if (!selectedAccountIsBotBadgeSender(botSenderID))
-                            {
-                                auto dropReason =
-                                    first.value("drop_reason").toObject();
-                                auto message =
-                                    dropReason.value("message").toString();
-                                channel->addSystemMessage(
-                                    message.isEmpty()
-                                        ? QStringLiteral(
-                                              "Bot message was not sent.")
-                                        : QStringLiteral(
-                                              "Bot message dropped: ") +
-                                              message);
-                                return;
-                            }
-
-                            bool messageSent = false;
-                            channel->sendMessageSignal.invoke(parsedMessage,
-                                                              messageSent);
-                            channel->updateBttvActivity();
-                            channel->updateSevenTVActivity();
-                            if (messageSent)
-                            {
-                                channel->lastSentMessage_ = parsedMessage;
-                            }
-                            return;
-                        }
-                    }
-
-                    qCDebug(chatterinoTwitch)
-                        << "Bot message sent via bot badge";
-                    channel->updateBttvActivity();
-                    channel->updateSevenTVActivity();
-                    channel->lastSentMessage_ = parsedMessage;
-                })
-                .onError([weak = weakOf<Channel>(this), parsedMessage,
-                          botSenderID](auto result) {
-                    auto channel =
-                        std::dynamic_pointer_cast<TwitchChannel>(weak.lock());
-                    if (!channel)
-                    {
-                        return;
-                    }
-
-                    qCWarning(chatterinoTwitch)
-                        << "Bot badge send failed:" << result.formatError();
-                    if (!selectedAccountIsBotBadgeSender(botSenderID))
-                    {
-                        auto json = result.parseJson();
-                        auto msg = json.value("message").toString();
-                        if (msg.isEmpty())
-                        {
-                            msg = result.formatError();
-                        }
-
-                        if (result.status() && *result.status() == 401)
-                        {
-                            channel->addSystemMessage(
-                                "Bot badge token expired or invalid.");
-                        }
-                        else
-                        {
-                            channel->addSystemMessage("Bot message failed: " +
-                                                      msg);
-                        }
-                        return;
-                    }
-
-                    bool messageSent = false;
-                    channel->sendMessageSignal.invoke(parsedMessage,
-                                                      messageSent);
-                    channel->updateBttvActivity();
-                    channel->updateSevenTVActivity();
-                    if (messageSent)
-                    {
-                        channel->lastSentMessage_ = parsedMessage;
-                    }
-                })
-                .execute();
-
-            return;
-        }
-
-        if (!allowSelectedAccountFallback)
-        {
-            this->addSystemMessage(
-                "Bot message failed: bot badge setup is unavailable.");
-            return;
-        }
+        qCDebug(chatterinoTwitch) << "sent";
+        this->lastSentMessage_ = parsedMessage;
     }
-
-    sendNormally();
 }
 
 void TwitchChannel::sendReply(const QString &message, const QString &replyId)
@@ -2181,146 +1947,13 @@ void TwitchChannel::sendReply(const QString &message, const QString &replyId)
         return;
     }
 
-    auto sendNormally = [this, &parsedMessage, &replyId] {
-        bool messageSent = false;
-        this->sendReplySignal.invoke(parsedMessage, replyId, messageSent);
-
-        if (messageSent)
-        {
-            qCDebug(chatterinoTwitch) << "sent";
-            this->lastSentMessage_ = parsedMessage;
-        }
-    };
-
-    // Intercept for Bot Badge mode
-    if (shouldUseBotBadgeForSelectedAccount())
+    bool messageSent = false;
+    this->sendReplySignal.invoke(parsedMessage, replyId, messageSent);
+    if (messageSent)
     {
-        const auto botConfig = getBotBadgeSendConfig();
-        const auto broadcasterID = this->roomId();
-        const auto botSenderID = botConfig.senderID;
-        const bool allowSelectedAccountFallback =
-            selectedAccountIsBotBadgeSender(botSenderID);
-
-        if (botConfig.isValid() && !broadcasterID.isEmpty())
-        {
-            QJsonObject json{{
-                {"broadcaster_id", broadcasterID},
-                {"sender_id", botConfig.senderID},
-                {"message", parsedMessage},
-                {"reply_parent_message_id", replyId},
-            }};
-
-            NetworkRequest("https://api.twitch.tv/helix/chat/messages",
-                           NetworkRequestType::Post)
-                .timeout(10000)
-                .header("Authorization", "Bearer " + botConfig.appToken)
-                .header("Client-Id", botConfig.clientId)
-                .header("Content-Type", "application/json")
-                .payload(QJsonDocument(json).toJson())
-                .onSuccess([weak = weakOf<Channel>(this), parsedMessage,
-                            replyId, botSenderID](const NetworkResult &result) {
-                    auto channel =
-                        std::dynamic_pointer_cast<TwitchChannel>(weak.lock());
-                    if (!channel)
-                    {
-                        return;
-                    }
-
-                    auto responseJson = result.parseJson();
-                    auto data = responseJson.value("data").toArray();
-                    if (!data.isEmpty())
-                    {
-                        auto first = data.first().toObject();
-                        if (!first.value("is_sent").toBool())
-                        {
-                            qCWarning(chatterinoTwitch)
-                                << "Bot badge reply was dropped:"
-                                << first.value("drop_reason").toObject();
-                            if (!selectedAccountIsBotBadgeSender(botSenderID))
-                            {
-                                auto dropReason =
-                                    first.value("drop_reason").toObject();
-                                auto message =
-                                    dropReason.value("message").toString();
-                                channel->addSystemMessage(
-                                    message.isEmpty()
-                                        ? QStringLiteral(
-                                              "Bot reply was not sent.")
-                                        : QStringLiteral(
-                                              "Bot reply dropped: ") +
-                                              message);
-                                return;
-                            }
-
-                            bool messageSent = false;
-                            channel->sendReplySignal.invoke(
-                                parsedMessage, replyId, messageSent);
-                            if (messageSent)
-                            {
-                                channel->lastSentMessage_ = parsedMessage;
-                            }
-                            return;
-                        }
-                    }
-
-                    qCDebug(chatterinoTwitch) << "Bot reply sent via bot badge";
-                    channel->lastSentMessage_ = parsedMessage;
-                })
-                .onError([weak = weakOf<Channel>(this), parsedMessage, replyId,
-                          botSenderID](auto result) {
-                    auto channel =
-                        std::dynamic_pointer_cast<TwitchChannel>(weak.lock());
-                    if (!channel)
-                    {
-                        return;
-                    }
-
-                    qCWarning(chatterinoTwitch)
-                        << "Bot badge reply failed:" << result.formatError();
-                    if (!selectedAccountIsBotBadgeSender(botSenderID))
-                    {
-                        auto json = result.parseJson();
-                        auto msg = json.value("message").toString();
-                        if (msg.isEmpty())
-                        {
-                            msg = result.formatError();
-                        }
-
-                        if (result.status() && *result.status() == 401)
-                        {
-                            channel->addSystemMessage(
-                                "Bot badge token expired or invalid.");
-                        }
-                        else
-                        {
-                            channel->addSystemMessage("Bot reply failed: " +
-                                                      msg);
-                        }
-                        return;
-                    }
-
-                    bool messageSent = false;
-                    channel->sendReplySignal.invoke(parsedMessage, replyId,
-                                                    messageSent);
-                    if (messageSent)
-                    {
-                        channel->lastSentMessage_ = parsedMessage;
-                    }
-                })
-                .execute();
-
-            return;
-        }
-
-        if (!allowSelectedAccountFallback)
-        {
-            this->addSystemMessage(
-                "Bot reply failed: bot badge setup is unavailable.");
-            return;
-        }
+        qCDebug(chatterinoTwitch) << "sent";
+        this->lastSentMessage_ = parsedMessage;
     }
-
-    sendNormally();
 }
 
 bool TwitchChannel::isMod() const
@@ -3378,6 +3011,7 @@ void TwitchChannel::loadRecentMessages()
 
             getApp()->getTwitch()->getMentionsChannel()->fillInMissingMessages(
                 msgs);
+            tc->noteLoadedHistoryForBadges(messages);
         },
         [weak]() {
             auto shared = weak.lock();
@@ -3431,6 +3065,7 @@ void TwitchChannel::loadRecentMessagesReconnect()
 
             shared->fillInMissingMessages(messages);
             shared->loadingRecentMessages_.clear();
+            shared->noteLoadedHistoryForBadges(messages);
         },
         [weak]() {
             auto shared = weak.lock();
@@ -3442,6 +3077,284 @@ void TwitchChannel::loadRecentMessagesReconnect()
             shared->loadingRecentMessages_.clear();
         },
         limit, this->lastConnectedAt_, now, true);
+}
+
+namespace {
+
+void queueGlobalBadgeRefresh(bool all, QSet<QString> userIds)
+{
+    if (isAppAboutToQuit() || !QCoreApplication::instance() ||
+        (!all && userIds.isEmpty()))
+    {
+        return;
+    }
+    {
+        std::lock_guard lock(globalBadgeRefreshMutex);
+        globalBadgeRefreshAll |= all;
+        if (globalBadgeRefreshAll)
+        {
+            globalBadgeRefreshUsers.clear();
+        }
+        else
+        {
+            globalBadgeRefreshUsers.unite(userIds);
+        }
+        if (std::exchange(globalBadgeRefreshQueued, true))
+        {
+            return;
+        }
+    }
+
+    QTimer::singleShot(250, QCoreApplication::instance(), [] {
+        QSet<QString> users;
+        {
+            std::lock_guard lock(globalBadgeRefreshMutex);
+            globalBadgeRefreshQueued = false;
+            if (!std::exchange(globalBadgeRefreshAll, false))
+            {
+                users.swap(globalBadgeRefreshUsers);
+            }
+            else
+            {
+                globalBadgeRefreshUsers.clear();
+            }
+        }
+        auto *app = tryGetApp();
+        if (!app || app->isTest() || isAppAboutToQuit())
+        {
+            return;
+        }
+        // The history loader registers both ordinary and anonymous channels.
+        for (auto it = historyBadgeChannels.begin();
+             it != historyBadgeChannels.end();)
+        {
+            if (auto channel = it.value().lock())
+            {
+                channel->scheduleHistoryBadgeRefresh(users);
+                ++it;
+            }
+            else
+            {
+                it = historyBadgeChannels.erase(it);
+            }
+        }
+    });
+}
+
+}  // namespace
+
+void notifyGlobalChatBadgesChanged()
+{
+    queueGlobalBadgeRefresh(true, {});
+}
+
+void notifyChatBadgesChangedForUsers(QSet<QString> userIds)
+{
+    queueGlobalBadgeRefresh(false, std::move(userIds));
+}
+
+void TwitchChannel::noteLoadedHistoryForBadges(
+    const std::vector<MessagePtr> &messages)
+{
+    QSet<QString> users;
+    for (const auto &message : messages)
+    {
+        if (message->flags.has(MessageFlag::RecentMessage) &&
+            !message->userID.isEmpty() &&
+            !message->flags.has(MessageFlag::System))
+        {
+            users.insert(message->userID);
+        }
+    }
+    if (!users.isEmpty())
+    {
+        historyBadgeChannels.insert(this, this->weakFromThis());
+        this->historyBadgeUserIds_.unite(users);
+        this->scheduleHistoryBadgeRefresh(users);
+    }
+}
+
+void TwitchChannel::scheduleHistoryBadgeRefresh(const QSet<QString> &userIds)
+{
+    assertInGuiThread();
+    if (isAppAboutToQuit() ||
+        (this->historyBadgeUserIds_.isEmpty() && !this->historyBadgeProviderForTesting))
+    {
+        return;
+    }
+    if (userIds.isEmpty())
+    {
+        this->historyBadgeRefreshAllPending_ = true;
+        this->historyBadgeRefreshUsersPending_.clear();
+    }
+    else if (!this->historyBadgeRefreshAllPending_)
+    {
+        auto relevant = userIds;
+        if (!this->historyBadgeProviderForTesting)
+        {
+            relevant.intersect(this->historyBadgeUserIds_);
+        }
+        if (relevant.isEmpty())
+        {
+            return;
+        }
+        this->historyBadgeRefreshUsersPending_.unite(relevant);
+    }
+    if (this->historyBadgeRefreshQueued_)
+    {
+        return;
+    }
+
+    this->historyBadgeRefreshQueued_ = true;
+    historyBadgeRefreshQueue.push_back(this->weakFromThis());
+    if (!historyBadgeRefreshTimerActive)
+    {
+        historyBadgeRefreshTimerActive = true;
+        QTimer::singleShot(1, QCoreApplication::instance(),
+                           &TwitchChannel::processQueuedHistoryBadgeRefreshes);
+    }
+}
+
+void TwitchChannel::processQueuedHistoryBadgeRefreshes()
+{
+    assertInGuiThread();
+    if (isAppAboutToQuit())
+    {
+        historyBadgeRefreshQueue.clear();
+        historyBadgeRefreshTimerActive = false;
+        return;
+    }
+    if (!historyBadgeRefreshQueue.empty())
+    {
+        auto channel = historyBadgeRefreshQueue.front().lock();
+        historyBadgeRefreshQueue.pop_front();
+        if (channel && channel->refreshHistoryBadgeBatch())
+        {
+            historyBadgeRefreshQueue.push_back(channel);
+        }
+    }
+    if (!historyBadgeRefreshQueue.empty())
+    {
+        QTimer::singleShot(1, QCoreApplication::instance(),
+                           &TwitchChannel::processQueuedHistoryBadgeRefreshes);
+    }
+    else
+    {
+        historyBadgeRefreshTimerActive = false;
+    }
+}
+
+bool TwitchChannel::refreshHistoryBadgeBatch()
+{
+    if (!this->historyBadgeRefreshStarted_)
+    {
+        this->historyBadgeRefreshStarted_ = true;
+        this->historyBadgeRefreshSnapshot_ = this->getMessageSnapshot();
+        this->historyBadgeRefreshUsers_.clear();
+        if (!std::exchange(this->historyBadgeRefreshAllPending_, false))
+        {
+            this->historyBadgeRefreshUsers_.swap(
+                this->historyBadgeRefreshUsersPending_);
+        }
+    }
+    QElapsedTimer budget;
+    budget.start();
+    auto &cursor = this->historyBadgeRefreshCursor_;
+    auto &snapshot = this->historyBadgeRefreshSnapshot_;
+    auto &cache = this->historyBadgeRefreshCache_;
+    while (cursor < snapshot.size())
+    {
+        const auto index = cursor++;
+        const auto &message = snapshot[index];
+        if (message->flags.has(MessageFlag::RecentMessage) &&
+            !message->flags.has(MessageFlag::System) &&
+            !message->userID.isEmpty() &&
+            (this->historyBadgeRefreshUsers_.isEmpty() ||
+             this->historyBadgeRefreshUsers_.contains(message->userID)))
+        {
+            auto *badgeChannel = message->flags.has(MessageFlag::SharedMessage)
+                                     ? nullptr : this;
+            const auto key = badgeChannel ? message->userID
+                                         : u"shared:"_s + message->userID;
+            auto it = cache.find(key);
+            if (it == cache.end())
+            {
+                MessagePtr external;
+                if (this->historyBadgeProviderForTesting)
+                {
+                    external = this->historyBadgeProviderForTesting(message->userID, badgeChannel);
+                }
+                else
+                {
+                    MessageBuilder builder;
+                    builder.appendGlobalBadges(message->userID, badgeChannel);
+                    external = builder.release();
+                }
+                it = cache.insert(key, std::move(external));
+            }
+            if (auto corrected = MessageBuilder::refreshHistoryBadges(
+                    *message, this, it.value()))
+            {
+                if (this->replaceMessage(index, message, corrected))
+                {
+                    if (message->replyThread)
+                    {
+                        message->replyThread->replaceReply(message, corrected);
+                    }
+                    if (message->flags.hasAll(MessageFlag::Highlighted, MessageFlag::ShowInMentions))
+                    {
+                        getApp()->getTwitch()->getMentionsChannel()->replaceMessage(
+                            message, corrected);
+                    }
+                }
+            }
+        }
+        // Keep the GUI responsive even with many channels and many old rows.
+        if (budget.elapsed() >= 3)
+        {
+            break;
+        }
+    }
+    if (cursor < snapshot.size())
+    {
+        return true;
+    }
+    if (!this->historyBadgeRefreshAllPending_)
+    {
+        // Drop IDs whose history rows have since scrolled out. Keep authors
+        // inserted by a newer history request during this pass.
+        if (this->historyBadgeRefreshUsers_.isEmpty())
+        {
+            QSet<QString> present = this->historyBadgeRefreshUsersPending_;
+            for (auto it = cache.keyBegin(); it != cache.keyEnd(); ++it)
+            {
+                present.insert(it->startsWith(u"shared:") ? it->mid(7) : *it);
+            }
+            this->historyBadgeUserIds_ = std::move(present);
+        }
+        else
+        {
+            for (const auto &user : this->historyBadgeRefreshUsers_)
+            {
+                if (!cache.contains(user) && !cache.contains(u"shared:"_s + user) &&
+                    !this->historyBadgeRefreshUsersPending_.contains(user))
+                {
+                    this->historyBadgeUserIds_.remove(user);
+                }
+            }
+        }
+    }
+    snapshot.clear();
+    cache.clear();
+    cursor = 0;
+    this->historyBadgeRefreshStarted_ = false;
+    if (this->historyBadgeRefreshAllPending_ ||
+        !this->historyBadgeRefreshUsersPending_.isEmpty())
+    {
+        return true;
+    }
+    this->historyBadgeRefreshQueued_ = false;
+    return false;
 }
 
 void TwitchChannel::refreshPubSub()
@@ -3907,29 +3820,31 @@ void TwitchChannel::refreshBadges()
 
 void TwitchChannel::addTwitchBadgeSets(const HelixChannelBadges &channelBadges)
 {
-    auto badgeSets = this->badgeSets_.access();
-
-    for (const auto &badgeSet : channelBadges.badgeSets)
     {
-        const auto &setID = badgeSet.setID;
-        for (const auto &version : badgeSet.versions)
+        auto badgeSets = this->badgeSets_.access();
+        for (const auto &badgeSet : channelBadges.badgeSets)
         {
-            auto emote = Emote{
-                .name = EmoteName{},
-                .images =
-                    ImageSet{
-                        Image::fromUrl(version.imageURL1x, 1, BASE_BADGE_SIZE),
-                        Image::fromUrl(version.imageURL2x, .5,
-                                       BASE_BADGE_SIZE * 2),
-                        Image::fromUrl(version.imageURL4x, .25,
-                                       BASE_BADGE_SIZE * 4),
-                    },
-                .tooltip = Tooltip{version.title},
-                .homePage = version.clickURL,
-            };
-            (*badgeSets)[setID][version.id] = std::make_shared<Emote>(emote);
+            const auto &setID = badgeSet.setID;
+            for (const auto &version : badgeSet.versions)
+            {
+                auto emote = Emote{
+                    .name = EmoteName{},
+                    .images =
+                        ImageSet{
+                            Image::fromUrl(version.imageURL1x, 1, BASE_BADGE_SIZE),
+                            Image::fromUrl(version.imageURL2x, .5,
+                                           BASE_BADGE_SIZE * 2),
+                            Image::fromUrl(version.imageURL4x, .25,
+                                           BASE_BADGE_SIZE * 4),
+                        },
+                    .tooltip = Tooltip{version.title},
+                    .homePage = version.clickURL,
+                };
+                (*badgeSets)[setID][version.id] = std::make_shared<Emote>(emote);
+            }
         }
     }
+    this->scheduleHistoryBadgeRefresh();
 }
 
 void TwitchChannel::refreshCheerEmotes()
@@ -4263,6 +4178,7 @@ void TwitchChannel::setFfzChannelBadges(FfzChannelBadgeMap map)
 {
     this->tgFfzChannelBadges_.guard();
     this->ffzChannelBadges_ = std::move(map);
+    this->scheduleHistoryBadgeRefresh();
 }
 
 std::optional<EmotePtr> TwitchChannel::ffzCustomModBadge() const
@@ -4278,11 +4194,13 @@ std::optional<EmotePtr> TwitchChannel::ffzCustomVipBadge() const
 void TwitchChannel::setFfzCustomModBadge(std::optional<EmotePtr> badge)
 {
     this->ffzCustomModBadge_.set(std::move(badge));
+    this->scheduleHistoryBadgeRefresh();
 }
 
 void TwitchChannel::setFfzCustomVipBadge(std::optional<EmotePtr> badge)
 {
     this->ffzCustomVipBadge_.set(std::move(badge));
+    this->scheduleHistoryBadgeRefresh();
 }
 
 std::optional<CheerEmote> TwitchChannel::cheerEmote(const QString &string) const
@@ -4705,9 +4623,9 @@ void TwitchChannel::flushSlowQueue()
     {
         this->sendReply(next.text, next.replyId);
     }
-    // The next one waits for this one to show up in the chat (that starts
-    // the slow mode wait). If it never does, it did not go through: the next
-    // one goes after a short while instead of the queue getting stuck.
+    // The next distinct user-queued message waits for the live echo to
+    // start the slow mode countdown. The removed entry is never replayed,
+    // including if its delivery is unknown.
     this->slowQueueTimer_.start(2500);
     this->syncSendWaitTimer();
 }
@@ -4745,19 +4663,19 @@ void TwitchChannel::tryEmitPinnedChatPinSystemMessage(
     QString systemText;
     if (!pinnerName.isEmpty() && !messageText.isEmpty())
     {
-        systemText = QString("%1 pinned: \"%2\"").arg(pinnerName, messageText);
+        systemText = uiText("%1 pinned: \"%2\"").arg(pinnerName, messageText);
     }
     else if (!pinnerName.isEmpty())
     {
-        systemText = QString("%1 pinned a message.").arg(pinnerName);
+        systemText = uiText("%1 pinned a message.").arg(pinnerName);
     }
     else if (!messageText.isEmpty())
     {
-        systemText = QString("A message was pinned: \"%1\"").arg(messageText);
+        systemText = uiText("A message was pinned: \"%1\"").arg(messageText);
     }
     else
     {
-        systemText = QStringLiteral("A message was pinned.");
+        systemText = uiText("A message was pinned.");
     }
 
     if (!key.isEmpty())
@@ -4765,7 +4683,7 @@ void TwitchChannel::tryEmitPinnedChatPinSystemMessage(
         this->lastPinSystemMessageKey_ = key;
     }
 
-    this->addSystemMessage(systemText);
+    addChannelNotice(*this, Message::ChannelNotice::Pinned, systemText);
 }
 
 void TwitchChannel::handlePinnedChatUpdate(const QJsonObject &data)
@@ -4808,18 +4726,13 @@ void TwitchChannel::handlePinnedChatUpdate(const QJsonObject &data)
 
         if (currentPin.has_value() && getSettings()->showUnpinNotifications)
         {
-            QString unpinnerName = userDisplayNameFromObject(
+            const auto unpinnerName = userDisplayNameFromObject(
                 objectFromAnyKey(innerData, "unpinned_by", "unpinnedBy"));
-
-            if (unpinnerName.isEmpty())
-            {
-                this->addSystemMessage("Pinned message was removed.");
-            }
-            else
-            {
-                this->addSystemMessage(
-                    QString("%1 unpinned the message.").arg(unpinnerName));
-            }
+            const auto text = unpinnerName.isEmpty()
+                                  ? uiText("Pinned message was removed.")
+                                  : uiText("%1 unpinned the message.")
+                                        .arg(unpinnerName);
+            addChannelNotice(*this, Message::ChannelNotice::Unpinned, text);
         }
         this->lastPinSystemMessageKey_.clear();
         this->setPinnedMessage(std::nullopt);
@@ -4919,7 +4832,8 @@ void TwitchChannel::setActivePoll(std::optional<PollEvent> poll)
 
 void TwitchChannel::tryEmitPollCreatedSystemMessage(const PollEvent &poll)
 {
-    if (poll.createdByName.isEmpty() || poll.title.isEmpty())
+    if (poll.createdByName.isEmpty() || poll.title.isEmpty() ||
+        poll.status.compare("ACTIVE", Qt::CaseInsensitive) != 0)
     {
         return;
     }
@@ -4933,8 +4847,9 @@ void TwitchChannel::tryEmitPollCreatedSystemMessage(const PollEvent &poll)
     }
 
     this->lastPollSystemMessageKey_ = key;
-    this->addSystemMessage(uiText(QString("%1 created a poll: \"%2\""))
-                               .arg(poll.createdByName, poll.title));
+    addChannelNotice(*this, Message::ChannelNotice::Poll,
+                    uiText(QString("%1 created a poll: \"%2\""))
+                        .arg(poll.createdByName, poll.title));
 }
 
 void TwitchChannel::setActiveRaid(std::optional<RaidEvent> raid)
@@ -5081,20 +4996,23 @@ void TwitchChannel::handlePredictionUpdate(const QJsonObject &payload)
         this->lastPredictionSystemMessageKey_ = systemMessageKey;
         if (systemMessageKind == "created")
         {
-            this->addSystemMessage(
+            addChannelNotice(
+                *this, Message::ChannelNotice::Prediction,
                 uiText(QString("%1 created a prediction: \"%2\""))
                     .arg(predictionActorOrFallback(prediction.createdByName),
                          prediction.title));
         }
         else if (systemMessageKind == "locked")
         {
-            this->addSystemMessage(
+            addChannelNotice(
+                *this, Message::ChannelNotice::Prediction,
                 uiText(QString("%1 locked the prediction"))
                     .arg(predictionActorOrFallback(prediction.lockedByName)));
         }
         else if (systemMessageKind == "canceled")
         {
-            this->addSystemMessage(
+            addChannelNotice(
+                *this, Message::ChannelNotice::Prediction,
                 uiText(QString("%1 deleted and refunded the prediction"))
                     .arg(predictionActorOrFallback(prediction.endedByName)));
         }
@@ -5103,13 +5021,15 @@ void TwitchChannel::handlePredictionUpdate(const QJsonObject &payload)
             const auto winnerTitle = predictionWinnerTitle(prediction);
             if (winnerTitle.isEmpty())
             {
-                this->addSystemMessage(uiText(QString("%1 paid out the prediction"))
-                                           .arg(predictionActorOrFallback(
-                                               prediction.endedByName)));
+                addChannelNotice(
+                    *this, Message::ChannelNotice::Prediction,
+                    uiText(QString("%1 paid out the prediction"))
+                        .arg(predictionActorOrFallback(prediction.endedByName)));
             }
             else
             {
-                this->addSystemMessage(
+                addChannelNotice(
+                    *this, Message::ChannelNotice::Prediction,
                     uiText(QString("%1 paid out the prediction: \"%2\" won"))
                         .arg(predictionActorOrFallback(prediction.endedByName),
                              winnerTitle));
@@ -5185,31 +5105,40 @@ std::optional<qlonglong> TwitchChannel::predictionPayout(
 void TwitchChannel::announceOwnPredictionResult(
     const PredictionEvent &prediction)
 {
-    if (prediction.id.isEmpty() ||
+    if (prediction.id.isEmpty() || prediction.selfPoints <= 0 ||
         this->ownPredictionResultShownFor_ == prediction.id ||
         !getSettings()->showPredictionSystemMessages)
     {
         return;
     }
-    const auto payout = predictionPayout(prediction);
+    const bool refunded = prediction.selfResult == u"REFUND";
+    const auto payout = refunded ? std::optional<qlonglong>(prediction.selfPoints)
+                                 : predictionPayout(prediction);
     if (!payout)
     {
         return;
     }
     this->ownPredictionResultShownFor_ = prediction.id;
-    if (*payout > 0)
+    const QLocale locale(activeUiLanguage());
+    if (refunded)
+    {
+        addChannelNotice(*this, Message::ChannelNotice::PredictionRefund,
+                         uiText("Prediction refunded · Channel points: +%1")
+                             .arg(locale.toString(*payout)));
+    }
+    else if (*payout > 0)
     {
         const auto profit = *payout - prediction.selfPoints;
-        this->addSystemMessage(
-            uiText(QString("Your prediction won: %1 channel points back (+%2)"))
-                .arg(formatChannelPoints(*payout),
-                     formatChannelPoints(std::max<qlonglong>(0, profit))));
+        addChannelNotice(*this, Message::ChannelNotice::PredictionWon,
+                         uiText("Prediction won · Payout: %1 (+%2)")
+                             .arg(locale.toString(*payout),
+                                  locale.toString(std::max<qlonglong>(0, profit))));
     }
-    else if (prediction.selfPoints > 0)
+    else
     {
-        this->addSystemMessage(
-            uiText(QString("Your prediction lost: -%1 channel points"))
-                .arg(formatChannelPoints(prediction.selfPoints)));
+        addChannelNotice(*this, Message::ChannelNotice::PredictionLost,
+                         uiText("Prediction lost · Channel points: −%1")
+                             .arg(locale.toString(prediction.selfPoints)));
     }
 }
 
@@ -5256,17 +5185,14 @@ void TwitchChannel::handlePredictionUserEvent(const QJsonObject &payload)
             current->selfResult = resultType;
             current->selfPointsWon = result.value("points_won").toInteger();
         }
-        if (current->selfResult != "REFUND")
-        {
-            this->announceOwnPredictionResult(*current);
-        }
+        this->announceOwnPredictionResult(*current);
         this->setActivePrediction(std::move(current));
         return;
     }
 
     // the prediction is already gone from here: still say how it went
     if (type == "prediction-result" &&
-        (resultType == "WIN" || resultType == "LOSE"))
+        (resultType == "WIN" || resultType == "LOSE" || resultType == "REFUND"))
     {
         PredictionEvent gone;
         gone.id = eventId;
@@ -5320,24 +5246,30 @@ void TwitchChannel::handlePollUpdate(const QJsonObject &payload)
             const auto winnerTitle = pollWinnerTitle(pollEvent);
             if (winnerTitle.isEmpty())
             {
-                this->addSystemMessage(uiText(QString("%1 ended the poll: \"%2\""))
-                                           .arg(actor, pollEvent.title));
+                addChannelNotice(
+                    *this, Message::ChannelNotice::Poll,
+                    uiText(QString("%1 ended the poll: \"%2\""))
+                        .arg(actor, pollEvent.title));
             }
             else
             {
-                this->addSystemMessage(uiText(QString("%1 ended the poll: \"%2\" won"))
-                                           .arg(actor, winnerTitle));
+                addChannelNotice(
+                    *this, Message::ChannelNotice::Poll,
+                    uiText(QString("%1 ended the poll: \"%2\" won"))
+                        .arg(actor, winnerTitle));
             }
         }
         else if (systemMessageKind == "terminated")
         {
-            this->addSystemMessage(
+            addChannelNotice(
+                *this, Message::ChannelNotice::Poll,
                 uiText(QString("%1 ended the poll early"))
                     .arg(predictionActorOrFallback(pollEvent.endedByName)));
         }
         else if (systemMessageKind == "archived")
         {
-            this->addSystemMessage(
+            addChannelNotice(
+                *this, Message::ChannelNotice::Poll,
                 uiText(QString("%1 archived the poll"))
                     .arg(predictionActorOrFallback(pollEvent.endedByName)));
         }
@@ -5815,6 +5747,15 @@ void TwitchChannel::refreshActivePrediction()
                     qCDebug(chatterinoTwitch)
                         << "[Predictions] No active prediction for"
                         << shared->getName();
+                    // An empty active-events response is not a settlement
+                    // event. Preserve the last confirmed locked/result view
+                    // until an explicit cancellation or a new prediction.
+                    const auto current = shared->accessPrediction();
+                    if (*current && ((*current)->status == "LOCKED" ||
+                                     (*current)->status == "RESOLVED"))
+                    {
+                        return;
+                    }
                 }
                 shared->setActivePrediction(std::move(prediction));
             });
@@ -6375,7 +6316,7 @@ void TwitchChannel::refreshChannelPoints()
         clearUnavailablePoints();
         qCDebug(chatterinoTwitch)
             << "[Points] Skipping points fetch for" << this->getName()
-            << "because no matching Moltorino auth token is set";
+            << "because no matching Twitch device login token is set";
         return;
     }
 

@@ -111,6 +111,7 @@ public:
     void select(SplitContainer *container);
 
     void scrollToMessage(const MessagePtr &message);
+    void activateTwitchChannel(const QString &channelName);
     void openChannelOrMessageFromTray(const QString &channelName,
                                       const QString &messageId);
     void showMainWindow();

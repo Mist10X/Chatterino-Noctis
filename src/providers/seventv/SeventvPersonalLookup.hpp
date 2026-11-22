@@ -48,6 +48,7 @@ private:
 
     void load();
     void scheduleSave();
+    void allowRetryAfterFailure(const QString &userID);
     void lookUpNext();
     void store(const QString &userID, const QString &emoteSetID);
     void loadSet(const QString &userID, const QString &login,
@@ -58,6 +59,7 @@ private:
     QHash<QString, Known> known_;
     /// asked in this session (a lookup or a set load is on its way or done)
     QSet<QString> asked_;
+    QHash<QString, qint64> retryAfter_;
     std::deque<std::pair<QString, QString>> queue_;  // user id, login
     QTimer *pace_;
     QTimer *saveTimer_;

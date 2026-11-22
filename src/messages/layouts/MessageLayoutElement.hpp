@@ -250,6 +250,21 @@ public:
         UniqueChat,
         Mail,
         Gift,
+        Subscription,
+        Prediction,
+        Poll,
+        ConnectionReady,
+        ConnectionInterrupted,
+        Raid,
+        Pinned,
+        Unpinned,
+        StreamLive,
+        StreamOffline,
+        PredictionWon,
+        PredictionLost,
+        PredictionRefund,
+        WatchStreak,
+        AutoModHeld,
     };
 
     NoticeIconLayoutElement(MessageElement &creator, Icon icon, QColor color,
@@ -302,6 +317,11 @@ class ImagePreviewLayoutElement : public MessageLayoutElement
 public:
     ImagePreviewLayoutElement(MessageElement &creator, ImagePtr image,
                               QSizeF size, float scale);
+
+    const ImagePtr &image() const
+    {
+        return this->image_;
+    }
 
 protected:
     void paint(QPainter &painter, const MessageColors &messageColors) override;

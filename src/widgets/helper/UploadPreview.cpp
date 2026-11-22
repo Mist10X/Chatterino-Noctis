@@ -7,6 +7,8 @@
 #include "Application.hpp"
 #include "common/UiLanguage.hpp"
 #include "singletons/Fonts.hpp"
+#include "messages/Image.hpp"
+#include "providers/links/ImagePreview.hpp"
 #include "singletons/ImageUploader.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
@@ -113,6 +115,12 @@ void UploadPreview::apply(const ImageUploadUpdate &update)
         case Kind::Started: {
             QPixmap pixmap;
             pixmap.loadFromData(update.imageData);
+            // Keep enough real pixels for the expanded preview at 200% DPI.
+            const QSize maxSize(1280, 1280);
+            this->pendingThumbnail_ =
+                pixmap.width() > maxSize.width() || pixmap.height() > maxSize.height()
+                    ? pixmap.scaled(maxSize, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                    : pixmap;
             const auto ratio = this->devicePixelRatioF();
             const int height = int(THUMB_HEIGHT * ratio);
             if (!pixmap.isNull())
@@ -139,6 +147,12 @@ void UploadPreview::apply(const ImageUploadUpdate &update)
             break;
         }
         case Kind::Finished:
+            if (!this->pendingThumbnail_.isNull() && !update.link.isEmpty())
+            {
+                imagepreview::rememberUpload(
+                    update.link, Image::fromPixmap(this->pendingThumbnail_));
+            }
+            this->pendingThumbnail_ = {};
             this->link_ = update.link;
             this->delete_->setEnabled(true);
             this->delete_->show();
@@ -150,6 +164,7 @@ void UploadPreview::apply(const ImageUploadUpdate &update)
             this->raise();
             break;
         case Kind::Failed:
+            this->pendingThumbnail_ = {};
             this->close();
             break;
     }
@@ -165,7 +180,6 @@ void UploadPreview::setStatus(const QString &title, const QString &detail)
     this->title_->setText(title);
     this->detailText_ = detail;
     this->detail_->setText(detail);
-    this->detail_->setToolTip(detail);
     this->detail_->setVisible(!detail.isEmpty());
     this->place();
 }
@@ -188,17 +202,30 @@ void UploadPreview::deleteImage()
             {
                 return;
             }
-            self->deleting_ = false;
+            const bool current = self->link_ == link;
+            if (current)
+            {
+                self->deleting_ = false;
+            }
             using Result = ImageUploader::DeleteResult;
             if (result == Result::Failed)
             {
-                self->delete_->setEnabled(true);
-                self->setStatus(uiText("Could not delete: %1").arg(error),
-                                link);
+                if (current)
+                {
+                    self->delete_->setEnabled(true);
+                    self->setStatus(uiText("Could not delete: %1").arg(error), link);
+                }
+                else
+                {
+                    self->notify_(uiText("Could not delete: %1").arg(error));
+                }
                 return;
             }
-            self->removeLinkFromInput();
-            self->close();
+            self->removeLinkFromInput(link);
+            if (current)
+            {
+                self->close();
+            }
             self->notify_(
                 result == Result::Deleted
                     ? uiText("The picture %1 was deleted from %2")
@@ -209,28 +236,29 @@ void UploadPreview::deleteImage()
         });
 }
 
-void UploadPreview::removeLinkFromInput()
+void UploadPreview::removeLinkFromInput(const QString &link)
 {
-    if (!this->textEdit_ || this->link_.isEmpty())
+    if (!this->textEdit_ || link.isEmpty())
     {
         return;
     }
-    auto text = this->textEdit_->toPlainText();
-    const auto at = text.indexOf(this->link_);
-    if (at < 0)
+    const auto text = this->textEdit_->toPlainText();
+    qsizetype offset = 0;
+    while ((offset = text.indexOf(link, offset)) >= 0)
     {
-        return;
+        const auto end = offset + link.size();
+        if ((offset == 0 || text[offset - 1].isSpace()) &&
+            (end == text.size() || text[end].isSpace()))
+        {
+            QTextCursor cursor(this->textEdit_->document());
+            cursor.setPosition(int(offset));
+            cursor.setPosition(int(end + (end < text.size() && text[end] == u' ')),
+                               QTextCursor::KeepAnchor);
+            cursor.removeSelectedText();
+            return;
+        }
+        offset = end;
     }
-    auto length = this->link_.size();
-    if (at + length < text.size() && text[at + length] == u' ')
-    {
-        ++length;
-    }
-    text.remove(at, length);
-    const auto link = std::exchange(this->link_, QString());
-    this->textEdit_->setPlainText(text);
-    this->textEdit_->moveCursor(QTextCursor::End);
-    this->link_ = link;
 }
 
 void UploadPreview::onTextChanged()
@@ -324,10 +352,16 @@ void UploadPreview::place()
                                        : 0) -
         (this->delete_->isVisible() ? this->delete_->sizeHint().width() : 0) -
         this->close_->sizeHint().width() - 50;
-    this->title_->setText(this->title_->fontMetrics().elidedText(
-        this->titleText_, Qt::ElideRight, std::max(40, room)));
-    this->detail_->setText(this->detail_->fontMetrics().elidedText(
-        this->detailText_, Qt::ElideMiddle, std::max(40, room)));
+    const auto visibleTitle = this->title_->fontMetrics().elidedText(
+        this->titleText_, Qt::ElideRight, std::max(40, room));
+    const auto visibleDetail = this->detail_->fontMetrics().elidedText(
+        this->detailText_, Qt::ElideMiddle, std::max(40, room));
+    this->title_->setText(visibleTitle);
+    this->detail_->setText(visibleDetail);
+    this->title_->setToolTip(visibleTitle == this->titleText_
+                                 ? QString() : this->titleText_);
+    this->detail_->setToolTip(visibleDetail == this->detailText_
+                                  ? QString() : this->detailText_);
 }
 
 bool UploadPreview::eventFilter(QObject *object, QEvent *event)

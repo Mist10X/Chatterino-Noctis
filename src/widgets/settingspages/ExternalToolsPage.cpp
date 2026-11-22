@@ -141,7 +141,7 @@ void ExternalToolsPage::initLayout(GeneralPageView &layout)
 
         layout.addDescription(
             uiText(QStringLiteral(
-                "Chatterino expects the executable to be called \"%1\"."))
+                "Chatterino Noctis expects the executable to be called \"%1\"."))
                 .arg(STREAMLINK_BINARY_NAME));
 
         layout.addLayout(form);
@@ -216,16 +216,12 @@ void ExternalToolsPage::initLayout(GeneralPageView &layout)
         auto *buttonLayout = new QHBoxLayout;
 
         auto *importButton = new QPushButton(uiText("Import Settings from Clipboard"));
-        importButton->setToolTip(
-            uiText("Import image uploader settings from clipboard JSON"));
         QObject::connect(importButton, &QPushButton::clicked, [this]() {
             importImageUploaderSettings(this);
         });
         buttonLayout->addWidget(importButton);
 
         auto *exportButton = new QPushButton(uiText("Export Settings to Clipboard"));
-        exportButton->setToolTip(
-            uiText("Copy current image uploader settings to clipboard as JSON"));
         QObject::connect(exportButton, &QPushButton::clicked, [this]() {
             exportImageUploaderSettings(this);
         });
@@ -241,8 +237,8 @@ void ExternalToolsPage::initLayout(GeneralPageView &layout)
 
         layout.addDescription(
             uiText(u"Check the spelling of words in the input box of splits."
-            " Chatterino does not include dictionaries - they have to "
-            "be downloaded or created manually. Chatterino expects "
+            " Chatterino Noctis does not include dictionaries - they have to "
+            "be downloaded or created manually. Chatterino Noctis expects "
             "Hunspell "
             "dictionaries in ") %
             formatRichNamedLink(getApp()->getPaths().dictionariesDirectory,

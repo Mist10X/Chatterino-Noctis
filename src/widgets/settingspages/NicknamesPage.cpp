@@ -26,7 +26,7 @@ NicknamesPage::NicknamesPage()
         uiText("Nicknames do not work with features such as user highlights and "
         "filters."
         "\nWith those features you will still need to use the user's original "
-        "name."));
+        "name."))->setWordWrap(true);
     EditableModelView *view =
         layout
             .emplace<EditableModelView>(
@@ -36,22 +36,13 @@ NicknamesPage::NicknamesPage()
     this->view_ = view;
 
     view->setTitles({uiText("Username"), uiText("Nickname"), uiText("Enable regex"), uiText("Case-sensitive")});
-    view->getTableView()->horizontalHeader()->setSectionResizeMode(
-        QHeaderView::Fixed);
-    view->getTableView()->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::Stretch);
-    view->getTableView()->horizontalHeader()->setSectionResizeMode(
-        1, QHeaderView::Stretch);
+    view->setReadableColumns({0, 1}, true);
 
     std::ignore = view->addButtonPressed.connect([] {
         getSettings()->nicknames.append(
             Nickname{"Username", "Nickname", false, false});
     });
 
-    QTimer::singleShot(1, [view] {
-        view->getTableView()->resizeColumnsToContents();
-        view->getTableView()->setColumnWidth(0, 200);
-    });
 }
 
 bool NicknamesPage::filterElements(const QString &query)

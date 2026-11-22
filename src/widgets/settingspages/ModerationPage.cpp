@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "common/UiLanguage.hpp"
+#include "widgets/settingspages/UiComboBox.hpp"
 #include "widgets/settingspages/ModerationPage.hpp"
 
 #include "Application.hpp"
@@ -103,24 +104,19 @@ ModerationPage::ModerationPage()
 
         auto logsPathLabel = logs.emplace<QLabel>();
 
-        QString logExplanation = uiText(
-            "<span style=\"color:#bbb\"> They are saved as plain "
-            "text files per channel, containing the messages with "
-            "timestamps.</span>");
-
+        logsPathLabel->setObjectName("description");
         getSettings()->logPath.connect(
-            [logsPathLabel, logExplanation](const QString &logPath,
-                                            auto) mutable {
+            [logsPathLabel](const QString &logPath, auto) mutable {
                 QString pathOriginal =
                     getApp()->getPaths().messageLogsIn(logPath);
 
-                QString pathShortened =
-                    uiText("Logs are saved at <a href=\"file:///") + pathOriginal +
-                    R"("><span style="color: white;">)" +
-                    shortenString(pathOriginal, 50) + ".</span></a>";
-
-                logsPathLabel->setText(pathShortened + logExplanation);
-                logsPathLabel->setToolTip(pathOriginal);
+                const auto url = QUrl::fromLocalFile(pathOriginal).toString(QUrl::FullyEncoded);
+                logsPathLabel->setText(
+                    uiText("Logs are saved at <a href=\"%1\">%2</a>. "
+                           "Each channel has a plain text file with timestamped messages.")
+                        .arg(url.toHtmlEscaped(), shortenString(pathOriginal, 50).toHtmlEscaped()));
+                logsPathLabel->setToolTip(pathOriginal.size() > 50 ? pathOriginal
+                                                                   : QString{});
                 logsPathLabel->setWordWrap(true);
             });
 
@@ -223,10 +219,7 @@ ModerationPage::ModerationPage()
                 .getElement();
 
         view->setTitles({uiText("Twitch channels")});
-        view->getTableView()->horizontalHeader()->setSectionResizeMode(
-            QHeaderView::Fixed);
-        view->getTableView()->horizontalHeader()->setSectionResizeMode(
-            0, QHeaderView::Stretch);
+        view->setReadableColumns({0});
 
         std::ignore = view->addButtonPressed.connect([] {
             getSettings()->loggedChannels.append(ChannelLog("channel"));
@@ -249,7 +242,7 @@ ModerationPage::ModerationPage()
             "#moderation-mode'>here</a>."));
         label->setOpenExternalLinks(true);
         label->setWordWrap(true);
-        label->setStyleSheet("color: #bbb");
+        label->setObjectName("description");
 
         EditableModelView *view =
             modMode
@@ -259,10 +252,7 @@ ModerationPage::ModerationPage()
                 .getElement();
 
         view->setTitles({uiText("Action"), uiText("Icon")});
-        view->getTableView()->horizontalHeader()->setSectionResizeMode(
-            QHeaderView::Fixed);
-        view->getTableView()->horizontalHeader()->setSectionResizeMode(
-            0, QHeaderView::Stretch);
+        view->setReadableColumns({0}, true);
         view->getTableView()->setItemDelegateForColumn(
             ModerationActionModel::Column::Icon, new IconDelegate(view));
         QObject::connect(
@@ -334,6 +324,7 @@ void ModerationPage::addModerationButtonSettings(QTabWidget *tabs)
             "minutes (m), hours (h), days (d) or weeks (w)."));
 
         infoLabel->setAlignment(Qt::AlignCenter);
+        infoLabel->setWordWrap(true);
 
         auto maxLabel = texts.emplace<QLabel>();
         maxLabel->setText(uiText("(maximum timeout duration = 2 w)"));
@@ -423,7 +414,7 @@ void ModerationPage::addModerationButtonSettings(QTabWidget *tabs)
         lineEditDurationInput->setMaximumWidth(30);
         timeout.append(lineEditDurationInput);
 
-        auto *timeoutDurationUnit = new QComboBox();
+        auto *timeoutDurationUnit = new UiComboBox();
         timeoutDurationUnit->setObjectName(buttonNumber);
         timeoutDurationUnit->addItems({"s", "m", "h", "d", "w"});
         timeoutDurationUnit->setCurrentText(tButton.first);
@@ -490,7 +481,7 @@ void ModerationPage::addModerationButtonSettings(QTabWidget *tabs)
             uiText("Saved reasons are sent with normal timeout and ban clicks. Use "
             "the reason prompt when you want to edit the reason first."));
         promptLabel->setWordWrap(true);
-        promptLabel->setStyleSheet("color: #bbb");
+        promptLabel->setObjectName("description");
 
         auto *rightClickPrompt = this->createCheckBox(
             uiText("Open the reason prompt on right-click"),
@@ -510,7 +501,6 @@ void ModerationPage::addModerationButtonSettings(QTabWidget *tabs)
         auto *modifierKey =
             this->createComboBox({uiText("Shift"), uiText("Ctrl"), uiText("Alt")},
                                  getSettings()->timeoutReasonPromptModifier);
-        modifierKey->setMaximumWidth(120);
         modifierRow.append(modifierKey);
         modifierRow->addStretch();
 

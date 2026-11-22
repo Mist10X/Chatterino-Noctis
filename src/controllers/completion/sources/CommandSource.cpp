@@ -37,7 +37,6 @@ QString commandUsage(const QString &command)
         {"/banid", "<user-id> [reason]"},
         {"/block", "<username>"},
         {"/blockterm", "<term>"},
-        {"/bot", "[message]"},
         {"/cancelpoll", ""},
         {"/cancelprediction", ""},
         {"/chatters", ""},
@@ -186,7 +185,6 @@ const QSet<QString> &currentAccountModCommands()
         "/ban",
         "/banid",
         "/blockterm",
-        "/bot",
         "/cancelpoll",
         "/cancelprediction",
         "/chatters",
@@ -328,14 +326,6 @@ bool hasCrossChannelActionAccess(const Channel *channel)
     return auth.hasToken() && !auth.legacy;
 }
 
-bool hasBotBadgeAuth()
-{
-    const auto &settings = *getSettings();
-    return !settings.botBadgeAppAccessToken.getValue().trimmed().isEmpty() &&
-           !settings.botBadgeClientID.getValue().trimmed().isEmpty() &&
-           !settings.botBadgeUserID.getValue().trimmed().isEmpty();
-}
-
 QString normalizedCommand(const CommandItem &item)
 {
     const auto prefix =
@@ -411,7 +401,7 @@ bool shouldHideCommand(const CommandItem &item, bool hideUnavailable,
                        bool hasMoltorinoModerationAccess,
                        bool hasMoltorinoBroadcasterAccess,
                        bool hasMoltorinoRoleManagementAccess,
-                       bool hasBotBadgeAuth, bool hasCrossChannelActionAccess)
+                       bool hasCrossChannelActionAccess)
 {
     const auto command = normalizedCommand(item);
     if (isInternalCommand(command))
@@ -422,11 +412,6 @@ bool shouldHideCommand(const CommandItem &item, bool hideUnavailable,
     if (roleManagementCommands().contains(command))
     {
         return !hasMoltorinoRoleManagementAccess;
-    }
-
-    if (command == "/bot" && !hasBotBadgeAuth)
-    {
-        return true;
     }
 
     if (command == "/crossban" || command == "/crossunban")
@@ -609,7 +594,6 @@ void CommandSource::update(const QString &query)
         const bool moltorinoRoleManagementAccess =
             needsMoltorinoRoleManagementAccess(this->output_) &&
             hasMoltorinoRoleManagementAccess(this->channel_);
-        const bool botBadgeAuth = hasBotBadgeAuth();
         const bool crossChannelActionAccess =
             hasCrossChannelActionAccess(this->channel_);
         this->output_.erase(
@@ -620,7 +604,7 @@ void CommandSource::update(const QString &query)
                                    hasCurrentAccountModRights,
                                    hasCurrentAccountBroadcasterRights,
                                    moltorinoAccess, moltorinoBroadcasterAccess,
-                                   moltorinoRoleManagementAccess, botBadgeAuth,
+                                   moltorinoRoleManagementAccess,
                                    crossChannelActionAccess);
                            }),
             this->output_.end());

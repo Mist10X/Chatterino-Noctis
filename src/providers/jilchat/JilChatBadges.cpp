@@ -9,6 +9,7 @@
 #include "common/QLogging.hpp"
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/Settings.hpp"
 
 #include <QJsonArray>
@@ -179,6 +180,7 @@ void JilChatBadges::requestBadges()
                 return;
             }
             this->lastPayload_ = payload;
+            notifyGlobalChatBadgesChanged();
             this->badgesUpdated.invoke();
         })
         .onError([](const NetworkResult &result) {

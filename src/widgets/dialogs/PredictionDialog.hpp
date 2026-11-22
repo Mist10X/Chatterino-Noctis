@@ -15,10 +15,12 @@
 #include <QVector>
 
 #include <optional>
+#include <memory>
 #include <vector>
 
 class QScrollArea;
 class QComboBox;
+class QHBoxLayout;
 class QShowEvent;
 class QPushButton;
 class QResizeEvent;
@@ -49,6 +51,7 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    friend class PredictionDialogTestAccess;
     void buildCreateUI();
     void buildManageUI();
     void buildBettingUI();
@@ -60,6 +63,7 @@ private:
     void applySizeConstraints(bool preserveCurrentPosition);
     void refreshHeader();
     void refreshStyle();
+    void showBetError(const QString &error);
     void ensureCreateDraft();
     void startPrediction();
     bool isBroadcasterView() const;
@@ -67,13 +71,15 @@ private:
     bool populatePredictionTemplates(PredictionTemplatePicker *picker);
     void fetchPredictionTemplates(PredictionTemplatePicker *picker);
 
-    TwitchChannel *channel_;
+    std::shared_ptr<TwitchChannel> channel_;
     std::optional<TwitchChannel::PredictionEvent> currentPrediction_;
 
     QVBoxLayout *mainLayout_{};
     QWidget *headerWidget_{};
     QLabel *headerTitleLabel_{};
     QLabel *headerSubtitleLabel_{};
+    QLabel *betErrorLabel_{};
+    QHBoxLayout *betErrorLayout_{};
     Button *pinButton_{};
     QPushButton *modToggleButton_{};
     SvgButton *closeButton_{};

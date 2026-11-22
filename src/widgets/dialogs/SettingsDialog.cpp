@@ -10,11 +10,13 @@
 #include "common/QLogging.hpp"
 #include "controllers/commands/CommandController.hpp"
 #include "controllers/hotkeys/HotkeyController.hpp"
+#include "singletons/Fonts.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "util/LayoutCreator.hpp"
 #include "widgets/BaseWindow.hpp"
 #include "widgets/helper/SettingsDialogTab.hpp"
+#include "widgets/helper/UsercardChrome.hpp"
 #include "widgets/settingspages/AboutPage.hpp"
 #include "widgets/settingspages/AccountsPage.hpp"
 #include "widgets/settingspages/CommandPage.hpp"
@@ -25,7 +27,7 @@
 #include "widgets/settingspages/HighlightingPage.hpp"
 #include "widgets/settingspages/IgnoresPage.hpp"
 #include "widgets/settingspages/KeyboardSettingsPage.hpp"
-#include "widgets/settingspages/LeafyrinoPage.hpp"
+#include "widgets/settingspages/NoctisPage.hpp"
 #include "widgets/settingspages/ModerationPage.hpp"
 #include "widgets/settingspages/MoltorinoPage.hpp"
 #include "widgets/settingspages/NicknamesPage.hpp"
@@ -40,8 +42,12 @@
 #include <QLabel>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QScreen>
+#include <QResizeEvent>
 #include <QLineEdit>
 #include <QPointer>
+
+#include <algorithm>
 
 using namespace Qt::Literals;
 
@@ -73,7 +79,7 @@ const std::vector<Topic> &topics()
           "Message history", "If I am banned or timed out", "Pinned Messages",
           "Poll and Prediction", "Points and Rewards", "Raids and gifted subs",
           "Chatter list", "Shared chat"},
-         SettingsTabId::Leafyrino},
+         SettingsTabId::Noctis},
         {"Chat input",
          ":/settings/topic-input.svg",
          {"Input Box", "Slow mode", "Sending", "Autocompletion", "Commands"}},
@@ -111,8 +117,8 @@ public:
     explicit TopicPage(const Topic &topic)
     {
         auto *layout = new QVBoxLayout(this);
-        layout->setContentsMargins(12, 0, 4, 0);
-        this->view_ = GeneralPageView::withNavigation(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        this->view_ = GeneralPageView::withSectionPicker(this);
         layout->addWidget(this->view_);
         for (const auto *section : topic.sections)
         {
@@ -134,102 +140,104 @@ private:
     GeneralPageView *view_{};
 };
 
-QString settingsDialogStyle()
+QSize openingSize(const QScreen *screen)
 {
-    const auto accent = getTheme()->accent;
-    auto soft = accent;
-    soft.setAlpha(60);
-    return QStringLiteral(R"(
-QLineEdit#settingsSearch {
-    background: #1c1c24;
-    border: 1px solid #2c2c37;
-    border-radius: 9px;
-    padding: 7px 12px;
-    font-size: 14px;
-    color: #ececf3;
-    selection-background-color: %2;
+    const QSize preferred(900, 640);
+    if (!screen)
+    {
+        return preferred;
+    }
+    // availableGeometry uses logical pixels. Leave room for the native frame.
+    return preferred.boundedTo(screen->availableGeometry().size() - QSize(24, 48));
 }
-QLineEdit#settingsSearch:focus {
-    border: 1px solid %1;
+
+QFont settingsFont()
+{
+    const auto scale = SettingsPage::interfaceScale();
+    auto font = getApp()->getFonts()->getFont(FontStyle::ChatMedium, scale);
+    font.setWeight(std::max(QFont::Medium, font.weight()));
+    return font;
 }
-QScrollArea#settingsSidebar, QScrollArea#settingsSidebar > QWidget,
-QScrollArea#settingsSidebar > QWidget > QWidget {
-    background: transparent;
-}
-QLabel#settingsCaption {
-    color: #77768a;
-    font-family: "Segoe UI Semibold";
-    font-size: 11px;
-    padding: 12px 0px 3px 20px;
-}
-chatterino--TitleLabel {
-    font-family: "Segoe UI Semibold";
-    font-size: 20px;
-    color: #f2f1f8;
-}
-chatterino--SubtitleLabel {
-    font-family: "Segoe UI Semibold";
-    font-size: 15px;
-    color: %1;
-}
-chatterino--NavigationLabel {
-    font-family: "Segoe UI";
-    font-size: 13px;
-    color: #a3a1b2;
-}
-chatterino--SettingsPage #generalSettingsScrollContent {
-    background: #19191f;
-}
-QScrollBar:vertical {
-    background: transparent;
-    width: 10px;
-    margin: 2px;
-}
-QScrollBar::handle:vertical {
-    background: #34343f;
-    border-radius: 3px;
-    min-height: 32px;
-}
-QScrollBar::handle:vertical:hover {
-    background: #45454f;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0px;
-}
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-    background: transparent;
-}
-QPushButton {
-    background: #25252e;
-    border: 1px solid #363642;
-    border-radius: 6px;
-    padding: 4px 14px;
-    color: #e6e6ee;
-}
-QPushButton:hover {
-    background: #2f2f3a;
-}
-QPushButton:disabled {
-    color: #74737f;
-}
-QDialogButtonBox QPushButton {
-    background: #23232c;
-    border: 1px solid #33333f;
-    border-radius: 7px;
-    padding: 6px 22px;
-    color: #e6e6ee;
-}
-QDialogButtonBox QPushButton:hover {
-    background: #2c2c37;
-}
-QDialogButtonBox QPushButton#settingsOk {
-    background: %1;
-    border: 1px solid %1;
-    color: #15151b;
-    font-family: "Segoe UI Semibold";
-}
-)")
-        .arg(accent.name(), soft.name(QColor::HexArgb));
+
+QString settingsDialogStyle(const usercardChrome::Palette &c, const QFont &font)
+{
+    auto family = font.family();
+    family.replace('\\', QStringLiteral("\\\\"));
+    family.replace('"', QStringLiteral("\\\""));
+    const auto typography = QStringLiteral(
+        "QWidget#SettingsDialog, QWidget#SettingsDialog QWidget { font-family: \"%1\"; font-size: %2pt; font-weight: %4; }"
+        "QWidget#SettingsDialog chatterino--TitleLabel { font-size: %3pt; font-weight: 600; }"
+        "QWidget#SettingsDialog QLabel#settingsCaption { font-size: %5pt; font-weight: 700; }")
+        .arg(family).arg(font.pointSizeF()).arg(font.pointSizeF() * 1.22)
+        .arg(int(font.weight())).arg(font.pointSizeF() * .9);
+    return typography + QStringLiteral(R"(
+        QWidget#SettingsDialog, QScrollArea#generalSettingsScrollContent,
+        QWidget#settingsScrollBody { background: %1; }
+        QScrollArea { border: none; }
+        QScrollArea#settingsSidebar, QWidget#settingsSidebarViewport, QWidget#tabWidget {
+            background: %2; border-radius: 9px;
+        }
+        QLabel#settingsCaption {
+            color: %5; background: transparent; border-bottom: 1px solid %4;
+            padding: 10px 8px 5px 12px;
+            margin: 3px 8px 3px 4px;
+        }
+        chatterino--TitleLabel { color: %3; font-weight: 600; padding: 5px 0px 3px; }
+        chatterino--SubtitleLabel { color: %5; font-weight: 600; }
+        chatterino--DescriptionLabel, QLabel#description, chatterino--NavigationLabel { color: %6; }
+        QLabel#settingsWarning { color: %10; }
+        QLabel#settingsError { color: palette(bright-text); }
+        QLineEdit, QComboBox, QAbstractSpinBox, QPushButton {
+            color: %3; background: %7; border: 1px solid %4; border-radius: 6px;
+            padding: 3px 7px;
+        }
+        QComboBox, QAbstractSpinBox { padding-right: 20px; }
+        QComboBox::drop-down {
+            subcontrol-origin: padding; subcontrol-position: center right;
+            width: 20px; border: none; background: transparent;
+        }
+        QComboBox::down-arrow { image: url(:/buttons/settings-chevron.svg); width: 12px; height: 12px; }
+        QComboBox QAbstractItemView {
+            color: %3; background: %7; border: 1px solid %4;
+            selection-background-color: %8; selection-color: %3; padding: 3px;
+        }
+        QLineEdit#settingsSearch { padding: 6px 11px; border-radius: 8px; }
+        QPushButton:hover, QComboBox:hover { background: %8; }
+        QPushButton:pressed { background: %4; }
+        QSlider::groove:horizontal { height: 5px; border-radius: 2px; background: %4; }
+        QSlider::sub-page:horizontal { background: %5; border-radius: 2px; }
+        QSlider::handle:horizontal { background: %3; border: 1px solid %5;
+            border-radius: 6px; width: 12px; margin: -4px 0; }
+        QSlider::handle:horizontal:hover, QSlider::handle:horizontal:focus { background: %5; }
+        QLineEdit:focus, QComboBox:focus, QAbstractSpinBox:focus, QPushButton:focus {
+            border-color: %5;
+        }
+        QDialogButtonBox QPushButton { min-width: 62px; padding: 5px 12px; }
+        QPushButton#settingsOk { background: %8; border-color: %5; }
+        QPushButton#settingsOk:hover, QPushButton#settingsOk:focus { background: %5; color: %1; }
+        QTabWidget::pane { border: 1px solid %4; border-radius: 6px; }
+        QTabBar::tab { color: %6; padding: 4px 8px; border-bottom: 2px solid transparent; }
+        QTabBar::tab:selected { color: %3; border-bottom-color: %5; }
+        QTabBar::tab:hover { background: %8; }
+        QHeaderView::section {
+            background: %7; color: %3; padding: 3px 5px;
+            border: none; border-right: 1px solid %4; border-bottom: 1px solid %4;
+        }
+        QLineEdit:disabled, QComboBox:disabled, QAbstractSpinBox:disabled,
+        QPushButton:disabled { color: %9; }
+        QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 0; }
+        QScrollBar::handle:vertical { background: %4; border-radius: 4px; min-height: 24px; }
+        QScrollBar::handle:vertical:hover { background: %6; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        QScrollBar:horizontal { background: transparent; height: 8px; margin: 0 2px; }
+        QScrollBar::handle:horizontal { background: %4; border-radius: 4px; min-width: 24px; }
+        QScrollBar::handle:horizontal:hover { background: %6; }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+        QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
+    )").arg(c.messages, c.profile, c.foreground, c.border, c.accent, c.muted,
+            c.panel, c.cover, c.disabled).arg(
+                getTheme()->isLightTheme() ? "#825728" : "#d8ae79");
 }
 
 }  // namespace
@@ -241,24 +249,27 @@ SettingsDialog::SettingsDialog(QWidget *parent)
               BaseWindow::Flags::Dialog,
               BaseWindow::DisableLayoutSave,
               BaseWindow::BoundsCheckOnShow,
-              BaseWindow::UseSettingsStylesheet,
           },
           parent)
 {
     this->setObjectName("SettingsDialog");
-    this->setWindowTitle(uiText("Leafyrino Settings"));
+    this->setWindowTitle(uiText("Chatterino Noctis Settings"));
     this->setWindowRole(u"chatterino.settings"_s);
     // Disable the ? button in the titlebar until we decide to use it
     this->setWindowFlags(this->windowFlags() &
                          ~Qt::WindowContextHelpButtonHint);
 
-    // Russian captions need more room; keep the established font and scale.
-    this->resize(activeUiLanguage() == "ru" ? 1180 : 1020, 840);
-    this->overrideBackgroundColor_ = QColor("#131318");
-    this->setStyleSheet(this->styleSheet() + settingsDialogStyle());
-
+    this->resize(openingSize(parent ? parent->screen() : this->screen()));
+    this->themeChangedEvent();
     this->initUi();
     this->addTabs();
+    this->updateTypography();
+    const auto refreshFont = [this] {
+        this->themeChangedEvent();
+        this->updateTypography();
+    };
+    this->signalHolder_.managedConnect(getApp()->getFonts()->fontChanged, refreshFont);
+    getSettings()->uiScale.connect(refreshFont, this->signalHolder_, false);
 
     this->addShortcuts();
     this->signalHolder_.managedConnect(getApp()->getHotkeys()->onItemsUpdated,
@@ -308,6 +319,9 @@ void SettingsDialog::initUi()
                         .setLayoutType<QVBoxLayout>()
                         .withoutSpacing();
 
+    outerBox->setContentsMargins(10, 10, 10, 8);
+    outerBox->setSpacing(8);
+
     // TOP
     auto title = outerBox.emplace<PageHeader>();
     auto edit = LayoutCreator<PageHeader>(title.getElement())
@@ -317,7 +331,7 @@ void SettingsDialog::initUi()
                     .assign(&this->ui_.search);
     this->setSearchPlaceholderText();
     edit->setObjectName("settingsSearch");
-    title->layout()->setContentsMargins(14, 12, 14, 0);
+    title->layout()->setContentsMargins(0, 0, 0, 0);
     edit->setClearButtonEnabled(true);
     edit->findChild<QAbstractButton *>()->setIcon(
         QPixmap(":/buttons/clearSearch.png"));
@@ -330,9 +344,12 @@ void SettingsDialog::initUi()
     auto centerBox =
         outerBox.emplace<QHBoxLayout>().withoutMargin().withoutSpacing();
 
+    centerBox->setSpacing(8);
+
     // left side (tabs), scrolls when the window is low
     this->ui_.sidebar = new QScrollArea;
     this->ui_.sidebar->setObjectName("settingsSidebar");
+    this->ui_.sidebar->viewport()->setObjectName("settingsSidebarViewport");
     this->ui_.sidebar->setWidgetResizable(true);
     this->ui_.sidebar->setFrameShape(QFrame::NoFrame);
     this->ui_.sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -341,7 +358,6 @@ void SettingsDialog::initUi()
     this->ui_.tabContainer->setContentsMargins(0, 0, 0, 0);
     this->ui_.sidebar->setWidget(this->ui_.tabContainerContainer);
     centerBox->addWidget(this->ui_.sidebar);
-    this->updateSidebarWidth();
 
     // right side (pages)
     centerBox.emplace<QStackedLayout>()
@@ -349,8 +365,6 @@ void SettingsDialog::initUi()
         .withoutMargin();
 
     this->ui_.pageStack->setContentsMargins(0, 0, 0, 0);
-
-    outerBox->addSpacing(12);
 
     // BOTTOM
     auto buttons = outerBox.emplace<QDialogButtonBox>(Qt::Horizontal);
@@ -362,7 +376,7 @@ void SettingsDialog::initUi()
             buttons->addButton(uiText("Cancel"), QDialogButtonBox::NoRole);
     }
 
-    buttons->setContentsMargins(0, 0, 12, 10);
+    buttons->setContentsMargins(0, 0, 0, 0);
 
     // ---- misc
     this->ui_.tabContainerContainer->setObjectName("tabWidget");
@@ -479,7 +493,7 @@ void SettingsDialog::addTabs()
         return nullptr;
     });
     for (auto *source : std::initializer_list<SettingsPage *>{
-             new GeneralPage, new LeafyrinoPage, new MoltorinoPage,
+             new GeneralPage, new NoctisPage, new MoltorinoPage,
              new TechnorinoPage})
     {
         source->setParent(this);
@@ -546,25 +560,35 @@ void SettingsDialog::addTabs()
 
 void SettingsDialog::addCaption(const QString &text)
 {
-    auto *label = new QLabel(text.toUpper());
+    auto *label = new QLabel(text);
+    label->setWordWrap(true);
+    label->setTextInteractionFlags(Qt::NoTextInteraction);
     label->setObjectName("settingsCaption");
     this->ui_.tabContainer->addWidget(label);
     this->captions_.push_back(label);
 }
 
-void SettingsDialog::updateSidebarWidth()
+void SettingsDialog::updateTypography()
 {
-    QFont font(QStringLiteral("Segoe UI"));
-    font.setPixelSize(14);
-    const QFontMetrics metrics(font);
-    int tabWidth = 190;
-    for (const auto *entry : this->tabs_)
+    const auto font = settingsFont();
+    this->setFont(font);
+    const auto bodyFont = QFontMetrics(font);
+    int preferred = 164;
+    for (const auto *tab : this->tabs_)
     {
-        tabWidth = std::max(tabWidth,
-                            metrics.horizontalAdvance(entry->name()) + 64);
+        preferred = std::max(preferred, bodyFont.horizontalAdvance(tab->name()) +
+                                         SettingsDialogTab::textInset);
     }
-    this->ui_.tabContainerContainer->setFixedWidth(tabWidth);
-    this->ui_.sidebar->setFixedWidth(tabWidth + 12);
+    const int width = std::min(preferred, std::clamp(this->width() / 4, 120, 250));
+    this->ui_.tabContainerContainer->setFixedWidth(width);
+    this->ui_.sidebar->setFixedWidth(width + 8);
+    for (auto *tab : this->tabs_)
+    {
+        const auto labelHeight = bodyFont.boundingRect(
+            QRect(0, 0, width - SettingsDialogTab::textInset, 1000),
+            Qt::AlignLeft | Qt::TextWordWrap, tab->name()).height();
+        tab->setFixedHeight(std::max(29, labelHeight + 10));
+    }
 }
 
 void SettingsDialog::addTab(std::function<SettingsPage *()> page,
@@ -573,11 +597,9 @@ void SettingsDialog::addTab(std::function<SettingsPage *()> page,
 {
     auto *tab =
         new SettingsDialogTab(this, std::move(page), name, iconPath, id);
-    tab->setFixedHeight(static_cast<int>(31 * this->dpi_));
 
     this->ui_.tabContainer->addWidget(tab, 0, alignment);
     this->tabs_.push_back(tab);
-    this->updateSidebarWidth();
 
     if (this->tabs_.size() == 1)
     {
@@ -701,7 +723,7 @@ void SettingsDialog::showDialog(QWidget *parent,
     }
     if (instance->width() < 200 || instance->height() < 120)
     {
-        instance->resize(1020, 840);
+        instance->resize(openingSize(parent ? parent->screen() : instance->screen()));
     }
     instance->show();
     if (preferredTab == SettingsDialogPreference::StreamerMode)
@@ -778,20 +800,48 @@ void SettingsDialog::refresh()
     }
 }
 
-void SettingsDialog::scaleChangedEvent(float newScale)
+void SettingsDialog::themeChangedEvent()
 {
-    assert(newScale == 1.F &&
-           "Scaling is disabled for the settings dialog - its scale should "
-           "always be 1");
-
-    for (SettingsDialogTab *tab : this->tabs_)
+    BaseWindow::themeChangedEvent();
+    const bool light = this->theme->isLightTheme();
+    auto colors = usercardChrome::palette(light);
+    if (!light)
     {
-        tab->setFixedHeight(31);
+        colors.messages = "#101012";
+        colors.profile = "#131315";
+        colors.panel = "#19191c";
+        colors.cover = "#242427";
+        colors.border = "#303033";
+        colors.foreground = "#dedee0";
+        colors.muted = "#aeacb1";
+        colors.accent = "#978da8";
     }
-
-    if (this->ui_.tabContainerContainer)
+    auto palette = this->palette();
+    palette.setColor(QPalette::Window, QColor(colors.messages));
+    palette.setColor(QPalette::Base, QColor(colors.profile));
+    palette.setColor(QPalette::AlternateBase, QColor(colors.panel));
+    palette.setColor(QPalette::Button, QColor(colors.panel));
+    palette.setColor(QPalette::PlaceholderText, QColor(colors.muted));
+    palette.setColor(QPalette::BrightText, QColor(light ? "#9c3545" : "#df949f"));
+    for (const auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
     {
-        this->updateSidebarWidth();
+        palette.setColor(role, QColor(colors.foreground));
+        palette.setColor(QPalette::Disabled, role, QColor(colors.disabled));
+    }
+    palette.setColor(QPalette::Highlight, QColor(colors.cover));
+    palette.setColor(QPalette::HighlightedText, QColor(colors.foreground));
+    palette.setColor(QPalette::Link, QColor(colors.accent));
+    this->setPalette(palette);
+    this->overrideBackgroundColor_ = QColor(colors.messages);
+    this->setStyleSheet(settingsDialogStyle(colors, settingsFont()));
+}
+
+void SettingsDialog::resizeEvent(QResizeEvent *event)
+{
+    BaseWindow::resizeEvent(event);
+    if (this->ui_.sidebar && event->size().width() != event->oldSize().width())
+    {
+        this->updateTypography();
     }
 }
 

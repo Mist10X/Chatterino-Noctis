@@ -30,7 +30,7 @@
     <url type="homepage">https://github.com/Mist10X/chatterino-noctis</url>
     <url type="bugtracker">https://github.com/Mist10X/chatterino-noctis/issues</url>
     <provides>
-        <binary>Leafyrino</binary>
+        <binary>chatterino-noctis</binary>
     </provides>
     <releases>
         <release version="7.5.5" date="2026-04-13">

@@ -5,7 +5,11 @@
 #include "controllers/accounts/AccountModel.hpp"
 
 #include "controllers/accounts/Account.hpp"
+#include "providers/twitch/TwitchAccount.hpp"
+#include "singletons/Theme.hpp"
 #include "util/StandardItemHelper.hpp"
+
+#include <QFont>
 
 namespace chatterino {
 
@@ -23,8 +27,8 @@ std::shared_ptr<Account> AccountModel::getItemFromRow(
 void AccountModel::getRowFromItem(const std::shared_ptr<Account> &item,
                                   std::vector<QStandardItem *> &row)
 {
-    setStringItem(row[0], item->toString(), false);
-    row[0]->setData(QFont("Segoe UI", 10), Qt::FontRole);
+    const auto *twitch = dynamic_cast<const TwitchAccount *>(item.get());
+    setStringItem(row[0], twitch ? twitch->getDisplayName() : item->toString(), false);
 }
 
 int AccountModel::beforeInsert(const std::shared_ptr<Account> &item,
@@ -36,7 +40,11 @@ int AccountModel::beforeInsert(const std::shared_ptr<Account> &item,
         auto newRow = this->createRow();
 
         setStringItem(newRow[0], item->getCategory(), false, false);
-        newRow[0]->setData(QFont("Segoe UI Light", 16), Qt::FontRole);
+        // Let the view resolve family and size, including live scale changes.
+        QFont heading;
+        heading.setWeight(QFont::DemiBold);
+        newRow[0]->setData(heading, Qt::FontRole);
+        newRow[0]->setData(getTheme()->accent, Qt::ForegroundRole);
 
         this->insertCustomRow(std::move(newRow), proposedIndex);
 

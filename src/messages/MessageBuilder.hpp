@@ -80,6 +80,11 @@ const ImageUploaderResultTag imageUploaderResultMessage{};
 
 MessagePtr makeSystemMessage(const QString &text);
 MessagePtr makeSystemMessage(const QString &text, const QTime &time);
+MessagePtr makeRaidMessage(const QString &text);
+/// A delivery status, emitted only when Twitch reports that it held a message.
+MessagePtr tryMakeAutoModHeldNotice(const QString &reason, const QString &code,
+                                    const QTime &time = QTime::currentTime());
+MessagePtr makeChatSendDropMessage(const QString &reason, const QString &code);
 
 struct HighlightAlert {
     QUrl customSound;
@@ -154,6 +159,8 @@ public:
     void append(std::unique_ptr<MessageElement> element);
     void addLink(const linkparser::Parsed &parsedLink, QStringView source,
                  const QString &textOverride = QString());
+    void addLink(const linkparser::Parsed &parsedLink, QStringView source,
+                 const QString &textOverride, bool withPreviews);
 
     template <typename T, typename... Args>
     T *emplace(Args &&...args)
@@ -253,9 +260,16 @@ public:
     static void makeWhisperCard(Message &message, const QString &title,
                                 const QString &replyTo);
 
-    /// Badges a person has everywhere (Chatterino, 7TV, FFZ, BTTV and the
-    /// other clients), no channel's.
-    void appendGlobalBadges(const QString &userID);
+    /// External-provider badges in chat order. FFZ also includes channel
+    /// badges when the originating channel is known.
+    void appendGlobalBadges(const QString &userID,
+                            TwitchChannel *channel = nullptr);
+
+    /// Re-resolve the author badges after the catalogs arrive. An empty
+    /// result means the existing history row is already correct.
+    static MessagePtr refreshHistoryBadges(const Message &message,
+                                           TwitchChannel *channel,
+                                           const MessagePtr &externalBadges);
 
     static std::pair<MessagePtrMut, HighlightAlert> makeIrcMessage(
         Channel *channel, const Communi::IrcMessage *ircMessage,
@@ -273,6 +287,9 @@ public:
     static MessagePtrMut makeSubgiftMessage(Communi::TagsRef tags,
                                             const QTime &time,
                                             TwitchChannel *channel);
+    static QString formatSubscriptionNotice(Communi::TagsRef tags,
+                                            const QString &login, bool renewal,
+                                            const QString &fallback);
 
     static MessagePtrMut makeMissingScopesMessage(const QString &missingScopes);
 

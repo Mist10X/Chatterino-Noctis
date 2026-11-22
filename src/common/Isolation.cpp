@@ -16,7 +16,7 @@
 #endif
 
 #ifndef CHATTERINO_DISABLE_UPDATER
-#    error "This Leafyrino build must not ship the legacy self-updater"
+#    error "Chatterino Noctis must not ship the legacy self-updater"
 #endif
 
 namespace chatterino::isolation {
@@ -198,14 +198,14 @@ QString rejectProfileRoot(const QString &root, const QStringList &foreignRoots)
 
 QString probeWritable(const QString &dir)
 {
-    QFile file(QDir(dir).filePath(QStringLiteral(".leafyrino-write-probe-%1")
+    QFile file(QDir(dir).filePath(QStringLiteral(".noctis-write-probe-%1")
                                       .arg(QCoreApplication::applicationPid())));
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
     {
         return QStringLiteral("Cannot write to \"%1\": %2")
             .arg(QDir::toNativeSeparators(dir), file.errorString());
     }
-    const bool written = file.write("leafyrino") == 9 && file.flush();
+    const bool written = file.write("noctis") == 6 && file.flush();
     const auto error = file.errorString();
     file.close();
     const bool removed = file.remove();

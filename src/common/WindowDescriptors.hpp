@@ -136,12 +136,18 @@ struct WindowDescriptor {
         None,
         Minimized,
         Maximized,
+        FullScreen,
     };
 
     WindowType type_;
     State state_ = State::None;
+    bool restoreMaximized_ = false;
 
     QRect geometry_;
+    // Windows workspace coordinates, in native pixels. Keep the portable Qt
+    // rectangle for other platforms and changed monitor configurations.
+    QRect nativeNormalGeometry_;
+    QRect nativeVisibleGeometry_;
     std::optional<size_t> popupID;
 
     std::vector<TabDescriptor> tabs_;

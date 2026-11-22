@@ -5,10 +5,12 @@
 #include "singletons/Fonts.hpp"
 
 #include "Application.hpp"
+#include "common/UiScale.hpp"
 #include "debug/AssertInGuiThread.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/WindowManager.hpp"
 
+#include <QApplication>
 #include <QDebug>
 #include <qfont.h>
 #include <qfontdatabase.h>
@@ -19,7 +21,7 @@ namespace {
 
 using namespace chatterino;
 
-const QString BUNDLED_FAMILY = QStringLiteral("Mist Montserrat");
+const QString BUNDLED_FAMILY = QStringLiteral("Noctis Montserrat");
 /// The same font's earlier name; profiles that still use it are moved over.
 const QString OLD_BUNDLED_FAMILY = QStringLiteral("Archive Montserrat");
 
@@ -35,7 +37,7 @@ void ensureSelectedBundledFont(const QString &family)
     }
     for (const auto *style : {"Regular", "SemiBold", "Bold"})
     {
-        const auto resource = QStringLiteral(":/fonts/MistMontserrat-") +
+        const auto resource = QStringLiteral(":/fonts/NoctisMontserrat-") +
                               QLatin1String(style) + QStringLiteral(".ttf");
         if (QFontDatabase::addApplicationFont(resource) < 0)
         {
@@ -210,8 +212,15 @@ QString fontFamily(FontStyle style)
         case FontStyle::ChatVeryLarge:
         case FontStyle::TimestampMedium:
             return getSettings()->chatFontFamily.getValue();
-        case FontStyle::ChatMediumMono:
-            QFontDatabase::applicationFontFamilies(getApp()->monoFontId).at(0);
+        case FontStyle::ChatMediumMono: {
+            auto &id = getApp()->monoFontId;
+            if (id < 0)
+            {
+                id = QFontDatabase::addApplicationFont(":/fonts/consolas.otf");
+            }
+            return QFontDatabase::applicationFontFamilies(id).value(
+                0, QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
+        }
         case FontStyle::UiMedium:
         case FontStyle::UiMediumBold:
         case FontStyle::UiTabs:
@@ -233,7 +242,8 @@ namespace chatterino {
 Fonts::Fonts(Settings &settings)
 {
     if (settings.chatFontFamily.getValue().compare(
-            OLD_BUNDLED_FAMILY, Qt::CaseInsensitive) == 0)
+            OLD_BUNDLED_FAMILY, Qt::CaseInsensitive) == 0 ||
+        settings.chatFontFamily.getValue().compare(QStringLiteral("Mist Montserrat"), Qt::CaseInsensitive) == 0)
     {
         settings.chatFontFamily.setValue(BUNDLED_FAMILY);
     }
@@ -248,6 +258,15 @@ Fonts::Fonts(Settings &settings)
         {
             map.clear();
         }
+        if (qobject_cast<QApplication *>(QCoreApplication::instance()))
+        {
+            const auto uiFont = this->getFont(
+                FontStyle::UiMedium, contentUiScale(settings.getClampedUiScale()));
+            if (QApplication::font() != uiFont)
+            {
+                QApplication::setFont(uiFont);
+            }
+        }
         this->fontChanged.invoke();
     });
     this->fontChangedListener.addSetting(settings.chatFontFamily);
@@ -255,6 +274,7 @@ Fonts::Fonts(Settings &settings)
     this->fontChangedListener.addSetting(settings.chatFontWeight);
     this->fontChangedListener.addSetting(settings.boldScale);
     this->fontChangedListener.addSetting(settings.timestampSize);
+    this->fontChangedListener.addSetting(settings.uiScale, true);
 }
 
 QFont Fonts::getFont(FontStyle type, float scale)
@@ -289,12 +309,12 @@ Fonts::FontData &Fonts::getOrCreateFontData(FontStyle type, float scale)
 
 Fonts::FontData Fonts::createFontData(FontStyle type, float scale)
 {
-    QFont font{
-        fontFamily(type),
-        static_cast<int>(fontSize(type) * scale),
-        fontWeight(type),
-        isItalic(type),
-    };
+    QFont font(fontFamily(type));
+    const auto base = fontSize(type);
+    const auto points = std::max(base * scale, std::min(base, 7.5F));
+    font.setPointSizeF(std::max(1., qRound(points * 100) / 100.));
+    font.setWeight(static_cast<QFont::Weight>(fontWeight(type)));
+    font.setItalic(isItalic(type));
 
     font.setStrikeOut(type == FontStyle::ChatMediumStrikethrough);
 

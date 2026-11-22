@@ -14,7 +14,7 @@ TOKEN = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|(?:u8|u|U|L)?\'(?:\\.|[^\'\\])*\'|(
 STR = re.compile(r'^(?:u8|u|U|L)?"')
 FIRST = {'setText', 'setToolTip', 'setTooltip', 'setWindowTitle', 'setPlaceholderText', 'setStatusTip',
          'setInformativeText', 'setDetailedText', 'makeFieldLabel', 'makeHelperLabel',
-         'updateBotBadgeStatus', 'setStatusMessage', 'setError', 'showInfo',
+         'setStatusMessage', 'setError', 'showInfo',
          'setStatus', 'showStatus', 'setStatusText', 'setFeedback', 'setHelpText',
          'setInfoText', 'showErrorMessage', 'setValidationMessage', 'updateHint',
          'setHint', 'makeHeaderLabel', 'makeStatusLabel', 'showEmpty',

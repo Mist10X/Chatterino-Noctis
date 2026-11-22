@@ -140,7 +140,7 @@ void Version::generateBuildString()
 
     s +=
         QString(
-            R"( (commit <a href="https://github.com/leafyzito/leafyrino/commit/%1">%1</a>)")
+            R"( (commit <a href="https://github.com/Mist10X/chatterino-noctis/commit/%1">%1</a>)")
             .arg(this->commitHash());
     if (this->isModified())
     {

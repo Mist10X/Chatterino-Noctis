@@ -8,6 +8,7 @@
 #include "Application.hpp"
 #include "singletons/Fonts.hpp"
 #include "widgets/helper/TabAvatars.hpp"
+#include "widgets/helper/RoundAvatar.hpp"
 
 #include <QEnterEvent>
 #include <QEvent>
@@ -87,7 +88,7 @@ constexpr qreal ICON = 28;
 constexpr qreal GAP = 9;
 constexpr qreal AMOUNT_GAP = 18;
 constexpr qreal RADIUS = 8;
-constexpr qreal LABEL_PT = 6.5;
+constexpr qreal LABEL_PT = 8;
 constexpr qreal NAME_PT = 10.5;
 constexpr qreal AMOUNT_PT = 12.5;
 
@@ -100,7 +101,7 @@ CornerBanner::CornerBanner(const CornerBannerData &data, QWidget *parent)
 {
     this->setAttribute(Qt::WA_TranslucentBackground);
     this->setCursor(Qt::PointingHandCursor);
-    this->setToolTip(
+    this->setAccessibleName(
         data.kind == CornerBannerData::Kind::GiftSubs
             ? uiText(QStringLiteral("%1 дарит %2 подписок · клик — закрыть"))
                   .arg(nameFor(data), QLocale(QLocale::Russian)
@@ -108,6 +109,7 @@ CornerBanner::CornerBanner(const CornerBannerData &data, QWidget *parent)
             : uiText(QStringLiteral("Рейд от %1: %2 зрителей · клик — закрыть"))
                   .arg(nameFor(data), QLocale(QLocale::Russian)
                                           .toString(data.amount)));
+    this->setToolTip(uiText("Dismiss"));
 
     this->lifetime_->setSingleShot(true);
     QObject::connect(this->lifetime_, &QTimer::timeout, this, [this] {
@@ -137,8 +139,8 @@ void CornerBanner::setScale(float scale)
 
 QFont CornerBanner::font(qreal points, bool bold) const
 {
-    auto font = getApp()->getFonts()->getFont(FontStyle::ChatMediumBold, 1.0);
-    font.setPointSizeF(points * this->scale_);
+    auto font = getApp()->getFonts()->getFont(
+        FontStyle::ChatMediumBold, static_cast<float>(points / 10) * this->scale_);
     font.setWeight(bold ? QFont::Bold : QFont::DemiBold);
     return font;
 }
@@ -213,7 +215,8 @@ void CornerBanner::paintEvent(QPaintEvent * /*event*/)
     // icon: raider avatar or gift box
     const QRectF icon(card.left() + PAD_X * s,
                       card.center().y() - ICON * s / 2, ICON * s, ICON * s);
-    const auto avatar = this->avatar(int(icon.width() * this->devicePixelRatioF()));
+    const auto avatar = this->avatar(
+        avatarPixelSize(icon.width(), this->devicePixelRatioF()));
     if (!avatar.isNull())
     {
         painter.drawPixmap(icon, avatar, QRectF(avatar.rect()));

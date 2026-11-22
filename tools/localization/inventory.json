@@ -2212,7 +2212,7 @@
   "Also suggest this channel's custom commands that do not start with its prefix.": [
     {
       "text": "Also suggest this channel's custom commands that do not start with its prefix.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 279,
       "api": "setTooltip",
       "arg": 0,
@@ -2720,7 +2720,7 @@
   "Ask before the usercard follow button unfollows a user. The /unfollow command still runs without a prompt.": [
     {
       "text": "Ask before the usercard follow button unfollows a user. The /unfollow command still runs without a prompt.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 195,
       "api": "setTooltip",
       "arg": 0,
@@ -3043,7 +3043,7 @@
   "BadgeHQ": [
     {
       "text": "BadgeHQ",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 74,
       "api": "checkbox",
       "arg": 0,
@@ -3056,7 +3056,7 @@
   "Badges": [
     {
       "text": "Badges",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 48,
       "api": "addTitle",
       "arg": 0,
@@ -3358,7 +3358,7 @@
   "Bluzyrino": [
     {
       "text": "Bluzyrino",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 65,
       "api": "checkbox",
       "arg": 0,
@@ -3390,32 +3390,6 @@
       "arg": 0,
       "start": 56826,
       "end": 56843,
-      "already": false,
-      "rewrite": true
-    }
-  ],
-  "Bot Badge (Developer)": [
-    {
-      "text": "Bot Badge (Developer)",
-      "file": "src/widgets/settingspages/MoltorinoPage.cpp",
-      "line": 242,
-      "api": "QLabel",
-      "arg": 0,
-      "start": 7846,
-      "end": 7869,
-      "already": false,
-      "rewrite": true
-    }
-  ],
-  "Bot badge account: %1 (@%2) - ID %3\nToken expires: %4": [
-    {
-      "text": "Bot badge account: %1 (@%2) - ID %3\nToken expires: %4",
-      "file": "src/widgets/settingspages/MoltorinoPage.cpp",
-      "line": 1569,
-      "api": "setText",
-      "arg": 0,
-      "start": 62138,
-      "end": 62203,
       "already": false,
       "rewrite": true
     }
@@ -3780,7 +3754,7 @@
   "Channel event messages in chat. Requires Moltorino auth (Settings → Moltorino → Authentication), experimental EventSub enabled under Settings → General, and an app restart after turning EventSub on.": [
     {
       "text": "Channel event messages in chat. Requires Moltorino auth (Settings → Moltorino → Authentication), experimental EventSub enabled under Settings → General, and an app restart after turning EventSub on.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 229,
       "api": "addDescription",
       "arg": 0,
@@ -3908,7 +3882,7 @@
   "Chatsen": [
     {
       "text": "Chatsen",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 61,
       "api": "checkbox",
       "arg": 0,
@@ -4159,19 +4133,6 @@
       "rewrite": true
     }
   ],
-  "Check that bot badge messages can be sent.": [
-    {
-      "text": "Check that bot badge messages can be sent.",
-      "file": "src/widgets/settingspages/MoltorinoPage.cpp",
-      "line": 284,
-      "api": "setToolTip",
-      "arg": 0,
-      "start": 9725,
-      "end": 9769,
-      "already": false,
-      "rewrite": true
-    }
-  ],
   "Check the spelling of words in the input box of all splits by default.": [
     {
       "text": "Check the spelling of words in the input box of all splits by default.",
@@ -4290,7 +4251,7 @@
   "Choose which extra details appear on usercards.": [
     {
       "text": "Choose which extra details appear on usercards.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 145,
       "api": "addDescription",
       "arg": 0,
@@ -4405,7 +4366,7 @@
   "Client": [
     {
       "text": "Client",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 83,
       "api": "addTitle",
       "arg": 0,
@@ -4847,7 +4808,7 @@
   "Color only moderators, members and the owner; regular chatters stay a neutral grey. Off = all names grey.\nDeleted messages follow the global \"hide moderated messages\" setting.": [
     {
       "text": "Color only moderators, members and the owner; regular chatters stay a neutral grey. Off = all names grey.\nDeleted messages follow the global \"hide moderated messages\" setting.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 117,
       "api": "setTooltip",
       "arg": 0,
@@ -4860,7 +4821,7 @@
   "Color usernames by role": [
     {
       "text": "Color usernames by role",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 113,
       "api": "checkbox",
       "arg": 0,
@@ -4932,7 +4893,7 @@
   "Colorize usernames": [
     {
       "text": "Colorize usernames",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 122,
       "api": "checkbox",
       "arg": 0,
@@ -5008,7 +4969,7 @@
     },
     {
       "text": "Commands",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 242,
       "api": "addTitle",
       "arg": 0,
@@ -5145,7 +5106,7 @@
   "Confirm before unfollowing from usercard": [
     {
       "text": "Confirm before unfollowing from usercard",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 192,
       "api": "checkbox",
       "arg": 0,
@@ -5177,19 +5138,6 @@
       "arg": 1,
       "start": 229435,
       "end": 229456,
-      "already": false,
-      "rewrite": true
-    }
-  ],
-  "Connect the account used for bot badge messages.": [
-    {
-      "text": "Connect the account used for bot badge messages.",
-      "file": "src/widgets/settingspages/MoltorinoPage.cpp",
-      "line": 280,
-      "api": "setToolTip",
-      "arg": 0,
-      "start": 9528,
-      "end": 9578,
       "already": false,
       "rewrite": true
     }
@@ -5770,7 +5718,7 @@
   "DankChat": [
     {
       "text": "DankChat",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 57,
       "api": "checkbox",
       "arg": 0,
@@ -6018,7 +5966,7 @@
   "Dev/contributor, QA, and supporter badges.": [
     {
       "text": "Dev/contributor, QA, and supporter badges.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 59,
       "api": "setTooltip",
       "arg": 0,
@@ -6031,7 +5979,7 @@
   "Developer, admin, and Plus badges.": [
     {
       "text": "Developer, admin, and Plus badges.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 51,
       "api": "setTooltip",
       "arg": 0,
@@ -6044,7 +5992,7 @@
   "Developer, helper, and supporter badges.": [
     {
       "text": "Developer, helper, and supporter badges.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 55,
       "api": "setTooltip",
       "arg": 0,
@@ -6057,7 +6005,7 @@
   "Developer, supporter, artist, and Patreon badges.": [
     {
       "text": "Developer, supporter, artist, and Patreon badges.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 63,
       "api": "setTooltip",
       "arg": 0,
@@ -6623,19 +6571,6 @@
       "rewrite": true
     }
   ],
-  "Enable Bot Badge mode": [
-    {
-      "text": "Enable Bot Badge mode",
-      "file": "src/widgets/settingspages/MoltorinoPage.cpp",
-      "line": 298,
-      "api": "checkbox",
-      "arg": 0,
-      "start": 10372,
-      "end": 10395,
-      "already": false,
-      "rewrite": true
-    }
-  ],
   "Enable Shadow": [
     {
       "text": "Enable Shadow",
@@ -6845,7 +6780,7 @@
   "Events": [
     {
       "text": "Events",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 227,
       "api": "addTitle",
       "arg": 0,
@@ -6975,7 +6910,7 @@
   "FFZ:AP": [
     {
       "text": "FFZ:AP",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 53,
       "api": "checkbox",
       "arg": 0,
@@ -7281,7 +7216,7 @@
   "Folhinha": [
     {
       "text": "Folhinha",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 49,
       "api": "checkbox",
       "arg": 0,
@@ -7359,7 +7294,7 @@
   "Founder and event badges.": [
     {
       "text": "Founder and event badges.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 80,
       "api": "setTooltip",
       "arg": 0,
@@ -7372,7 +7307,7 @@
   "Founder and supporter badges.": [
     {
       "text": "Founder and supporter badges.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 76,
       "api": "setTooltip",
       "arg": 0,
@@ -7515,7 +7450,7 @@
   "Give each YouTube chatter a stable color based on their channel, like the Twitch colorize option. Roles still use their role color first.": [
     {
       "text": "Give each YouTube chatter a stable color based on their channel, like the Twitch colorize option. Roles still use their role color first.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 126,
       "api": "setTooltip",
       "arg": 0,
@@ -7541,7 +7476,7 @@
   "Give new memberships, milestones and gifted memberships a green highlight.": [
     {
       "text": "Give new memberships, milestones and gifted memberships a green highlight.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 110,
       "api": "setTooltip",
       "arg": 0,
@@ -7957,7 +7892,7 @@
   "Hide the leading @ on YouTube handles in chat. Clicks, mentions and the user popup still work with the full name.": [
     {
       "text": "Hide the leading @ on YouTube handles in chat. Clicks, mentions and the user popup still work with the full name.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 132,
       "api": "setTooltip",
       "arg": 0,
@@ -8061,7 +7996,7 @@
   "Highlight Super Chats": [
     {
       "text": "Highlight Super Chats",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 90,
       "api": "checkbox",
       "arg": 0,
@@ -8087,7 +8022,7 @@
   "Highlight memberships && gifts": [
     {
       "text": "Highlight memberships && gifts",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 105,
       "api": "checkbox",
       "arg": 0,
@@ -8623,7 +8558,7 @@
   "Include Potat commands in suggestions": [
     {
       "text": "Include Potat commands in suggestions",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 265,
       "api": "checkbox",
       "arg": 0,
@@ -8636,7 +8571,7 @@
   "Include Supibot commands in suggestions": [
     {
       "text": "Include Supibot commands in suggestions",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 250,
       "api": "checkbox",
       "arg": 0,
@@ -8649,7 +8584,7 @@
   "Include built-in shortcuts such as $cf. Your own aliases are suggested separately after you type $$.": [
     {
       "text": "Include built-in shortcuts such as $cf. Your own aliases are suggested separately after you type $$.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 259,
       "api": "setTooltip",
       "arg": 0,
@@ -8662,7 +8597,7 @@
   "Include command shortcuts in Potat suggestions.": [
     {
       "text": "Include command shortcuts in Potat suggestions.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 274,
       "api": "setTooltip",
       "arg": 0,
@@ -8853,7 +8788,7 @@
   "JilChat": [
     {
       "text": "JilChat",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 69,
       "api": "checkbox",
       "arg": 0,
@@ -9461,7 +9396,7 @@
   "Let URLs wrap at /, ?, &, #, and = instead of staying on one line.": [
     {
       "text": "Let URLs wrap at /, ?, &, #, and = instead of staying on one line.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 293,
       "api": "setTooltip",
       "arg": 0,
@@ -9487,7 +9422,7 @@
   "Limerino": [
     {
       "text": "Limerino",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 78,
       "api": "checkbox",
       "arg": 0,
@@ -9934,7 +9869,7 @@
   "Longer windows smooth out Twitch burst delivery so the counter does not spike and drop to zero between bursts.": [
     {
       "text": "Longer windows smooth out Twitch burst delivery so the counter does not spike and drop to zero between bursts.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 215,
       "api": "setTooltip",
       "arg": 0,
@@ -9986,7 +9921,7 @@
   "MPS averaging window": [
     {
       "text": "MPS averaging window",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 213,
       "api": "dropdown",
       "arg": 0,
@@ -9999,7 +9934,7 @@
   "MPS overlay position": [
     {
       "text": "MPS overlay position",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 219,
       "api": "dropdown",
       "arg": 0,
@@ -10355,7 +10290,7 @@
   "Messages per second": [
     {
       "text": "Messages per second",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 205,
       "api": "addTitle",
       "arg": 0,
@@ -10392,7 +10327,7 @@
     },
     {
       "text": "Miscellaneous",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 285,
       "api": "addTitle",
       "arg": 0,
@@ -11000,19 +10935,6 @@
       "arg": 0,
       "start": 18715,
       "end": 18745,
-      "already": false,
-      "rewrite": true
-    }
-  ],
-  "No bot badge account verified yet.": [
-    {
-      "text": "No bot badge account verified yet.",
-      "file": "src/widgets/settingspages/MoltorinoPage.cpp",
-      "line": 1578,
-      "api": "setText",
-      "arg": 0,
-      "start": 62569,
-      "end": 62605,
       "already": false,
       "rewrite": true
     }
@@ -12171,7 +12093,7 @@
   "Owner, developer, founder, and membership milestones badges.": [
     {
       "text": "Owner, developer, founder, and membership milestones badges.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 72,
       "api": "setTooltip",
       "arg": 0,
@@ -12696,7 +12618,7 @@
   "PotatBotat": [
     {
       "text": "PotatBotat",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 264,
       "api": "addSubtitle",
       "arg": 0,
@@ -13421,7 +13343,7 @@
   "Remove @ from usernames": [
     {
       "text": "Remove @ from usernames",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 130,
       "api": "checkbox",
       "arg": 0,
@@ -13588,7 +13510,7 @@
   "Render the author name in white on the colored Super Chat row for readability.": [
     {
       "text": "Render the author name in white on the colored Super Chat row for readability.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 102,
       "api": "setTooltip",
       "arg": 0,
@@ -14853,19 +14775,6 @@
       "rewrite": true
     }
   ],
-  "Set up the Chat Bot badge used by /bot.": [
-    {
-      "text": "Set up the Chat Bot badge used by /bot.",
-      "file": "src/widgets/settingspages/MoltorinoPage.cpp",
-      "line": 248,
-      "api": "QLabel",
-      "arg": 0,
-      "start": 8101,
-      "end": 8142,
-      "already": false,
-      "rewrite": true
-    }
-  ],
   "Set up translation": [
     {
       "text": "Set up translation",
@@ -15134,7 +15043,7 @@
   "Show 0 mps": [
     {
       "text": "Show 0 mps",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 223,
       "api": "checkbox",
       "arg": 0,
@@ -15210,7 +15119,7 @@
   "Show 7TV paint": [
     {
       "text": "Show 7TV paint",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 169,
       "api": "checkbox",
       "arg": 0,
@@ -15236,7 +15145,7 @@
   "Show @username in the split header": [
     {
       "text": "Show @username in the split header",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 136,
       "api": "checkbox",
       "arg": 0,
@@ -15327,7 +15236,7 @@
   "Show Potat command aliases": [
     {
       "text": "Show Potat command aliases",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 272,
       "api": "checkbox",
       "arg": 0,
@@ -15340,7 +15249,7 @@
   "Show Potat commands without a prefix": [
     {
       "text": "Show Potat commands without a prefix",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 277,
       "api": "checkbox",
       "arg": 0,
@@ -15353,7 +15262,7 @@
   "Show Super Chats as a colored highlighted row (per tier).": [
     {
       "text": "Show Super Chats as a colored highlighted row (per tier).",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 95,
       "api": "setTooltip",
       "arg": 0,
@@ -15366,7 +15275,7 @@
   "Show Supibot command aliases": [
     {
       "text": "Show Supibot command aliases",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 256,
       "api": "checkbox",
       "arg": 0,
@@ -15418,7 +15327,7 @@
   "Show Twitch status": [
     {
       "text": "Show Twitch status",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 173,
       "api": "checkbox",
       "arg": 0,
@@ -15522,7 +15431,7 @@
   "Show a chat message when someone follows the channel. Only available when you are the broadcaster or a moderator.": [
     {
       "text": "Show a chat message when someone follows the channel. Only available when you are the broadcaster or a moderator.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 237,
       "api": "setTooltip",
       "arg": 0,
@@ -15535,7 +15444,7 @@
   "Show a compact command suggestion strip above the message input.": [
     {
       "text": "Show a compact command suggestion strip above the message input.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 245,
       "api": "setTooltip",
       "arg": 0,
@@ -15613,7 +15522,7 @@
   "Show a follow/unfollow button on usercards. Requires Moltorino auth (Settings → Moltorino → Authentication).": [
     {
       "text": "Show a follow/unfollow button on usercards. Requires Moltorino auth (Settings → Moltorino → Authentication).",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 188,
       "api": "setTooltip",
       "arg": 0,
@@ -15665,7 +15574,7 @@
   "Show account creation date": [
     {
       "text": "Show account creation date",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 150,
       "api": "checkbox",
       "arg": 0,
@@ -15769,7 +15678,7 @@
   "Show chatter count": [
     {
       "text": "Show chatter count",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 178,
       "api": "checkbox",
       "arg": 0,
@@ -15808,7 +15717,7 @@
   "Show command suggestions while typing": [
     {
       "text": "Show command suggestions while typing",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 243,
       "api": "checkbox",
       "arg": 0,
@@ -15925,7 +15834,7 @@
   "Show follow button": [
     {
       "text": "Show follow button",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 187,
       "api": "checkbox",
       "arg": 0,
@@ -15951,7 +15860,7 @@
   "Show follow notifications in chat": [
     {
       "text": "Show follow notifications in chat",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 234,
       "api": "checkbox",
       "arg": 0,
@@ -15964,7 +15873,7 @@
   "Show followage": [
     {
       "text": "Show followage",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 182,
       "api": "checkbox",
       "arg": 0,
@@ -15977,7 +15886,7 @@
   "Show follower count": [
     {
       "text": "Show follower count",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 147,
       "api": "checkbox",
       "arg": 0,
@@ -15990,7 +15899,7 @@
   "Show full date when hovering timestamps": [
     {
       "text": "Show full date when hovering timestamps",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 297,
       "api": "checkbox",
       "arg": 0,
@@ -16003,7 +15912,7 @@
   "Show gift sub gifter": [
     {
       "text": "Show gift sub gifter",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 199,
       "api": "checkbox",
       "arg": 0,
@@ -16042,7 +15951,7 @@
   "Show how long the user has followed this channel. Only available when you are the broadcaster or a moderator.": [
     {
       "text": "Show how long the user has followed this channel. Only available when you are the broadcaster or a moderator.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 183,
       "api": "setTooltip",
       "arg": 0,
@@ -16133,7 +16042,7 @@
   "Show last live": [
     {
       "text": "Show last live",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 154,
       "api": "checkbox",
       "arg": 0,
@@ -16146,7 +16055,7 @@
   "Show live viewer count": [
     {
       "text": "Show live viewer count",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 159,
       "api": "checkbox",
       "arg": 0,
@@ -16263,7 +16172,7 @@
   "Show messages-per-second (mps) overlay in splits": [
     {
       "text": "Show messages-per-second (mps) overlay in splits",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 206,
       "api": "checkbox",
       "arg": 0,
@@ -16712,7 +16621,7 @@
   "Show select badge button": [
     {
       "text": "Show select badge button",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 84,
       "api": "checkbox",
       "arg": 0,
@@ -16829,7 +16738,7 @@
   "Show the badge picker button in the chat input bar.": [
     {
       "text": "Show the badge picker button in the chat input bar.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 86,
       "api": "setTooltip",
       "arg": 0,
@@ -16842,7 +16751,7 @@
   "Show the channel @handle in the split header instead of the display name. Hovering always shows the handle.": [
     {
       "text": "Show the channel @handle in the split header instead of the display name. Hovering always shows the handle.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 140,
       "api": "setTooltip",
       "arg": 0,
@@ -16894,7 +16803,7 @@
   "Show the current chatter count when available.": [
     {
       "text": "Show the current chatter count when available.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 179,
       "api": "setTooltip",
       "arg": 0,
@@ -16933,7 +16842,7 @@
   "Show the full message date and time when hovering a timestamp. Uses your message timestamp format for the time portion.": [
     {
       "text": "Show the full message date and time when hovering a timestamp. Uses your message timestamp format for the time portion.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 299,
       "api": "setTooltip",
       "arg": 0,
@@ -17037,7 +16946,7 @@
   "Show the user's Twitch chat color.": [
     {
       "text": "Show the user's Twitch chat color.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 166,
       "api": "setTooltip",
       "arg": 0,
@@ -17050,7 +16959,7 @@
   "Show the user's equipped 7TV paint on the usercard.": [
     {
       "text": "Show the user's equipped 7TV paint on the usercard.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 170,
       "api": "setTooltip",
       "arg": 0,
@@ -17141,7 +17050,7 @@
   "Show user color": [
     {
       "text": "Show user color",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 165,
       "api": "checkbox",
       "arg": 0,
@@ -17219,7 +17128,7 @@
   "Show when the user was last live. Hover the row to see the stream title.": [
     {
       "text": "Show when the user was last live. Hover the row to see the stream title.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 155,
       "api": "setTooltip",
       "arg": 0,
@@ -17232,7 +17141,7 @@
   "Show whether the user is Staff, Partner, Affiliate, or Regular.": [
     {
       "text": "Show whether the user is Staff, Partner, Affiliate, or Regular.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 175,
       "api": "setTooltip",
       "arg": 0,
@@ -17310,7 +17219,7 @@
   "Shows a faint overlay label (e.g. \"12 mps\") with the average number of messages per second over the selected window.": [
     {
       "text": "Shows a faint overlay label (e.g. \"12 mps\") with the average number of messages per second over the selected window.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 208,
       "api": "setTooltip",
       "arg": 0,
@@ -17707,7 +17616,7 @@
   "Staff, contributor, founder, and supporter badges.": [
     {
       "text": "Staff, contributor, founder, and supporter badges.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 67,
       "api": "setTooltip",
       "arg": 0,
@@ -18115,7 +18024,7 @@
   "Suggest Potat commands after you type that channel's prefix, including custom commands that use it, when PotatBotat is joined.": [
     {
       "text": "Suggest Potat commands after you type that channel's prefix, including custom commands that use it, when PotatBotat is joined.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 268,
       "api": "setTooltip",
       "arg": 0,
@@ -18128,7 +18037,7 @@
   "Suggest Supibot $ commands after you type $, in channels where Supibot is active.": [
     {
       "text": "Suggest Supibot $ commands after you type $, in channels where Supibot is active.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 253,
       "api": "setTooltip",
       "arg": 0,
@@ -18141,7 +18050,7 @@
   "Supibot commands": [
     {
       "text": "Supibot commands",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 249,
       "api": "addSubtitle",
       "arg": 0,
@@ -19608,7 +19517,7 @@
   "Use message colors for tab alerts": [
     {
       "text": "Use message colors for tab alerts",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 286,
       "api": "checkbox",
       "arg": 0,
@@ -19695,7 +19604,7 @@
     },
     {
       "text": "Usercard",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 144,
       "api": "addTitle",
       "arg": 0,
@@ -20197,25 +20106,12 @@
   "When a message highlights a tab, use that highlight color for the tab alert line.": [
     {
       "text": "When a message highlights a tab, use that highlight color for the tab alert line.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 288,
       "api": "setTooltip",
       "arg": 0,
       "start": 13306,
       "end": 13413,
-      "already": false,
-      "rewrite": true
-    }
-  ],
-  "When bot mode is on, send normal messages through the bot badge account even if another account is selected.": [
-    {
-      "text": "When bot mode is on, send normal messages through the bot badge account even if another account is selected.",
-      "file": "src/widgets/settingspages/MoltorinoPage.cpp",
-      "line": 305,
-      "api": "setTooltip",
-      "arg": 0,
-      "start": 10755,
-      "end": 10889,
       "already": false,
       "rewrite": true
     }
@@ -20405,7 +20301,7 @@
   "When enabled, replaces the red live dot next to the username with the live viewer count.": [
     {
       "text": "When enabled, replaces the red live dot next to the username with the live viewer count.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 161,
       "api": "setTooltip",
       "arg": 0,
@@ -20506,23 +20402,10 @@
       "rewrite": true
     }
   ],
-  "When the selected account is the configured bot account, send normal chat messages through the Bot Badge.": [
-    {
-      "text": "When the selected account is the configured bot account, send normal chat messages through the Bot Badge.",
-      "file": "src/widgets/settingspages/MoltorinoPage.cpp",
-      "line": 299,
-      "api": "setTooltip",
-      "arg": 0,
-      "start": 10439,
-      "end": 10570,
-      "already": false,
-      "rewrite": true
-    }
-  ],
   "When the user has an active gifted subscription in a channel, show who gifted it on the usercard.": [
     {
       "text": "When the user has an active gifted subscription in a channel, show who gifted it on the usercard.",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 200,
       "api": "setTooltip",
       "arg": 0,
@@ -20561,7 +20444,7 @@
   "White username in Super Chats": [
     {
       "text": "White username in Super Chats",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 97,
       "api": "checkbox",
       "arg": 0,
@@ -20600,7 +20483,7 @@
   "Wrap links at breaks": [
     {
       "text": "Wrap links at breaks",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 292,
       "api": "checkbox",
       "arg": 0,
@@ -20730,7 +20613,7 @@
   "YouTube": [
     {
       "text": "YouTube",
-      "file": "src/widgets/settingspages/LeafyrinoPage.cpp",
+      "file": "src/widgets/settingspages/NoctisPage.cpp",
       "line": 89,
       "api": "addTitle",
       "arg": 0,

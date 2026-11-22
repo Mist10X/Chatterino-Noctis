@@ -4,6 +4,7 @@
 #include "common/network/NetworkResult.hpp"
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -95,6 +96,11 @@ void ChatterinoBadges::loadChatterinoBadges()
                     this->badgeMap[user.toString()] = index;
                 }
                 ++index;
+            }
+            lock.unlock();
+            if (index > 0)
+            {
+                notifyGlobalChatBadgesChanged();
             }
         })
         .execute();

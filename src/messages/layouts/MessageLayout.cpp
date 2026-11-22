@@ -12,6 +12,7 @@
 #include "messages/MessageElement.hpp"
 #include "messages/Selection.hpp"
 #include "providers/colors/ColorProvider.hpp"
+#include "singletons/ImageUploader.hpp"
 #include "singletons/Resources.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/StreamerMode.hpp"
@@ -24,6 +25,7 @@
 #include <QPainter>
 #include <QtGlobal>
 #include <QThread>
+#include <QtMath>
 
 #include <optional>
 
@@ -32,54 +34,94 @@ namespace chatterino {
 namespace {
 
 constexpr int SCROLLBAR_PADDING = 20;
+constexpr int CLIENT_ICON_SIZE = 16;
+constexpr int ACTION_GAP = 6;
 
-// Same order as NoticeIconLayoutElement::Icon, after None.
-enum class PunishmentKind {
-    None,
-    Ban,
-    Timeout,
-    Deletion,
-    Subscribers,
-    Slow,
-    Followers,
-    EmoteOnly,
-    UniqueChat,
-    Gift,
-};
+using NoticeIcon = NoticeIconLayoutElement::Icon;
 
-/// Punishments and chat mode changes: a soft box and an icon.
-PunishmentKind punishmentKind(const Message &message)
+/// Moderation, chat modes and public event notices: a soft box and an icon.
+std::optional<NoticeIcon> noticeKind(const Message &message)
 {
     if (message.giftNotice)
     {
-        return PunishmentKind::Gift;
+        return NoticeIcon::Gift;
+    }
+    using ChannelNotice = Message::ChannelNotice;
+    switch (message.channelNotice)
+    {
+        case ChannelNotice::Prediction:
+            return NoticeIcon::Prediction;
+        case ChannelNotice::Poll:
+            return NoticeIcon::Poll;
+        case ChannelNotice::Pinned:
+            return NoticeIcon::Pinned;
+        case ChannelNotice::Unpinned:
+            return NoticeIcon::Unpinned;
+        case ChannelNotice::StreamLive:
+            return NoticeIcon::StreamLive;
+        case ChannelNotice::StreamOffline:
+            return NoticeIcon::StreamOffline;
+        case ChannelNotice::PredictionWon:
+            return NoticeIcon::PredictionWon;
+        case ChannelNotice::PredictionLost:
+            return NoticeIcon::PredictionLost;
+        case ChannelNotice::PredictionRefund:
+            return NoticeIcon::PredictionRefund;
+        case ChannelNotice::WatchStreak:
+            return NoticeIcon::WatchStreak;
+        case ChannelNotice::AutoModHeld:
+            return NoticeIcon::AutoModHeld;
+        case ChannelNotice::None:
+            break;
     }
     switch (message.roomMode)
     {
         case Message::RoomMode::Subscribers:
-            return PunishmentKind::Subscribers;
+            return NoticeIcon::Subscribers;
         case Message::RoomMode::Slow:
-            return PunishmentKind::Slow;
+            return NoticeIcon::Slow;
         case Message::RoomMode::Followers:
-            return PunishmentKind::Followers;
+            return NoticeIcon::Followers;
         case Message::RoomMode::EmoteOnly:
-            return PunishmentKind::EmoteOnly;
+            return NoticeIcon::EmoteOnly;
         case Message::RoomMode::UniqueChat:
-            return PunishmentKind::UniqueChat;
+            return NoticeIcon::UniqueChat;
         case Message::RoomMode::None:
             break;
     }
     const auto &flags = message.flags;
+    if (flags.has(MessageFlag::Subscription) && flags.has(MessageFlag::System))
+    {
+        return NoticeIcon::Subscription;
+    }
+    if (flags.has(MessageFlag::Raid))
+    {
+        return NoticeIcon::Raid;
+    }
+    // Do not infer a connection status from ordinary chat text. Join and
+    // server reconnect notices predate the explicit connection-state flags.
+    if (flags.has(MessageFlag::DisconnectedMessage) ||
+        (flags.has(MessageFlag::System) &&
+         message.messageText == u"Twitch Servers requested us to reconnect, reconnecting"))
+    {
+        return NoticeIcon::ConnectionInterrupted;
+    }
+    if (flags.has(MessageFlag::ConnectedMessage) ||
+        (flags.has(MessageFlag::System) &&
+         message.messageText == u"joined channel"))
+    {
+        return NoticeIcon::ConnectionReady;
+    }
     // ModerationAction also includes unbans, chat modes and term-list changes.
     // Disabled marks the original chat text, not a punishment notice.
     if (flags.hasAny(MessageFlag::Untimeout, MessageFlag::ClearChat))
     {
-        return PunishmentKind::None;
+        return std::nullopt;
     }
     if (flags.hasAny(MessageFlag::Deletion,
                      MessageFlag::AutoModOffendingMessage))
     {
-        return PunishmentKind::Deletion;
+        return NoticeIcon::Deletion;
     }
     if (flags.has(MessageFlag::Timeout))
     {
@@ -87,53 +129,67 @@ PunishmentKind punishmentKind(const Message &message)
         const auto &text = message.messageText;
         if (!text.contains(u"timed out") && text.contains(u"banned"))
         {
-            return PunishmentKind::Ban;
+            return NoticeIcon::Ban;
         }
-        return PunishmentKind::Timeout;
+        return NoticeIcon::Timeout;
     }
-    return PunishmentKind::None;
+    return std::nullopt;
 }
 
-QColor punishmentColor(PunishmentKind kind)
+QColor noticeColor(NoticeIcon kind)
 {
     switch (kind)
     {
-        case PunishmentKind::Ban:
+        case NoticeIcon::Ban:
             return {239, 68, 84};
-        case PunishmentKind::Timeout:
+        case NoticeIcon::Timeout:
             return {234, 179, 8};
-        case PunishmentKind::Deletion:
+        case NoticeIcon::Deletion:
             return {150, 150, 160};
-        case PunishmentKind::Subscribers:
-        case PunishmentKind::Slow:
-        case PunishmentKind::Followers:
-        case PunishmentKind::EmoteOnly:
-        case PunishmentKind::UniqueChat:
+        case NoticeIcon::Subscribers:
+        case NoticeIcon::Slow:
+        case NoticeIcon::Followers:
+        case NoticeIcon::EmoteOnly:
+        case NoticeIcon::UniqueChat:
             // chat modes: a muted purple
             return {157, 118, 230};
-        case PunishmentKind::Gift:
+        case NoticeIcon::Gift:
             return {145, 132, 168};
-        case PunishmentKind::None:
+        case NoticeIcon::Subscription:
+            return {167, 135, 212};
+        case NoticeIcon::Prediction:
+            return {112, 144, 189};
+        case NoticeIcon::Poll:
+            return {94, 155, 151};
+        case NoticeIcon::Raid:
+            return {154, 137, 205};
+        case NoticeIcon::ConnectionReady:
+            // Noctis's blue-violet accent, without coloring the whole row.
+            return {143, 151, 211};
+        case NoticeIcon::ConnectionInterrupted:
+            // Muted sand rather than the red/yellow moderation palette.
+            return {181, 155, 126};
+        case NoticeIcon::Pinned:
+            return {168, 149, 204};
+        case NoticeIcon::Unpinned:
+        case NoticeIcon::StreamOffline:
+            return {146, 150, 171};
+        case NoticeIcon::StreamLive:
+            return {133, 179, 163};
+        case NoticeIcon::PredictionWon:
+            return {146, 182, 148};
+        case NoticeIcon::PredictionLost:
+            return {198, 144, 153};
+        case NoticeIcon::PredictionRefund:
+            return {132, 164, 190};
+        case NoticeIcon::WatchStreak:
+            return {156, 145, 212};
+        case NoticeIcon::AutoModHeld:
+            return {224, 174, 95};
+        case NoticeIcon::Mail:
             break;
     }
     return {};
-}
-
-/// The icon in front of a notice; none in front of the deleted chat
-/// message itself (AutoMod), only in front of notices.
-std::optional<NoticeIconLayoutElement::Icon> noticeIcon(const Message &message,
-                                                        PunishmentKind kind)
-{
-    if (kind == PunishmentKind::None ||
-        message.flags.has(MessageFlag::AutoModOffendingMessage))
-    {
-        return std::nullopt;
-    }
-    if (kind == PunishmentKind::Gift)
-    {
-        return NoticeIconLayoutElement::Icon::Gift;
-    }
-    return NoticeIconLayoutElement::Icon(int(kind) - 1);
 }
 
 std::optional<QColor> clientDetectionHighlightColor(
@@ -317,12 +373,19 @@ void MessageLayout::actuallyLayout(const MessageLayoutContext &ctx)
     const bool hideGigantifyReward =
         this->message_->usesTwitchGigantifyPresentation();
 
+    const bool hasClientIcon =
+        getSettings()->clientDetectionIcon &&
+        this->message_->clientDetection != Message::ClientDetectionStatus::Unknown;
     this->container_.beginLayout(ctx.width, this->scale_, this->imageScale_,
                                  this->emoteScale_, this->badgeScale_,
                                  this->centerBadges_, messageFlags);
 
     // the notice's icon goes right after the time
-    auto icon = noticeIcon(*this->message_, punishmentKind(*this->message_));
+    // AutoMod frames the deleted text but adds an icon only to the notice.
+    auto icon = this->message_->flags.has(MessageFlag::AutoModOffendingMessage)
+                    ? std::nullopt
+                    : noticeKind(*this->message_);
+    LinkElement *postedLink = nullptr;
 
     for (const auto &element : this->message_->elements)
     {
@@ -374,7 +437,7 @@ void MessageLayout::actuallyLayout(const MessageLayoutContext &ctx)
         if (icon && element->getFlags().hasAny(ctx.flags) &&
             dynamic_cast<TimestampElement *>(element.get()) == nullptr)
         {
-            auto color = punishmentColor(punishmentKind(*this->message_));
+            auto color = noticeColor(*icon);
             const qreal side = 14.0 * this->scale_;
             this->container_.addElement(new NoticeIconLayoutElement(
                 *element, *icon, color, QSizeF(side, side), this->scale_));
@@ -382,7 +445,31 @@ void MessageLayout::actuallyLayout(const MessageLayoutContext &ctx)
         }
 
         element->addToContainer(this->container_, ctx);
+        if (!postedLink && element->getFlags().has(MessageElementFlag::Text) &&
+            element->getFlags().hasNone(MessageElementFlag::RepliedMessage))
+        {
+            postedLink = dynamic_cast<LinkElement *>(element.get());
+        }
+    }
 
+    if (postedLink && ctx.flags.has(MessageElementFlag::Text) &&
+        !this->message_->loginName.isEmpty() &&
+        this->message_->platform == MessagePlatform::AnyOrTwitch)
+    {
+        auto *uploader = getApp()->getImageUploader();
+        if (uploader && !uploader->deletableImages(*this->message_).isEmpty())
+        {
+            const auto side = 20 * this->scale_;
+            auto *action = new NoticeIconLayoutElement(
+                *postedLink, NoticeIconLayoutElement::Icon::Deletion,
+                ctx.messageColors.systemText, QSizeF(side, side), this->scale_);
+            action->setLink({Link::DeleteUploadedImage, {}});
+            action->setTrailingSpace(false);
+            const auto inset = hasClientIcon
+                                   ? (CLIENT_ICON_SIZE + SCROLLBAR_PADDING)
+                                   : ACTION_GAP;
+            this->container_.addTrailingAction(action, inset * this->scale_);
+        }
     }
 
     if (this->height_ != this->container_.getHeight())
@@ -512,16 +599,17 @@ MessagePaintResult MessageLayout::paint(const MessagePaintContext &ctx)
 
 QPixmap *MessageLayout::ensureBuffer(QPainter &painter, qreal width, bool clear)
 {
-    if (this->buffer_ != nullptr)
+    const auto dpr = painter.device()->devicePixelRatioF();
+    const QSize pixels(qCeil(width * dpr), qCeil(this->container_.getHeight() * dpr));
+    if (this->buffer_ && this->buffer_->size() == pixels &&
+        qFuzzyCompare(this->buffer_->devicePixelRatioF(), dpr))
     {
         return this->buffer_.get();
     }
 
-    this->buffer_ = std::make_unique<QPixmap>(
-        static_cast<int>(width * painter.device()->devicePixelRatioF()),
-        static_cast<int>(this->container_.getHeight() *
-                         painter.device()->devicePixelRatioF()));
-    this->buffer_->setDevicePixelRatio(painter.device()->devicePixelRatioF());
+    this->deleteBuffer();
+    this->buffer_ = std::make_unique<QPixmap>(pixels);
+    this->buffer_->setDevicePixelRatio(dpr);
 
     if (clear)
     {
@@ -589,6 +677,7 @@ void MessageLayout::updateBuffer(QPixmap *buffer,
     }
     else if (this->message_->flags.has(MessageFlag::Subscription) &&
              !this->message_->giftNotice &&
+             !this->message_->flags.has(MessageFlag::System) &&
              ctx.preferences.enableSubHighlight)
     {
         backgroundColor = blendColors(
@@ -693,11 +782,10 @@ void MessageLayout::updateBuffer(QPixmap *buffer,
 
     if (getSettings()->clientDetectionIcon && clientDetectionIcon.has_value())
     {
-        const float size = 16 * this->scale_;
-        const float right = float(buffer->rect().right()) -
-                            (SCROLLBAR_PADDING * this->scale_);
+        const qreal size = CLIENT_ICON_SIZE * this->scale_;
+        const qreal right = buffer->rect().right() - SCROLLBAR_PADDING * this->scale_;
         const int left = int(right - size);
-        const int top = int((float(buffer->height()) - size * this->scale_) / 2);
+        const int top = int((buffer->height() - size) / 2);
 
         painter.drawPixmap(QRect(left, top, int(size), int(size)),
                            clientDetectionIcon.value());
@@ -728,8 +816,8 @@ void MessageLayout::updateBuffer(QPixmap *buffer,
         painter.restore();
     }
 
-    if (const auto kind = punishmentKind(*this->message_);
-        kind != PunishmentKind::None && this->container_.getLineCount() != 0)
+    if (const auto kind = noticeKind(*this->message_);
+        kind && this->container_.getLineCount() != 0)
     {
         // A soft rounded box around just the visible text, drawn under it.
         const qreal padX = 3.0 * this->scale_;
@@ -742,11 +830,19 @@ void MessageLayout::updateBuffer(QPixmap *buffer,
             std::min(box.bottom(), this->container_.getHeight() - 0.5));
         if (box.width() > 0 && box.height() > 0)
         {
-            auto fill = punishmentColor(kind);
+            auto fill = noticeColor(*kind);
             auto edge = fill;
-            fill.setAlpha(kind == PunishmentKind::Gift ? 10 : 26);
-            edge.setAlpha(kind == PunishmentKind::Gift ? 35 : 90);
-            const qreal radius = 4.0 * this->scale_;
+            const bool channelEvent =
+                this->message_->channelNotice != Message::ChannelNotice::None ||
+                kind == NoticeIcon::Raid;
+            const bool connection = kind == NoticeIcon::ConnectionReady ||
+                                    kind == NoticeIcon::ConnectionInterrupted;
+            const bool held = kind == NoticeIcon::AutoModHeld;
+            fill.setAlpha(held ? 48 : kind == NoticeIcon::Gift ? 10
+                                                       : (connection ? 30 : (channelEvent ? 18 : 26)));
+            edge.setAlpha(held ? 175 : kind == NoticeIcon::Gift ? 35
+                                                       : (connection ? 108 : (channelEvent ? 65 : 90)));
+            const qreal radius = ((connection || held) ? 5.0 : 4.0) * this->scale_;
             painter.save();
             painter.setRenderHint(QPainter::Antialiasing);
             painter.setPen(QPen(edge, 1.0));

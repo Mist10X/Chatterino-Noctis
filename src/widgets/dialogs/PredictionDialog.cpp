@@ -10,6 +10,7 @@
 #include "util/Helpers.hpp"
 #include "widgets/buttons/SvgButton.hpp"
 #include "widgets/helper/Line.hpp"
+#include "widgets/helper/ChannelAvatarLabel.hpp"
 #include "widgets/helper/PredictionPalette.hpp"
 #include "widgets/splits/Split.hpp"
 
@@ -691,7 +692,7 @@ std::vector<QPointer<PredictionDialog>> PredictionDialog::activeDialogs_;
 
 PredictionDialog::PredictionDialog(TwitchChannel *channel, QWidget *parent)
     : DraggablePopup(true, parent)
-    , channel_(channel)
+    , channel_(channel ? channel->sharedFromThis() : nullptr)
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->setObjectName("PredictionDialog");
@@ -712,7 +713,7 @@ PredictionDialog::PredictionDialog(TwitchChannel *channel, QWidget *parent)
             {
                 return;
             }
-            updatePredictionBalanceLabel(this, this->channel_);
+            updatePredictionBalanceLabel(this, this->channel_.get());
         }));
 
     auto *container = this->getLayoutContainer();
@@ -733,7 +734,7 @@ PredictionDialog::PredictionDialog(TwitchChannel *channel, QWidget *parent)
 
     this->headerSubtitleLabel_ = new QLabel(this->headerWidget_);
     this->headerSubtitleLabel_->setObjectName("PredictionHeaderSubtitle");
-    headerTextLayout->addWidget(this->headerSubtitleLabel_);
+    headerTextLayout->addWidget(withChannelAvatar(this->headerSubtitleLabel_, this->channel_->getName()));
 
     headerLayout->addLayout(headerTextLayout);
     headerLayout->addStretch(1);
@@ -767,7 +768,7 @@ PredictionDialog::PredictionDialog(TwitchChannel *channel, QWidget *parent)
         },
         this, QSize(3, 3));
     this->closeButton_->setScaleIndependentSize(18, 18);
-    this->closeButton_->setToolTip(uiText("Close"));
+    this->closeButton_->setAccessibleName(uiText("Close"));
     this->closeButton_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     QObject::connect(this->closeButton_, &Button::leftClicked, this, [this] {
         this->close();
@@ -779,6 +780,21 @@ PredictionDialog::PredictionDialog(TwitchChannel *channel, QWidget *parent)
     headerSeparator->setObjectName("PredictionDialogSeparator");
     headerSeparator->setFixedHeight(scaledSeparatorHeight(this->scale()));
     this->mainLayout_->addWidget(headerSeparator);
+
+    this->betErrorLabel_ = new QLabel(container);
+    this->betErrorLabel_->setWordWrap(true);
+    this->betErrorLabel_->setTextFormat(Qt::PlainText);
+    this->betErrorLabel_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    this->betErrorLabel_->setSizePolicy(QSizePolicy::Ignored,
+                                       QSizePolicy::Preferred);
+    this->betErrorLabel_->setObjectName("PredictionBetError");
+    this->betErrorLabel_->hide();
+    // Notices are a full-width card, not another line squeezed into the
+    // header's title column beside the window controls.
+    this->betErrorLayout_ = new QHBoxLayout();
+    this->betErrorLayout_->setSpacing(0);
+    this->betErrorLayout_->addWidget(this->betErrorLabel_);
+    this->mainLayout_->insertLayout(1, this->betErrorLayout_);
 
     this->scrollArea_ = new QScrollArea(container);
     this->scrollArea_->setObjectName("PredictionScrollArea");
@@ -839,7 +855,7 @@ void PredictionDialog::showDialog(
 
             if (s.predictionDialogsPerChannel)
             {
-                if ((*it)->channel_ == channel)
+                if ((*it)->channel_.get() == channel)
                 {
                     if (prediction.has_value())
                     {
@@ -895,6 +911,12 @@ void PredictionDialog::showDialog(
 void PredictionDialog::setPrediction(
     const std::optional<TwitchChannel::PredictionEvent> &prediction)
 {
+    if (!prediction || !this->currentPrediction_ ||
+        prediction->id != this->currentPrediction_->id ||
+        prediction->status != "ACTIVE")
+    {
+        this->betErrorLabel_->hide();
+    }
     const bool broadcasterView = this->isBroadcasterView();
     bool canUpdateInPlace =
         this->currentPrediction_.has_value() && prediction.has_value() &&
@@ -1077,7 +1099,7 @@ void PredictionDialog::updateInPlace()
     // Refresh the header subtitle (timer, status text)
     this->refreshHeader();
 
-    updatePredictionBalanceLabel(this, this->channel_);
+    updatePredictionBalanceLabel(this, this->channel_.get());
 }
 
 void PredictionDialog::themeChangedEvent()
@@ -1359,6 +1381,16 @@ void PredictionDialog::applySizeConstraints(bool preserveCurrentPosition)
             }
             contentHeight += headerHeight;
         }
+        if (this->betErrorLabel_->isVisibleTo(this))
+        {
+            // Use the wrapped text height at the actual dialog width, with
+            // the notice's theme padding, rather than the header's size hint.
+            this->betErrorLabel_->ensurePolished();
+            const int height =
+                this->betErrorLayout_->totalHeightForWidth(contentWidth);
+            contentHeight += height < 0 ? this->betErrorLayout_->sizeHint().height()
+                                        : height;
+        }
         contentHeight += scaledSeparatorHeight(this->scale());
         if (this->activeWidget_ != nullptr)
         {
@@ -1468,7 +1500,7 @@ void PredictionDialog::refreshHeader()
     {
         this->headerTitleLabel_->setText(uiText("Start a Prediction"));
         this->headerSubtitleLabel_->setText(
-            QString("#%1").arg(this->channel_->getName()));
+            this->channel_->getName());
         this->modToggleButton_->hide();
         return;
     }
@@ -1477,7 +1509,7 @@ void PredictionDialog::refreshHeader()
     {
         this->headerTitleLabel_->setText(uiText("Prediction"));
         this->headerSubtitleLabel_->setText(
-            uiText(QString("<span style=\"font-weight:400;\">#%1</span>"
+            uiText(QString("<span style=\"font-weight:400;\">%1</span>"
                     " <span style=\"font-weight:400;\">•</span> "
                     "<span style=\"font-weight:700; color:%2;\">%3</span>"))
                 .arg(this->channel_->getName().toHtmlEscaped(),
@@ -1517,7 +1549,7 @@ void PredictionDialog::refreshHeader()
 
     this->headerTitleLabel_->setText(uiText("Prediction"));
     this->headerSubtitleLabel_->setText(
-        uiText(QString("#%1 • no active prediction")).arg(this->channel_->getName()));
+        uiText(QString("%1 • no active prediction")).arg(this->channel_->getName()));
     this->modToggleButton_->hide();
 }
 
@@ -2982,7 +3014,6 @@ void PredictionDialog::buildBettingUI()
                 QString("color: %1; font-weight: 700; background: transparent; "
                         "border: none;")
                     .arg(color.name()));
-            nameLabel->setToolTip(outcome.title);
             innerLayout->addWidget(nameLabel, 0,
                                    isLeft ? Qt::AlignRight : Qt::AlignLeft);
 
@@ -3184,7 +3215,7 @@ void PredictionDialog::buildBettingUI()
                 nameLabel->setTextFormat(Qt::PlainText);
                 nameLabel->setObjectName("PredictionOutcomeName");
                 nameLabel->setFont(buttonFont);
-                nameLabel->setToolTip(outcome.title);
+                nameLabel->setToolTip(nameLabel->text());
                 nameLabel->setMinimumWidth(0);
                 nameLabel->setSizePolicy(QSizePolicy::Ignored,
                                          QSizePolicy::Preferred);
@@ -3768,7 +3799,7 @@ void PredictionDialog::buildBettingUI()
                                             }
 
                                             applyLocalChannelPointsSpend(
-                                                self->channel_, points);
+                                                self->channel_.get(), points);
                                         }
 
                                         /*
@@ -3793,11 +3824,7 @@ void PredictionDialog::buildBettingUI()
                                         {
                                             return;
                                         }
-                                        self->channel_->addSystemMessage(
-                                            "Failed to place bet: " +
-                                            normalizeMoltorinoAuthError(
-                                                "placing prediction bets",
-                                                error));
+                                        self->showBetError(error);
                                         if (btn)
                                         {
                                             btn->setEnabled(true);
@@ -3912,7 +3939,7 @@ void PredictionDialog::buildBettingUI()
                                         }
 
                                         applyLocalChannelPointsSpend(
-                                            self->channel_, points);
+                                            self->channel_.get(), points);
                                     }
 
                                     /*
@@ -3936,10 +3963,7 @@ void PredictionDialog::buildBettingUI()
                                     {
                                         return;
                                     }
-                                    self->channel_->addSystemMessage(
-                                        "Failed to place bet: " +
-                                        normalizeMoltorinoAuthError(
-                                            "placing prediction bets", error));
+                                    self->showBetError(error);
                                     if (btn)
                                     {
                                         btn->setEnabled(true);
@@ -3960,6 +3984,21 @@ void PredictionDialog::buildBettingUI()
         this->mainLayout_->addWidget(this->bottomWidget_);
         this->bottomWidget_->show();
     }
+}
+
+void PredictionDialog::showBetError(const QString &error)
+{
+    if (error.contains(QStringLiteral("REGION_LOCKED"), Qt::CaseInsensitive))
+    {
+        this->betErrorLabel_->setText(uiText("Predictions are unavailable in your region."));
+    }
+    else
+    {
+        this->betErrorLabel_->setText(uiText("Failed to place bet: ") +
+            normalizeMoltorinoAuthError("placing prediction bets", error));
+    }
+    this->betErrorLabel_->show();
+    this->applySizeConstraints(true);
 }
 
 void PredictionDialog::refreshStyle()
@@ -3999,6 +4038,22 @@ void PredictionDialog::refreshStyle()
     this->headerSubtitleLabel_->setFont(
         getApp()->getFonts()->getFont(FontStyle::UiMedium, effectiveScale));
     this->headerSubtitleLabel_->setStyleSheet(QString());
+    this->betErrorLabel_->setFont(
+        getApp()->getFonts()->getFont(FontStyle::UiMedium, effectiveScale));
+    const int noticeInset = std::max(3, int(5 * rawScale));
+    this->betErrorLayout_->setContentsMargins(noticeInset, 0, noticeInset, 0);
+    auto noticeBackground = this->theme->accent;
+    noticeBackground.setAlpha(20);
+    auto noticeBorder = this->theme->accent;
+    noticeBorder.setAlpha(72);
+    this->betErrorLabel_->setStyleSheet(QStringLiteral(
+        "QLabel#PredictionBetError { background: %1; color: %2; "
+        "border: 1px solid %3; border-radius: %4px; padding: %5px %6px; }")
+        .arg(noticeBackground.name(QColor::HexArgb), textColor.name(),
+             noticeBorder.name(QColor::HexArgb))
+        .arg(radius)
+        .arg(std::max(3, int(5 * rawScale)))
+        .arg(std::max(4, int(8 * rawScale))));
 
     this->modToggleButton_->setFont(
         getApp()->getFonts()->getFont(FontStyle::UiMedium, effectiveScale));

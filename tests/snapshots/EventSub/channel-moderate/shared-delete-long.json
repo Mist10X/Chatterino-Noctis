@@ -146,6 +146,7 @@
             "searchText": "A message from testaccount_420 was deleted: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…",
             "serverReceivedTime": "2024-05-14T12:31:47Z",
             "timeoutUser": "testaccount_420",
+            "timeoutUserID": "117166826",
             "twitchBadgeInfos": {
             },
             "twitchBadges": [

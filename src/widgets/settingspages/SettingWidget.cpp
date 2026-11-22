@@ -23,20 +23,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPixmap>
-#include <QSvgRenderer>
 #include <Qt>
 
 #include <algorithm>
-
-namespace {
-
-constexpr int MAX_TOOLTIP_LINE_LENGTH = 50;
-const auto MAX_TOOLTIP_LINE_LENGTH_PATTERN =
-    QStringLiteral(R"(.{%1}\S*\K(\s+))").arg(MAX_TOOLTIP_LINE_LENGTH);
-const QRegularExpression MAX_TOOLTIP_LINE_LENGTH_REGEX(
-    MAX_TOOLTIP_LINE_LENGTH_PATTERN);
-
-}  // namespace
 
 namespace chatterino {
 
@@ -143,7 +132,7 @@ SettingWidget *SettingWidget::intInput(const QString &label,
 {
     auto *widget = new SettingWidget(label);
 
-    auto *lbl = new QLabel(uiText(label) + ":");
+    auto *lbl = new SettingCaption(uiText(label) + ":");
 
     auto *input = new SpinBox;
     if (params.min.has_value())
@@ -187,13 +176,30 @@ SettingWidget *SettingWidget::intInput(const QString &label,
     return widget;
 }
 
+void SettingWidget::layoutDropdown(QWidget *caption, QComboBox *combo)
+{
+    this->label = caption;
+    this->actionWidget = combo;
+    auto *form = new QFormLayout;
+    form->setContentsMargins(0, 0, 0, 0);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    auto *heading = new QHBoxLayout;
+    heading->addWidget(caption);
+    heading->addWidget(this->tooltipIcon);
+    form->setLayout(0, QFormLayout::LabelRole, heading);
+    form->setWidget(0, QFormLayout::FieldRole, combo);
+    form->setAlignment(combo, Qt::AlignRight);
+    this->hLayout->addLayout(form);
+}
+
 template <typename T>
 SettingWidget *SettingWidget::dropdown(const QString &label,
                                        EnumStringSetting<T> &setting)
 {
     auto *widget = new SettingWidget(label);
 
-    auto *lbl = new QLabel(uiText(label) % ":");
+    auto *lbl = new SettingCaption(uiText(label) % ":");
     auto *combo = new ComboBox;
     combo->setFocusPolicy(Qt::StrongFocus);
 
@@ -203,16 +209,7 @@ SettingWidget *SettingWidget::dropdown(const QString &label,
                        QVariant(static_cast<std::underlying_type_t<T>>(value)));
     }
 
-    // TODO: this can probably use some other size hint/size strategy
-    combo->setMinimumWidth(combo->minimumSizeHint().width() + 30);
-
-    widget->actionWidget = combo;
-    widget->label = lbl;
-
-    widget->hLayout->addWidget(lbl);
-    widget->hLayout->addWidget(widget->tooltipIcon);
-    widget->hLayout->addStretch(1);
-    widget->hLayout->addWidget(combo);
+    widget->layoutDropdown(lbl, combo);
 
     setting.connect(
         [&setting, combo](const QString &value) {
@@ -283,7 +280,7 @@ SettingWidget *SettingWidget::dropdown(const QString &label,
 {
     auto *widget = new SettingWidget(label);
 
-    auto *lbl = new QLabel(uiText(label) % ":");
+    auto *lbl = new SettingCaption(uiText(label) % ":");
     auto *combo = new ComboBox;
     combo->setFocusPolicy(Qt::StrongFocus);
 
@@ -293,16 +290,7 @@ SettingWidget *SettingWidget::dropdown(const QString &label,
                        QVariant(static_cast<std::underlying_type_t<T>>(value)));
     }
 
-    // TODO: this can probably use some other size hint/size strategy
-    combo->setMinimumWidth(combo->minimumSizeHint().width() + 30);
-
-    widget->actionWidget = combo;
-    widget->label = lbl;
-
-    widget->hLayout->addWidget(lbl);
-    widget->hLayout->addWidget(widget->tooltipIcon);
-    widget->hLayout->addStretch(1);
-    widget->hLayout->addWidget(combo);
+    widget->layoutDropdown(lbl, combo);
 
     setting.connect(
         [combo, label](const auto &value) {
@@ -363,7 +351,7 @@ SettingWidget *SettingWidget::dropdown(
 {
     auto *widget = new SettingWidget(label);
 
-    auto *lbl = new QLabel(uiText(label) % ":");
+    auto *lbl = new SettingCaption(uiText(label) % ":");
     auto *combo = new ComboBox;
     combo->setFocusPolicy(Qt::StrongFocus);
 
@@ -375,16 +363,7 @@ SettingWidget *SettingWidget::dropdown(
                        itemData);
     }
 
-    // TODO: this can probably use some other size hint/size strategy
-    combo->setMinimumWidth(combo->minimumSizeHint().width() + 30);
-
-    widget->actionWidget = combo;
-    widget->label = lbl;
-
-    widget->hLayout->addWidget(lbl);
-    widget->hLayout->addWidget(widget->tooltipIcon);
-    widget->hLayout->addStretch(1);
-    widget->hLayout->addWidget(combo);
+    widget->layoutDropdown(lbl, combo);
 
     setting.connect(
         [combo, label](const auto &value) {
@@ -430,7 +409,7 @@ SettingWidget *SettingWidget::colorButton(const QString &label,
     QColor color(setting.getValue());
     auto *widget = new SettingWidget(label);
 
-    auto *lbl = new QLabel(uiText(label) + ":");
+    auto *lbl = new SettingCaption(uiText(label) + ":");
 
     auto *colorButton = new ColorButton(color);
     // keep the row height: the button only grows sideways
@@ -475,7 +454,7 @@ SettingWidget *SettingWidget::lineEdit(const QString &label,
 {
     auto *widget = new SettingWidget(label);
 
-    auto *lbl = new QLabel(uiText(label) + ":");
+    auto *lbl = new SettingCaption(uiText(label) + ":");
 
     auto *edit = new QLineEdit;
     edit->setText(setting);
@@ -519,7 +498,7 @@ SettingWidget *SettingWidget::fontButton(const QString &label,
 {
     auto *widget = new SettingWidget(label);
 
-    auto *lbl = new QLabel(uiText(label) + ":");
+    auto *lbl = new SettingCaption(uiText(label) + ":");
 
     auto *button = new SPushButton(currentFont().family());
 
@@ -557,35 +536,29 @@ SettingWidget *SettingWidget::setTooltip(QString tooltip)
     assert(!tooltip.isEmpty());
     tooltip = uiText(tooltip);
 
-    if (tooltip.length() > MAX_TOOLTIP_LINE_LENGTH)
+    // A hint icon is useful only if the hint contributes information.
+    // Some older settings used the visible caption itself as the hint.
+    if (this->keywords.size() >= 2 &&
+        (tooltip.simplified() == this->keywords[0].simplified() ||
+         tooltip.simplified() == this->keywords[1].simplified()))
     {
-        // match MAX_TOOLTIP_LINE_LENGTH characters, any remaining
-        // non-space, and then capture the following space for
-        // replacement with newline
-        tooltip.replace(MAX_TOOLTIP_LINE_LENGTH_REGEX, "\n");
+        return this;
     }
 
-    int sz = 0;
     if (this->label != nullptr)
     {
         this->label->setToolTip(tooltip);
-        sz = this->label->sizeHint().height();
     }
 
     if (this->actionWidget != nullptr)
     {
         this->actionWidget->setToolTip(tooltip);
-        sz = std::max(sz, this->actionWidget->sizeHint().height());
     }
 
     this->tooltipIcon->setVisible(true);
     this->tooltipIcon->load(u":/settings/hint.svg"_qs);
     this->tooltipIcon->setToolTip(tooltip);
-    auto *r = this->tooltipIcon->renderer();
-    auto vb = r->viewBox();
-    this->tooltipIcon->setFixedHeight(sz);
-    this->tooltipIcon->setFixedWidth(
-        int(double(sz) / double(vb.height()) * double(vb.width())));
+    this->tooltipIcon->setFixedSize(12, 18);
 
     this->keywords.append(tooltip);
 

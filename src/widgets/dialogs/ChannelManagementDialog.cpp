@@ -9,6 +9,7 @@
 #include "widgets/dialogs/MoltorinoDialogTheme.hpp"
 #include "widgets/dialogs/PopupControlMetrics.hpp"
 #include "widgets/helper/ChannelCategoryPicker.hpp"
+#include "widgets/helper/ChannelAvatarLabel.hpp"
 #include "widgets/helper/Line.hpp"
 #include "widgets/layout/FlowLayout.hpp"
 #include "widgets/splits/SplitHeader.hpp"
@@ -255,12 +256,12 @@ ChannelManagementDialog::ChannelManagementDialog(
         new QLabel(uiText("Edit stream info"), this->headerWidget_);
     this->headerTitleLabel_->setObjectName("ChannelManagementHeaderTitle");
     this->headerSubtitleLabel_ = new QLabel(
-        uiText(QString("#%1  •  Loading stream info")).arg(this->channel_->getName()),
+        uiText(QString("%1  •  Loading stream info")).arg(this->channel_->getName()),
         this->headerWidget_);
     this->headerSubtitleLabel_->setObjectName(
         "ChannelManagementHeaderSubtitle");
     headerText->addWidget(this->headerTitleLabel_);
-    headerText->addWidget(this->headerSubtitleLabel_);
+    headerText->addWidget(withChannelAvatar(this->headerSubtitleLabel_, this->channel_->getName()));
     headerLayout->addLayout(headerText, 1);
 
     this->pinButton_ = this->createPinButton();
@@ -275,7 +276,7 @@ ChannelManagementDialog::ChannelManagementDialog(
         },
         this, QSize{3, 3});
     this->closeButton_->setScaleIndependentSize(18, 18);
-    this->closeButton_->setToolTip(uiText("Close"));
+    this->closeButton_->setAccessibleName(uiText("Close"));
     this->closeButton_->setCursor(Qt::PointingHandCursor);
     QObject::connect(this->closeButton_, &Button::leftClicked, this,
                      &QWidget::close);
@@ -362,9 +363,7 @@ ChannelManagementDialog::ChannelManagementDialog(
     languageColumn->addWidget(makeFieldLabel(uiText("Language"), broadcastSection));
     this->languageCombo_ = new NoWheelComboBox(broadcastSection);
     this->languageCombo_->setObjectName("ChannelManagementLanguageInput");
-    this->languageCombo_->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    this->languageCombo_->setMinimumContentsLength(8);
+    this->languageCombo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     this->languageCombo_->setMaxVisibleItems(12);
     this->languageCombo_->setAccessibleName(uiText("Stream language"));
     for (const auto &language : LANGUAGES)
@@ -674,7 +673,7 @@ void ChannelManagementDialog::prepareLoadingState()
     this->setCategoryHint({});
     this->setCommercialMessage({});
     this->headerSubtitleLabel_->setText(
-        uiText(QString("#%1  •  Loading stream info")).arg(this->channel_->getName()));
+        uiText(QString("%1  •  Loading stream info")).arg(this->channel_->getName()));
 
     const auto streamStatus = this->channel_->accessStreamStatus();
     {
@@ -718,7 +717,7 @@ void ChannelManagementDialog::applyState(ChannelManagementState state)
     this->refreshParentHeaderIcons();
 
     this->headerSubtitleLabel_->setText(
-        uiText(QString("#%1  •  %2 access"))
+        uiText(QString("%1  •  %2 access"))
             .arg(this->channel_->getName(),
                  state.access == ChannelManagementAccess::Broadcaster
                      ? uiText(QStringLiteral("Broadcaster"))
@@ -931,7 +930,6 @@ void ChannelManagementDialog::rebuildTagChips()
                                  int(24 * this->scale()));
             remove->setCursor(Qt::PointingHandCursor);
             remove->setAccessibleName(uiText(QString("Remove %1")).arg(tag));
-            remove->setToolTip(remove->accessibleName());
             layout->addWidget(remove);
             QWidget::setTabOrder(previous, remove);
             previous = remove;
@@ -1217,7 +1215,7 @@ void ChannelManagementDialog::updateCommercialAvailability()
     {
         const auto length = this->commercialLengthCombo_->currentData().toInt();
         this->commercialConfirmationLabel_->setText(
-            uiText(QString("Run a commercial for %1 seconds in #%2?"))
+            uiText(QString("Run a commercial for %1 seconds in %2?"))
                 .arg(length)
                 .arg(this->channel_->getName()));
         this->commercialConfirmationLabel_->show();
@@ -1246,8 +1244,6 @@ void ChannelManagementDialog::updateTitleCounter()
                        .arg(size - TITLE_LIMIT == 1 ? "" : "s")
         : empty ? uiText(QStringLiteral("Enter a title"))
                 : QString());
-    this->titleValidationLabel_->setToolTip(
-        this->titleValidationLabel_->text());
 
     QList<QTextEdit::ExtraSelection> selections;
     if (overflow)
@@ -1901,17 +1897,24 @@ void ChannelManagementDialog::fitToContent()
     const auto width = std::min(int(500 * this->scale()), available.width());
     const auto contentWidth =
         std::max(1, width - margins.left() - margins.right());
+    const auto contentMargins = this->contentLayout_->contentsMargins();
+    const auto rowSpace = contentWidth - contentMargins.left() - contentMargins.right();
+    if (auto *columns = this->contentWidget_->findChild<QBoxLayout *>(
+            "ChannelManagementFieldColumns"))
+    {
+        const auto required = columns->itemAt(0)->minimumSize().width() +
+                              columns->itemAt(1)->sizeHint().width() + columns->spacing();
+        columns->setDirection(required > rowSpace ? QBoxLayout::TopToBottom
+                                                  : QBoxLayout::LeftToRight);
+    }
     if (auto *commercialRow = this->contentWidget_->findChild<QBoxLayout *>(
             "ChannelManagementCommercialRow"))
     {
-        const auto contentMargins = this->contentLayout_->contentsMargins();
         const auto rowWidth =
             commercialRow->itemAt(0)->widget()->sizeHint().width() +
             commercialRow->itemAt(1)->widget()->minimumSizeHint().width() +
             commercialRow->spacing();
-        commercialRow->setDirection(rowWidth > contentWidth -
-                                                   contentMargins.left() -
-                                                   contentMargins.right()
+        commercialRow->setDirection(rowWidth > rowSpace
                                         ? QBoxLayout::TopToBottom
                                         : QBoxLayout::LeftToRight);
     }

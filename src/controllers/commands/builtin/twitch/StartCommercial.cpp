@@ -27,8 +27,8 @@ QString startCommercial(const CommandContext &ctx)
 
     const auto *usageStr =
         "Usage: /commercial [seconds]. Choose 30, 60, 90, 120, 150, or 180. "
-        "Without a duration, uses the default in Settings > Moltorino > "
-        "Moderation.";
+        "Without a duration, uses the default in Settings > Moderation tools > "
+        "Commercials.";
 
     auto length = getSettings()->defaultCommercialDuration.getValue();
     if (!ChannelManagement::isValidCommercialLength(length))

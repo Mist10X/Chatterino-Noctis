@@ -11,6 +11,7 @@
 #include "singletons/Settings.hpp"
 
 #include <boost/unordered/unordered_flat_set.hpp>
+#include <QTimer>
 
 using namespace Qt::Literals;
 
@@ -60,6 +61,7 @@ public:
     bool hasManagerOrFetch();
 
     void flushBacklog();
+    void negotiationFailed();
 
     void joinImpl(uint64_t roomID, uint64_t channelID);
     void partImpl(uint64_t roomID, uint64_t channelID);
@@ -126,7 +128,7 @@ bool KickLiveUpdatesPrivate::hasManagerOrFetch()
                 const auto connection =
                     json["data"_L1]["connections"_L1][0].toObject();
                 auto provider = connection["provider"_L1].toString();
-                if (provider == u"pusher")
+                if (provider == u"pusher" && currentPrefs().has(KickConnectionPreference::Pusher))
                 {
                     const auto creds = connection["credentials"_L1].toObject();
                     auto appKey = creds["app_key"_L1].toString();
@@ -137,7 +139,7 @@ bool KickLiveUpdatesPrivate::hasManagerOrFetch()
                     self->manager =
                         std::make_unique<KickPusherManager>(appKey, cluster);
                 }
-                else if (provider == u"centrifugo")
+                else if (provider == u"centrifugo" && currentPrefs().has(KickConnectionPreference::Centrifugo))
                 {
                     const auto creds = connection["credentials"_L1].toObject();
                     auto url = creds["url"_L1].toString();
@@ -149,9 +151,9 @@ bool KickLiveUpdatesPrivate::hasManagerOrFetch()
                 else
                 {
                     qCWarning(chatterinoKick)
-                        << "Unknown Kick provider, using Pusher"
-                        << res.getData();
-                    self->manager = makeDefaultManager(self->clientID);
+                        << "Kick did not return a requested transport";
+                    self->negotiationFailed();
+                    return;
                 }
 
                 self->flushBacklog();
@@ -163,17 +165,35 @@ bool KickLiveUpdatesPrivate::hasManagerOrFetch()
                     return;
                 }
                 qCWarning(chatterinoKick)
-                    << "Failed to request Kick connection, using Pusher"
+                    << "Failed to request Kick connection"
                     << res.formatError();
-                // Just use pusher. This may be wrong, but the best we can do.
-                // FIXME: Definitely wrong if the user isn't connected.
-                self->manager = std::make_unique<KickPusherManager>(u"", u"");
-                self->flushBacklog();
+                self->negotiationFailed();
             })
             .execute();
     }
 
     return false;
+}
+
+void KickLiveUpdatesPrivate::negotiationFailed()
+{
+    const auto preference = getSettings()->kickConnectionPreference.getEnum();
+    if (preference == KickConnectionPreference::Default ||
+        preference == KickConnectionPreference::Any)
+    {
+        this->manager = makeDefaultManager(this->clientID);
+        this->flushBacklog();
+        return;
+    }
+    // Leave the pending joins in place while waiting for credentials for the selected transport.
+    QTimer::singleShot(5000, [weak = this->weak_from_this()] {
+        if (auto self = weak.lock())
+        {
+            self->requestInProgress = false;
+            if (!self->backlog.empty())
+                self->hasManagerOrFetch();
+        }
+    });
 }
 
 void KickLiveUpdatesPrivate::flushBacklog()

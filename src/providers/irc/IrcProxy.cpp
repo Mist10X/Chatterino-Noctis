@@ -18,7 +18,7 @@ namespace chatterino {
 
 namespace {
 
-constexpr auto LIVE_SYSTEM_PROXY = "leafyrinoLiveSystemProxy";
+constexpr auto LIVE_SYSTEM_PROXY = "noctisLiveSystemProxy";
 
 }  // namespace
 

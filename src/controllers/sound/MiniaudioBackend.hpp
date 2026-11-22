@@ -11,6 +11,7 @@
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <pajlada/signals/signalholder.hpp>
 #include <QByteArray>
 #include <QString>
 #include <QUrl>
@@ -31,6 +32,8 @@ struct ma_decoder;
 
 namespace chatterino {
 
+class Settings;
+
 class MiniaudioBackend : public ISoundController
 {
     enum class State : std::uint8_t {
@@ -43,7 +46,7 @@ class MiniaudioBackend : public ISoundController
     std::atomic<State> state{State::Uninitialized};
 
 public:
-    explicit MiniaudioBackend(bool keepEngineAlive_);
+    explicit MiniaudioBackend(Settings &settings);
     ~MiniaudioBackend() override;
 
     void play(const QUrl &sound) final;
@@ -71,6 +74,7 @@ private:
     boost::asio::steady_timer sleepTimer;
 
     bool keepEngineAlive;
+    pajlada::Signals::SignalHolder volumeConnection;
 
     friend class Application;
 };

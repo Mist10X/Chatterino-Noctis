@@ -4,6 +4,7 @@
 
 #include "widgets/splits/SplitContainer.hpp"
 
+
 #include "Application.hpp"
 #include "common/Common.hpp"
 #include "common/QLogging.hpp"
@@ -126,6 +127,14 @@ Split *SplitContainer::appendNewSplit(bool openChannelNameDialog)
 {
     assertInGuiThread();
 
+    if (this->isPermanentWhispersTab())
+    {
+        if (auto *notebook = dynamic_cast<SplitNotebook *>(this->parentWidget()))
+        {
+            return notebook->addPage(true)->appendNewSplit(openChannelNameDialog);
+        }
+    }
+
     auto *split = new Split(this);
     this->insertSplit(split);
 
@@ -144,6 +153,16 @@ Split *SplitContainer::appendNewSplit(bool openChannelNameDialog)
 
 void SplitContainer::insertSplit(Split *split, InsertOptions &&options)
 {
+    if (this->isPermanentWhispersTab())
+    {
+        // Keep the inbox a single-purpose tab. Adding an ordinary split
+        // while it is selected opens the split in its own tab instead.
+        if (auto *notebook = dynamic_cast<SplitNotebook *>(this->parentWidget()))
+        {
+            notebook->addPage(true)->insertSplit(split);
+            return;
+        }
+    }
     // Queue up save because: Split added
     getApp()->getWindows()->queueSave();
 
@@ -271,6 +290,11 @@ void SplitContainer::addSplit(Split *split)
                     break;
 
                 case Split::Action::Delete: {
+                    if (this->isPermanentWhispersTab() &&
+                        split->getChannel()->getType() == Channel::Type::TwitchWhispers)
+                    {
+                        break;
+                    }
                     this->deleteSplit(split);
                     auto *tab = this->getTab();
                     QObject::connect(tab, &QWidget::destroyed, [tab]() mutable {
@@ -366,6 +390,14 @@ SplitContainer::Position SplitContainer::releaseSplit(Split *split)
 
 SplitContainer::Position SplitContainer::deleteSplit(Split *split)
 {
+    if (this->isPermanentWhispersTab() &&
+        split->getChannel()->getType() == Channel::Type::TwitchWhispers &&
+        std::ranges::count_if(this->splits_, [](const Split *item) {
+            return item->getChannel()->getType() == Channel::Type::TwitchWhispers;
+        }) == 1)
+    {
+        return {};
+    }
     // Queue up save because: Split removed
     getApp()->getWindows()->queueSave();
 
@@ -466,46 +498,11 @@ void SplitContainer::focusSplitRecursive(Node *node)
     }
 }
 
-Split *SplitContainer::getTopRightSplit(Node &node)
-{
-    switch (node.getType())
-    {
-        case Node::Type::Split:
-            return node.getSplit();
-        case Node::Type::VerticalContainer:
-            if (!node.getChildren().empty())
-            {
-                return this->getTopRightSplit(*node.getChildren().front());
-            }
-            break;
-        case Node::Type::HorizontalContainer:
-            if (!node.getChildren().empty())
-            {
-                return this->getTopRightSplit(*node.getChildren().back());
-            }
-            break;
-        default:;
-    }
-    return nullptr;
-}
-
 void SplitContainer::layout()
 {
     if (this->disableLayouting_)
     {
         return;
-    }
-
-    // update top right split
-    auto *topRight = this->getTopRightSplit(*this->baseNode_);
-    if (this->topRight_)
-    {
-        this->topRight_->setIsTopRightSplit(false);
-    }
-    this->topRight_ = topRight;
-    if (topRight)
-    {
-        this->topRight_->setIsTopRightSplit(true);
     }
 
     // layout
@@ -969,6 +966,12 @@ void SplitContainer::refreshTabTitle()
     {
         return;
     }
+    if (this->isPermanentWhispersTab())
+    {
+        this->tab_->setDefaultTitle(QStringLiteral("/whispers"));
+        this->tab_->setAvatarLogin({});
+        return;
+    }
 
     QString newTitle = "";
     QString avatarLogin;
@@ -1018,6 +1021,22 @@ void SplitContainer::refreshTabTitle()
 
     this->tab_->setDefaultTitle(newTitle);
     this->tab_->setAvatarLogin(avatarLogin);
+}
+
+void SplitContainer::setPermanentWhispersTab()
+{
+    this->setProperty("permanentWhispersTab", true);
+    this->refreshTabTitle();
+    if (this->tab_)
+    {
+        this->tab_->refreshAndCommitSize(true);
+        this->tab_->QWidget::update();
+    }
+}
+
+bool SplitContainer::isPermanentWhispersTab() const
+{
+    return this->property("permanentWhispersTab").toBool();
 }
 
 void SplitContainer::refreshTabLiveStatus()

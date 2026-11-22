@@ -14,6 +14,7 @@
 #    include <QTimer>
 #    include <QVector>
 
+#    include <memory>
 #    include <vector>
 
 class QButtonGroup;
@@ -29,9 +30,11 @@ class QVBoxLayout;
 namespace chatterino {
 
 class Button;
+class ChannelAvatarLabel;
 class SplitInput;
 class SvgButton;
 class TwitchChannel;
+class UsercardResizeGrip;
 
 class ChannelPointsDialog : public DraggablePopup
 {
@@ -43,6 +46,7 @@ public:
                            QWidget *parent = nullptr);
 
 protected:
+    void paintEvent(QPaintEvent *) override;
     void themeChangedEvent() override;
     void scaleChangedEvent(float scale) override;
     void resizeEvent(QResizeEvent *event) override;
@@ -93,7 +97,7 @@ private:
     bool canRedeem(const GqlChannelPointReward &reward);
     void applySizeConstraints();
 
-    TwitchChannel *channel_{};
+    std::shared_ptr<TwitchChannel> channel_;
     QPointer<SplitInput> input_;
 
     QVBoxLayout *mainLayout_{};
@@ -101,6 +105,8 @@ private:
     QPushButton *refreshRewardsButton_{};
     QPushButton *backButton_{};
     QLabel *headerTitleLabel_{};
+    QLabel *headerChannelLabel_{};
+    ChannelAvatarLabel *headerAvatar_{};
     QLabel *headerSubtitleLabel_{};
     Button *pinButton_{};
     SvgButton *closeButton_{};
@@ -109,7 +115,10 @@ private:
     QVBoxLayout *contentLayout_{};
     QLabel *statusLabel_{};
     QLineEdit *emoteSearchInput_{};
+    UsercardResizeGrip *resizeGrip_{};
 
+    int catalogHeight_ = 0;
+    int manualDetailHeight_ = 0;
     View view_ = View::Rewards;
     QString rewardsChannelId_;
     QVector<GqlChannelPointReward> rewards_;

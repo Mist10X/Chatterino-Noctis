@@ -29,6 +29,8 @@ public:
 
     void addToThread(const std::shared_ptr<const Message> &message);
     void addToThread(const std::weak_ptr<const Message> &message);
+    void replaceReply(const std::shared_ptr<const Message> &oldReply,
+                      const std::shared_ptr<const Message> &replacement);
 
     size_t liveCount() const;
 

@@ -251,6 +251,8 @@ void YouTubeChannel::refreshLiveStream()
         return;
     }
     this->resolving_ = true;
+    ++this->pollGeneration_;
+    this->metadataTimer_.stop();
     this->pollTimer_.stop();
     this->addSystemMessage(u"Refreshing YouTube chat..."_s);
 
@@ -283,12 +285,16 @@ void YouTubeChannel::refreshLiveStream()
 
 void YouTubeChannel::startPolling(const YouTubeLiveStream &stream)
 {
-    this->drainTimer_.stop();
-    this->pendingMessages_.clear();
-    this->seenIds_.clear();
-    this->seenOrder_.clear();
-    this->lastBatchSize_ = 0;
-    this->firstBatch_ = true;
+    const bool sameStream = !stream.videoId.isEmpty() && this->videoId_ == stream.videoId;
+    if (!sameStream)
+    {
+        this->drainTimer_.stop();
+        this->pendingMessages_.clear();
+        this->seenIds_.clear();
+        this->seenOrder_.clear();
+        this->lastBatchSize_ = 0;
+        this->firstBatch_ = true;
+    }
 
     this->videoId_ = stream.videoId;
     this->apiKey_ = stream.apiKey;
@@ -340,9 +346,9 @@ void YouTubeChannel::pollMetadata()
 
     YouTubeApi::fetchUpdatedMetadata(
         this->apiKey_, this->clientVersion_, this->videoId_,
-        [weak = this->weakFromThis()](const ExpectedStr<YouTubeMetadata> &res) {
+        [weak = this->weakFromThis(), generation = this->pollGeneration_](const ExpectedStr<YouTubeMetadata> &res) {
             auto self = weak.lock();
-            if (!self || !self->live_)
+            if (!self || !self->live_ || self->pollGeneration_ != generation)
             {
                 return;
             }
@@ -359,9 +365,9 @@ void YouTubeChannel::pollMetadata()
             {
                 YouTubeApi::fetchWatchMetadata(
                     self->videoId_,
-                    [weak](const ExpectedStr<YouTubeMetadata> &watch) {
+                    [weak, generation](const ExpectedStr<YouTubeMetadata> &watch) {
                         auto self = weak.lock();
-                        if (!self || !self->live_)
+                        if (!self || !self->live_ || self->pollGeneration_ != generation)
                         {
                             return;
                         }
@@ -389,10 +395,10 @@ void YouTubeChannel::poll()
 
     YouTubeApi::fetchLiveChat(
         this->apiKey_, this->clientVersion_, this->continuation_,
-        [weak = this->weakFromThis()](
+        [weak = this->weakFromThis(), generation = this->pollGeneration_](
             const ExpectedStr<YouTubeLiveChatPage> &res) {
             auto self = weak.lock();
-            if (!self)
+            if (!self || self->pollGeneration_ != generation)
             {
                 return;
             }

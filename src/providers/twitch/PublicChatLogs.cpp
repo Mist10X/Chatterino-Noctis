@@ -28,7 +28,7 @@ namespace chatterino::publiclogs {
 
 namespace {
 
-// Public mirrors cover different stretches of time.
+// The mirrors keep different stretches of time, so every page asks all of them.
 QStringList &mirrors()
 {
     static QStringList list{
@@ -40,7 +40,8 @@ QStringList &mirrors()
 }
 qint64 SPACING_MS = 1500;
 constexpr qint64 COOLDOWN_MS = 30000;
-// Skip a failing or slow mirror for a while.
+// A mirror that failed or kept a page waiting is left out for a while so one
+// unavailable service cannot slow every page.
 constexpr qint64 COLD_MS = 30 * 60 * 1000;
 // Once one mirror has answered, a page waits this long for the others. The
 // working mirrors answer within a second of each other (measured 31.10:

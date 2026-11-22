@@ -84,6 +84,7 @@ private:
     QString channelId_;
 
     bool live_ = false;
+    quint64 pollGeneration_ = 0;
     bool resolving_ = false;
     bool firstBatch_ = true;
 

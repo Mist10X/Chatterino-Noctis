@@ -71,7 +71,7 @@ ColorPickerDialog::ColorPickerDialog(QColor color, QWidget *parent)
           parent)
     , color_(color)
 {
-    this->setWindowTitle(uiText(u"Leafyrino - Color picker"_s));
+    this->setWindowTitle(uiText(u"Chatterino Noctis - Color picker"_s));
     this->setAttribute(Qt::WA_DeleteOnClose);
 
     auto *dialogContents = new QHBoxLayout;

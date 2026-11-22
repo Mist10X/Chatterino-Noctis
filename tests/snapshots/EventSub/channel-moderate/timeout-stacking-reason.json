@@ -231,6 +231,7 @@
             "searchText": "nerixyz timed out twitchdev for 1s: pajlada (2 times) ",
             "serverReceivedTime": "2025-02-22T17:53:50Z",
             "timeoutUser": "twitchdev",
+            "timeoutUserID": "141981764",
             "twitchBadgeInfos": {
             },
             "twitchBadges": [
@@ -388,6 +389,7 @@
             "searchText": "nerixyz timed out twitchdev for 1s: pajlada ",
             "serverReceivedTime": "2025-02-22T17:54:50Z",
             "timeoutUser": "twitchdev",
+            "timeoutUserID": "141981764",
             "twitchBadgeInfos": {
             },
             "twitchBadges": [

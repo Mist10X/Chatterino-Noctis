@@ -95,21 +95,7 @@
                     "trailingSpace": true,
                     "type": "TextElement",
                     "words": [
-                        "turned"
-                    ]
-                },
-                {
-                    "color": "System",
-                    "flags": "Text",
-                    "link": {
-                        "type": "None",
-                        "value": ""
-                    },
-                    "style": "ChatMedium",
-                    "tooltip": "",
-                    "trailingSpace": true,
-                    "type": "TextElement",
-                    "words": [
+                        "turned",
                         "on"
                     ]
                 },
@@ -125,21 +111,7 @@
                     "trailingSpace": true,
                     "type": "TextElement",
                     "words": [
-                        "emote-only"
-                    ]
-                },
-                {
-                    "color": "System",
-                    "flags": "Text",
-                    "link": {
-                        "type": "None",
-                        "value": ""
-                    },
-                    "style": "ChatMedium",
-                    "tooltip": "",
-                    "trailingSpace": true,
-                    "type": "TextElement",
-                    "words": [
+                        "emote-only",
                         "mode."
                     ]
                 }

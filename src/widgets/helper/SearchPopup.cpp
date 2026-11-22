@@ -272,14 +272,14 @@ void SearchPopup::updateResultCount(size_t matches, size_t total)
     if (this->searchInput_->text().trimmed().isEmpty())
     {
         this->resultCountLabel_->setText(QString::number(total));
-        this->resultCountLabel_->setToolTip(
+        this->resultCountLabel_->setAccessibleName(
             uiText(QString("%1 messages in history")).arg(total));
     }
     else
     {
         this->resultCountLabel_->setText(
             QString("%1/%2").arg(matches).arg(total));
-        this->resultCountLabel_->setToolTip(
+        this->resultCountLabel_->setAccessibleName(
             uiText(QString("%1 matching messages out of %2 total"))
                 .arg(matches)
                 .arg(total));

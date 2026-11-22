@@ -400,6 +400,7 @@ TEST_F(FiltersF, TypingContextChecks)
         {"flags.cheer_message", false},
         {"flags.elevated_message", false},
         {"flags.first_message", false},
+        {"flags.follow_message", false},
         {"flags.highlighted", false},
         {"flags.hype_chat", false},
         {"flags.monitored", false},
@@ -431,6 +432,9 @@ TEST_F(FiltersF, TypingContextChecks)
     auto repeatedContextMap = buildContextMap(msg, &channel);
     EXPECT_TRUE(repeatedContextMap["flags.repeated_message"].toBool());
     EXPECT_TRUE(repeatedContextMap["flags.repeated_messages"].toBool());
+
+    msg->flags.set(MessageFlag::Follow);
+    EXPECT_TRUE(buildContextMap(msg, &channel)["flags.follow_message"].toBool());
 
     delete privmsg;
 }

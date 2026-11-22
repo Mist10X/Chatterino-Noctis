@@ -408,8 +408,8 @@ void TranslationProviderDialog::setBusy(bool busy)
 void TranslationProviderDialog::setStatus(const QString &text, bool error)
 {
     this->status_->setText(text);
-    this->status_->setStyleSheet(error ? QStringLiteral("color: #f28b82;")
-                                       : QString{});
+    this->status_->setForegroundRole(error ? QPalette::BrightText
+                                          : QPalette::WindowText);
 }
 
 }  // namespace chatterino

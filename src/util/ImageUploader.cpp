@@ -76,7 +76,7 @@ QJsonObject exportSettings(const Settings &s)
 {
     QJsonObject settingsObj;
     settingsObj["Version"] = "1.0.0";
-    settingsObj["Name"] = "Chatterino Image Uploader Settings";
+    settingsObj["Name"] = "Chatterino Noctis Image Uploader Settings";
     settingsObj["RequestMethod"] = "POST";
     settingsObj["RequestURL"] = s.imageUploaderUrl.getValue();
     settingsObj["Body"] = "MultipartFormData";

@@ -120,9 +120,9 @@ IrcConnection::IrcConnection(QObject *parent)
                                         : QString())
                             .arg(socket ? socket->peerPort() : 0));
                     if (auto *ssl = qobject_cast<QSslSocket *>(socket);
-                        ssl && !ssl->property("leafyrinoDiagnostics").toBool())
+                        ssl && !ssl->property("noctisDiagnostics").toBool())
                     {
-                        ssl->setProperty("leafyrinoDiagnostics", true);
+                        ssl->setProperty("noctisDiagnostics", true);
                         QObject::connect(ssl, &QSslSocket::encrypted, this,
                                          [this, ssl] {
                                              this->logEvent(
@@ -155,9 +155,9 @@ IrcConnection::IrcConnection(QObject *parent)
 
     this->reconnectTimer_.setSingleShot(true);
     QObject::connect(&this->reconnectTimer_, &QTimer::timeout, [this] {
-        if (this->isConnected())
+        if (this->isActive())
         {
-            qCDebug(chatterinoIrc) << "Reconnect: already reconnected";
+            qCDebug(chatterinoIrc) << "Reconnect: connection is already active";
         }
         else
         {
@@ -211,6 +211,7 @@ IrcConnection::IrcConnection(QObject *parent)
     });
 
     QObject::connect(this, &Communi::IrcConnection::connected, this, [this] {
+        this->reconnectTimer_.stop();
         this->pingTimer_.start();
     });
 
@@ -226,7 +227,8 @@ IrcConnection::IrcConnection(QObject *parent)
                      [this](Communi::IrcMessage *message) {
                          this->recentlyReceivedMessage_ = true;
 
-                         if (message->command() == "372")
+                         if (message->command() == "372" ||
+                             message->command() == "001")
                          {
                              this->reconnectBackoff_.reset();
                          }
@@ -303,6 +305,7 @@ void IrcConnection::logEvent(const QString &text) const
 
 void IrcConnection::open()
 {
+    this->reconnectTimer_.stop();
     this->expectConnectionLoss_ = false;
     this->waitingForPong_ = false;
     this->recentlyReceivedMessage_ = false;
@@ -322,6 +325,8 @@ void IrcConnection::open()
 
 void IrcConnection::close()
 {
+    this->reconnectTimer_.stop();
+    this->pingTimer_.stop();
     this->expectConnectionLoss_ = true;
     Communi::IrcConnection::close();
 }

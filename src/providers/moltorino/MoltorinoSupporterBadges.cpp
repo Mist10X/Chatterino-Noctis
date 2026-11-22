@@ -7,6 +7,7 @@
 #include "common/QLogging.hpp"
 #include "debug/AssertInGuiThread.hpp"
 #include "messages/Image.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/Paths.hpp"
 #include "util/PostToThread.hpp"
 
@@ -489,6 +490,7 @@ bool MoltorinoSupporterBadges::applyPayload(const QByteArray &payload,
         this->version_ = parsed.version;
         this->userBadges_ = std::move(parsed.userBadges);
     }
+    notifyGlobalChatBadgesChanged();
 
     qCDebug(chatterinoApp) << "[Moltorino] Loaded supporter badges:"
                            << parsed.userBadges.size() << "users across"

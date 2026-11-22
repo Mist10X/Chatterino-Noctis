@@ -86,7 +86,7 @@ QString uiText(const QString &source)
 {
     if (!initialized.load(std::memory_order_acquire))return source;
     const auto utf8 = source.toUtf8();
-    return QCoreApplication::translate("LeafyrinoUI", utf8.constData());
+    return QCoreApplication::translate("ChatterinoNoctisUI", utf8.constData());
 }
 
 }  // namespace chatterino

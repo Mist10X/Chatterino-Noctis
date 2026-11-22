@@ -26,6 +26,7 @@
 #include "providers/twitch/ChannelManagement.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
+#include "providers/twitch/WhisperHistory.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
 #include "providers/youtube/YouTubeChannel.hpp"
 #include "singletons/Settings.hpp"
@@ -37,10 +38,10 @@
 #include "util/LayoutHelper.hpp"
 #include "util/MultiChannel.hpp"
 #include "widgets/buttons/DrawnButton.hpp"
-#include "widgets/buttons/FollowButton.hpp"
 #include "widgets/buttons/LabelButton.hpp"
 #include "widgets/buttons/SvgButton.hpp"
 #include "widgets/dialogs/ChannelManagementDialog.hpp"
+#include "widgets/dialogs/PredictionDialog.hpp"
 #include "widgets/dialogs/SettingsDialog.hpp"
 #include "widgets/helper/CommonTexts.hpp"
 #include "widgets/Label.hpp"
@@ -72,10 +73,44 @@ constexpr const int BUTTON_WIDTH = 28;
 /// The width of the "Add split" button.
 ///
 /// This matches the scrollbar's full width.
-constexpr const int ADD_SPLIT_BUTTON_WIDTH = 16;
 
 // 5 minutes
 constexpr const qint64 THUMBNAIL_MAX_AGE_MS = 5LL * 60 * 1000;
+
+class RoomModesButton final : public LabelButton
+{
+public:
+    using LabelButton::LabelButton;
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        auto background = this->theme->splits.header.background;
+        background = this->theme->isLightTheme() ? background.darker(104) : background.lighter(112);
+        auto border = this->theme->splits.header.border;
+        if (this->enabled() && (this->mouseOver() || this->menuVisible()))
+            border = this->theme->splits.header.focusedBorder;
+        painter.setPen(QPen(border, 1));
+        painter.setBrush(background);
+        const qreal radius = 5 * this->scale();
+        painter.drawRoundedRect(QRectF(this->rect()).adjusted(.5, 2.5, -.5, -2.5), radius, radius);
+    }
+};
+
+QString formatRoomModeDuration(std::chrono::seconds duration)
+{
+    const auto exact = formatDurationExact(duration);
+    const auto value = exact.chopped(1);
+    switch (exact.back().unicode())
+    {
+        case u'd': return uiText("%1 d").arg(value);
+        case u'h': return uiText("%1 h").arg(value);
+        case u'm': return uiText("%1 min").arg(value);
+        default: return uiText("%1 s").arg(value);
+    }
+}
 
 auto formatRoomModeUnclean(const TwitchChannel::RoomModes &modes) -> QString
 {
@@ -103,7 +138,7 @@ auto formatRoomModeUnclean(const TwitchChannel::RoomModes &modes) -> QString
         if (modes.followerOnly != 0)
         {
             parts << uiText("followers %1")
-                         .arg(formatDurationExact(
+                         .arg(formatRoomModeDuration(
                              std::chrono::minutes{modes.followerOnly}));
         }
         else
@@ -806,14 +841,6 @@ SplitHeader::SplitHeader(Split *split)
 
     this->bSignals_.emplace_back(
         getApp()->getAccounts()->twitch.currentUserChanged.connect([this] {
-            if (auto *twitchChannel = dynamic_cast<TwitchChannel *>(
-                    this->split_->getSelectedChannel().get());
-                twitchChannel != nullptr && !twitchChannel->isEmpty() &&
-                getSettings()->showFollowButtonInSplitHeader &&
-                canUseFollowButtonForChannel(*twitchChannel))
-            {
-                twitchChannel->refreshFollowingStatus(false);
-            }
             this->updateIcons();
         }));
 
@@ -824,22 +851,6 @@ SplitHeader::SplitHeader(Split *split)
     getSettings()->headerStreamTitle.connect(_, this->managedConnections_);
     getSettings()->headerGame.connect(_, this->managedConnections_);
     getSettings()->headerUptime.connect(_, this->managedConnections_);
-    getSettings()->showFollowButtonInSplitHeader.connect(
-        [this](bool enabled, auto) {
-            if (enabled)
-            {
-                if (auto *twitchChannel = dynamic_cast<TwitchChannel *>(
-                        this->split_->getSelectedChannel().get()))
-                {
-                    if (canUseFollowButtonForChannel(*twitchChannel))
-                    {
-                        twitchChannel->refreshFollowingStatus(false);
-                    }
-                }
-            }
-            this->updateIcons();
-        },
-        this->managedConnections_);
     getSettings()->showEditStreamInfoButtonInSplitHeader.connect(
         [this](bool, auto) {
             this->updateIcons();
@@ -847,14 +858,6 @@ SplitHeader::SplitHeader(Split *split)
         this->managedConnections_);
     getSettings()->moltorinoAuthAccounts.connect(
         [this](const QString &, auto) {
-            if (auto *twitchChannel = dynamic_cast<TwitchChannel *>(
-                    this->split_->getSelectedChannel().get());
-                twitchChannel != nullptr && !twitchChannel->isEmpty() &&
-                getSettings()->showFollowButtonInSplitHeader &&
-                canUseFollowButtonForChannel(*twitchChannel))
-            {
-                twitchChannel->refreshFollowingStatus(true);
-            }
             this->updateIcons();
         },
         this->managedConnections_);
@@ -922,9 +925,6 @@ void SplitHeader::initializeLayout()
                                            QSizePolicy::Minimum);
     this->sendTargetButton_->hide();
 
-    this->followButton_ =
-        new SvgButton(followButtonSource(false), this, {4, 4});
-
     this->manageChannelButton_ = new SvgButton(
         {
             .dark = ":/buttons/editStreamInfo-darkMode.svg",
@@ -933,13 +933,6 @@ void SplitHeader::initializeLayout()
         this, {6, 6});
     this->manageChannelButton_->setToolTip(uiText("Edit stream info"));
     this->manageChannelButton_->setAccessibleName(uiText("Edit stream info"));
-
-    this->addButton_ = new DrawnButton(DrawnButton::Symbol::Plus,
-                                       {
-                                           .padding = 3,
-                                           .thickness = 1,
-                                       },
-                                       this);
 
     this->dropdownButton_ =
         new DrawnButton(DrawnButton::Symbol::Kebab, {}, this);
@@ -951,12 +944,6 @@ void SplitHeader::initializeLayout()
                      });
 
     auto *layout = makeLayout<QHBoxLayout>({
-        // follow
-        this->followButton_,
-        // space
-        makeWidget<BaseWidget>([](auto w) {
-            w->setScaleIndependentSize(8, 4);
-        }),
         // title
         this->titleLabel_ = makeWidget<Label>([](auto w) {
             w->setFontStyle(FontStyle::UiMediumBold);
@@ -970,7 +957,8 @@ void SplitHeader::initializeLayout()
             w->setScaleIndependentSize(8, 4);
         }),
         // mode
-        this->modeButton_ = makeWidget<LabelButton>([&](auto w) {
+        this->modeButton_ = makeWidget<RoomModesButton>([&](auto w) {
+            w->setObjectName("RoomModesButton");
             w->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
             w->hide();
             w->setMenu(this->createChatModeMenu());
@@ -986,8 +974,6 @@ void SplitHeader::initializeLayout()
         this->youtubeRefreshButton_,
         // dropdown
         this->dropdownButton_,
-        // add split
-        this->addButton_,
     });
 
     QObject::connect(
@@ -1074,7 +1060,8 @@ void SplitHeader::initializeLayout()
         if (dynamic_cast<TwitchChannel *>(channel.get()) != nullptr &&
             !channel->isEmpty())
         {
-            showStreamStatsDialog(this->window(), channel->getName());
+            showStreamStatsDialog(this->window(), channel->getName(),
+                                  static_cast<TwitchChannel *>(channel.get())->isAnonymous());
         }
     });
 
@@ -1103,14 +1090,6 @@ void SplitHeader::initializeLayout()
                          this->cycleSendTarget();
                      });
 
-    QObject::connect(this->followButton_, &Button::leftClicked, this, [this]() {
-        this->toggleFollow();
-    });
-
-    QObject::connect(this->addButton_, &Button::leftClicked, this, [this]() {
-        this->split_->addSibling();
-    });
-
     getSettings()->customURIScheme.connect(
         [this] {
             if (auto *const drop = this->dropdownButton_)
@@ -1124,7 +1103,6 @@ void SplitHeader::initializeLayout()
     layout->setSpacing(0);
     this->setLayout(layout);
 
-    this->setAddButtonVisible(false);
 }
 
 std::unique_ptr<QMenu> SplitHeader::createMainMenu()
@@ -1132,6 +1110,7 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
     // top level menu
     const auto &h = getApp()->getHotkeys();
     auto menu = std::make_unique<QMenu>();
+    auto *moreMenu = new QMenu(uiText("Mor&e"), menu.get());
     menu->setToolTipsVisible(true);
     styleMenu(menu.get());
 
@@ -1152,7 +1131,7 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
         uiText("Popup"),
         h->getDisplaySequence(HotkeyCategory::Window, "popup", {{"split"}}),
         this->split_, &Split::popup);
-    menu->addAction(
+    moreMenu->addAction(
         uiText("Popup overlay"),
         h->getDisplaySequence(HotkeyCategory::Split, "popupOverlay"),
         this->split_, &Split::showOverlayWindow);
@@ -1161,13 +1140,13 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
                     this->split_, [this] {
                         this->split_->showSearch(true);
                     });
-    menu->addAction(
+    moreMenu->addAction(
         uiText("Search all open tabs"),
         h->getDisplaySequence(HotkeyCategory::Split, "showGlobalSearch"),
         this->split_, [this] {
             this->split_->showSearch(false);
         });
-    menu->addAction(uiText(u"Set filters…"_s),
+    moreMenu->addAction(uiText(u"Set filters…"_s),
                     h->getDisplaySequence(HotkeyCategory::Split, "pickFilters"),
                     this->split_, &Split::setFiltersDialog);
 
@@ -1175,6 +1154,17 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
     {
         menu->addSeparator();
 
+        if (getSettings()->enablePredictions &&
+            twitchChannel->accessPrediction()->has_value())
+        {
+            menu->addAction(uiText("Open prediction"), this->split_, [this] {
+                if (auto *channel = dynamic_cast<TwitchChannel *>(
+                        this->split_->getSelectedChannel().get()))
+                {
+                    PredictionDialog::showDialog(channel, this->split_);
+                }
+            });
+        }
         auto *bannersMenu =
             menu->addMenu(uiText(QStringLiteral("Banners in this split")));
         const bool hideAll = this->split_->perSplitHidePinnedMessage() &&
@@ -1207,7 +1197,7 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
         QObject::connect(hidePollAction, &QAction::toggled, this->split_,
                          &Split::setPerSplitHidePoll);
 
-        menu->addAction(uiText(QStringLiteral("Restore dismissed banners")),
+        bannersMenu->addAction(uiText(QStringLiteral("Restore dismissed banners")),
                         this->split_, &Split::recoverDismissedBanners);
         menu->addSeparator();
     }
@@ -1224,19 +1214,14 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
             this->split_, &Split::openInBrowser);
         if (twitchChannel)
         {
-            menu->addAction(uiText(OPEN_PLAYER_IN_BROWSER),
+            moreMenu->addAction(uiText(OPEN_PLAYER_IN_BROWSER),
                             h->getDisplaySequence(HotkeyCategory::Split,
                                                   "openPlayerInBrowser"),
                             this->split_, &Split::openBrowserPlayer);
         }
-        menu->addAction(
-            uiText(OPEN_IN_STREAMLINK),
-            h->getDisplaySequence(HotkeyCategory::Split, "openInStreamlink"),
-            this->split_, &Split::openInStreamlink);
-
         if (!getSettings()->customURIScheme.getValue().isEmpty())
         {
-            menu->addAction(uiText("Open in custom player"),
+            moreMenu->addAction(uiText("Open in custom player"),
                             h->getDisplaySequence(HotkeyCategory::Split,
                                                   "openInCustomPlayer"),
                             this->split_, &Split::openWithCustomScheme);
@@ -1309,6 +1294,11 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
     if (this->split_->getSelectedChannel()->getType() ==
         Channel::Type::TwitchWhispers)
     {
+        const auto uid = getApp()->getAccounts()->twitch.getCurrent()->getUserId();
+        if (whisperhistory::hasOlder(uid))
+            menu->addAction(uiText("Load older whispers"), this, [uid, selected] {
+                whisperhistory::loadPage(uid, selected, false);
+            });
         menu->addAction(
             uiText(OPEN_WHISPERS_IN_BROWSER),
             h->getDisplaySequence(HotkeyCategory::Split, "openInBrowser"),
@@ -1333,12 +1323,12 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
                                                 "reloadEmotes", {{"channel"}});
         auto subSeq = h->getDisplaySequence(HotkeyCategory::Split,
                                             "reloadEmotes", {{"subscriber"}});
-        menu->addAction(uiText("Reload channel emotes"),
+        moreMenu->addAction(uiText("Reload channel emotes"),
                         channelSeq.isEmpty() ? bothSeq : channelSeq, this,
                         &SplitHeader::reloadChannelEmotes);
         if (twitchChannel)
         {
-            menu->addAction(uiText("Reload subscriber emotes"),
+            moreMenu->addAction(uiText("Reload subscriber emotes"),
                             subSeq.isEmpty() ? bothSeq : subSeq, this,
                             &SplitHeader::reloadSubscriberEmotes);
         }
@@ -1347,59 +1337,14 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
     if (twitchChannel)
     {
         menu->addAction(uiText("Chat statistics"), this,
-                        [this, name = twitchChannel->getName()] {
-                            showStreamStatsDialog(this->window(), name);
+                        [this, name = twitchChannel->getName(), anonymous = twitchChannel->isAnonymous()] {
+                            showStreamStatsDialog(this->window(), name, anonymous);
                         });
     }
 
-    if ((twitchChannel || kickChannel) && !selected->isEmpty())
-    {
-        menu->addSeparator();
-
-        const auto selectedChannelName =
-            this->split_->getSelectedChannel()->getName();
-        auto *autoTranslateAction = new QAction(menu.get());
-        autoTranslateAction->setText(uiText("Auto-translate messages (risky)"));
-        autoTranslateAction->setCheckable(true);
-        autoTranslateAction->setToolTip(
-            uiText("Translates new visible chat messages in this channel as they "
-            "arrive. Risky in fast chats because translation requests can hit "
-            "rate limits, fail, or skip messages."));
-        autoTranslateAction->setStatusTip(autoTranslateAction->toolTip());
-
-        QObject::connect(
-            menu.get(), &QMenu::aboutToShow, this,
-            [autoTranslateAction, selectedChannelName]() {
-                autoTranslateAction->setChecked(
-                    getSettings()->isAutoTranslateChannel(selectedChannelName));
-            });
-        QObject::connect(autoTranslateAction, &QAction::triggered, this,
-                         [autoTranslateAction, selectedChannelName]() {
-                             autoTranslateAction->setChecked(
-                                 getSettings()->toggleAutoTranslateChannel(
-                                     selectedChannelName));
-                         });
-
-        menu->addAction(autoTranslateAction);
-    }
-
     menu->addSeparator();
 
-    {
-        // "How to..." sub menu
-        auto *subMenu = new QMenu(uiText("How to..."), this);
-        styleMenu(subMenu);
-        subMenu->addAction(uiText("move split"), this->split_, &Split::explainMoving);
-        subMenu->addAction(uiText("add/split"), this->split_,
-                           &Split::explainSplitting);
-        menu->addMenu(subMenu);
-    }
-
-    menu->addSeparator();
-
-    // sub menu
-    auto *moreMenu = new QMenu(uiText("Mor&e"), this);
-    styleMenu(moreMenu);
+    menu->addMenu(moreMenu);
 
     auto modModeSeq = h->getDisplaySequence(HotkeyCategory::Split,
                                             "setModerationMode", {{"toggle"}});
@@ -1417,7 +1362,7 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
 
     if (this->split_->getChannel()->getType() == Channel::Type::TwitchMentions)
     {
-        auto *action = new QAction(this);
+        auto *action = new QAction(moreMenu);
         action->setText(uiText("Enable /mention tab highlights"));
         action->setCheckable(true);
 
@@ -1448,7 +1393,7 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
                             this->split_, &Split::openSubPage);
 
         {
-            auto *action = new QAction(this);
+            auto *action = new QAction(moreMenu);
             action->setText(uiText("&Notify when live"));
             action->setCheckable(true);
 
@@ -1480,7 +1425,7 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
         }
 
         {
-            auto *action = new QAction(this);
+            auto *action = new QAction(moreMenu);
             action->setText(uiText("&Mute highlight sounds"));
             action->setCheckable(true);
 
@@ -1513,10 +1458,11 @@ std::unique_ptr<QMenu> SplitHeader::createMainMenu()
         uiText("&Clear messages"),
         h->getDisplaySequence(HotkeyCategory::Split, "clearMessages"),
         this->split_, &Split::clear);
-    //    moreMenu->addSeparator();
-    //    moreMenu->addAction("Show changelog", this,
-    //    SLOT(moreMenuShowChangelog()));
-    menu->addMenu(moreMenu);
+    moreMenu->addSeparator();
+    auto *helpMenu = moreMenu->addMenu(uiText("How to..."));
+    helpMenu->addAction(uiText("move split"), this->split_, &Split::explainMoving);
+    helpMenu->addAction(uiText("add/split"), this->split_,
+                        &Split::explainSplitting);
 
     return menu;
 }
@@ -1754,15 +1700,6 @@ void SplitHeader::handleChannelChanged()
             twitchChannel->streamStatusChanged, [this]() {
                 this->updateChannelText();
             });
-        this->channelConnections_.managedConnect(
-            twitchChannel->followingStatusChanged, [this]() {
-                this->updateIcons();
-            });
-        if (getSettings()->showFollowButtonInSplitHeader &&
-            canUseFollowButtonForChannel(*twitchChannel))
-        {
-            twitchChannel->refreshFollowingStatus(false);
-        }
     }
 
     auto splitChannel = this->split_->getChannel();
@@ -1885,79 +1822,18 @@ void SplitHeader::cycleSendTarget()
 void SplitHeader::scaleChangedEvent(float scale)
 {
     int w = int(BUTTON_WIDTH * scale);
-    int addSplitWidth = int(ADD_SPLIT_BUTTON_WIDTH * scale);
+    this->modeButton_->setFont(
+        getApp()->getFonts()->getFont(FontStyle::ChatMediumSmall, scale));
+    this->modeButton_->setPadding(QSize(qRound(8 * scale), 0));
 
-    this->setFixedHeight(w);
+    this->setFixedHeight(std::max(this->fontMetrics().height() + 2, int(24 * scale)));
     this->dropdownButton_->setFixedWidth(w);
-    this->followButton_->setFixedWidth(w);
     this->manageChannelButton_->setFixedWidth(w);
     this->moderationButton_->setFixedWidth(w);
     this->chattersButton_->setFixedWidth(w);
     this->statsButton_->setFixedWidth(w);
     this->youtubeRefreshButton_->setFixedWidth(w);
 
-    this->addButton_->setFixedWidth(addSplitWidth);
-}
-
-void SplitHeader::setAddButtonVisible(bool value)
-{
-    this->addButton_->setVisible(value);
-}
-
-void SplitHeader::toggleFollow()
-{
-    auto channel = this->split_->getSelectedChannel();
-    auto *twitchChannel = dynamic_cast<TwitchChannel *>(channel.get());
-    if (twitchChannel == nullptr || twitchChannel->isEmpty())
-    {
-        return;
-    }
-
-    const auto command =
-        twitchChannel->isFollowingStatusKnown() && twitchChannel->isFollowing()
-            ? QStringLiteral("/unfollow")
-            : QStringLiteral("/follow");
-
-    if (command == QStringLiteral("/unfollow") &&
-        getSettings()->confirmUnfollowFromSplitHeader)
-    {
-        const auto displayName = channel->getLocalizedName().isEmpty()
-                                     ? channel->getName()
-                                     : channel->getLocalizedName();
-
-        QMessageBox box(this);
-        box.setWindowTitle(uiText("Unfollow channel?"));
-        box.setIcon(QMessageBox::Question);
-        box.setText(
-            uiText(QString("Are you sure you want to unfollow %1?")).arg(displayName));
-
-        auto *confirmButton =
-            box.addButton(uiText("Confirm"), QMessageBox::DestructiveRole);
-        auto *cancelButton = box.addButton(uiText("Cancel"), QMessageBox::RejectRole);
-        box.setDefaultButton(cancelButton);
-        box.setEscapeButton(cancelButton);
-        box.exec();
-
-        if (box.clickedButton() != confirmButton)
-        {
-            return;
-        }
-    }
-
-    CommandContext ctx{
-        .words = {command},
-        .rawText = command,
-        .channel = channel,
-        .twitchChannel = twitchChannel,
-        .kickChannel = nullptr,
-    };
-    const auto text = command == QStringLiteral("/unfollow")
-                          ? commands::unfollow(ctx)
-                          : commands::follow(ctx);
-    if (!text.isEmpty())
-    {
-        channel->sendMessage(text);
-    }
 }
 
 void SplitHeader::updateChannelText()
@@ -2190,29 +2066,9 @@ void SplitHeader::updateIcons()
                 getSettings()->showEditStreamInfoButtonInSplitHeader &&
                 canShowChannelManagementButton(*twitchChannel));
 
-            if (!getSettings()->showFollowButtonInSplitHeader ||
-                !canUseFollowButtonForChannel(*twitchChannel))
-            {
-                this->followButton_->hide();
-            }
-            else
-            {
-                const auto following =
-                    twitchChannel->isFollowingStatusKnown() &&
-                    twitchChannel->isFollowing();
-                const auto displayName = channel->getLocalizedName().isEmpty()
-                                             ? channel->getName()
-                                             : channel->getLocalizedName();
-                this->followButton_->setSource(followButtonSource(following));
-                this->followButton_->setToolTip(
-                    following ? uiText(QString("Unfollow %1")).arg(displayName)
-                              : uiText(QString("Follow %1")).arg(displayName));
-                this->followButton_->show();
-            }
         }
         else
         {
-            this->followButton_->hide();
             this->manageChannelButton_->hide();
         }
 
@@ -2245,7 +2101,6 @@ void SplitHeader::updateIcons()
     }
     else
     {
-        this->followButton_->hide();
         this->manageChannelButton_->hide();
         this->moderationButton_->hide();
     }
@@ -2410,16 +2265,12 @@ void SplitHeader::themeChangedEvent()
     this->titleLabel_->setPalette(palette);
 
     QPalette modes;
-    modes.setColor(QPalette::WindowText, this->theme->splits.header.text);
+    auto modeColor = this->theme->messages.textColors.regular;
+    modeColor.setAlphaF(modeColor.alphaF() * .85);
+    modes.setColor(QPalette::WindowText, modeColor);
     this->modeButton_->setPalette(modes);
     this->modeButton_->setFont(
-        getApp()->getFonts()->getFont(FontStyle::UiMedium, this->scale()));
-
-    auto bg = this->theme->splits.header.background;
-    this->addButton_->setOptions({
-        .background = bg,
-        .backgroundHover = bg,
-    });
+        getApp()->getFonts()->getFont(FontStyle::ChatMediumSmall, this->scale()));
 
     this->update();
 }

@@ -90,7 +90,7 @@ ExpectedStr<void> registerNmManifest([[maybe_unused]] const Paths &paths,
     (void)config;
     (void)document;
     return makeUnexpected(
-        u"Browser integration is disabled in this Leafyrino build."_s);
+        u"Browser integration is disabled in this Chatterino Noctis build."_s);
 }
 
 }  // namespace

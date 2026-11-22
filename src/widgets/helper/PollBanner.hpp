@@ -65,10 +65,6 @@ private:
     QVBoxLayout *contentLayout_{};
     Split *split_{};
 
-    int headerFontSize_{11};
-    int titleFontSize_{13};
-    int summaryFontSize_{11};
-
     TwitchChannel *twitchChannel_{};
     std::optional<TwitchChannel::PollEvent> poll_;
     QDateTime pollSnapshotAt_;

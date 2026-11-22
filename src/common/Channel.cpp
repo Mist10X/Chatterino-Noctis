@@ -297,8 +297,14 @@ void Channel::fillInMissingMessages(const std::vector<MessagePtr> &messages)
     {
         // There are no messages in this channel yet so we can just insert them
         // at the front in order
-        this->messages_.pushFront(messages);
-        this->filledInMessages.invoke(messages);
+        std::unordered_set<QString> seen;
+        std::vector<MessagePtr> unique;
+        unique.reserve(messages.size());
+        for (const auto &message : messages)
+            if (message->id.isEmpty() || seen.insert(message->id).second)
+                unique.push_back(message);
+        this->messages_.pushFront(unique);
+        this->filledInMessages.invoke(unique);
         return;
     }
 
@@ -326,7 +332,7 @@ void Channel::fillInMissingMessages(const std::vector<MessagePtr> &messages)
     for (const auto &msg : messages)
     {
         // check if message already exists
-        if (existingMessageIds.count(msg->id) != 0)
+        if (!msg->id.isEmpty() && !existingMessageIds.insert(msg->id).second)
         {
             continue;
         }
@@ -395,7 +401,7 @@ void Channel::replaceMessage(size_t index, const MessagePtr &replacement)
     }
 }
 
-void Channel::replaceMessage(size_t hint, const MessagePtr &message,
+bool Channel::replaceMessage(size_t hint, const MessagePtr &message,
                              const MessagePtr &replacement)
 {
     replacement->freeze();
@@ -403,8 +409,10 @@ void Channel::replaceMessage(size_t hint, const MessagePtr &message,
     auto index = this->messages_.replaceItem(hint, message, replacement);
     if (index >= 0)
     {
-        this->messageReplaced.invoke(hint, message, replacement);
+        this->messageReplaced.invoke(static_cast<size_t>(index), message, replacement);
+        return true;
     }
+    return false;
 }
 
 void Channel::disableMessage(const QString &messageID)

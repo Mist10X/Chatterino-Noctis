@@ -131,6 +131,7 @@ std::shared_ptr<Message> Message::clone() const
 {
     auto cloned = std::make_shared<Message>();
     cloned->flags = this->flags;
+    cloned->parseTime = this->parseTime;
     cloned->id = this->id;
     cloned->searchText = this->searchText;
     cloned->messageText = this->messageText;
@@ -141,6 +142,7 @@ std::shared_ptr<Message> Message::clone() const
     cloned->timeoutUser = this->timeoutUser;
     cloned->timeoutUserID = this->timeoutUserID;
     cloned->channelName = this->channelName;
+    cloned->whisperPeer = this->whisperPeer;
     cloned->usernameColor = this->usernameColor;
     cloned->serverReceivedTime = this->serverReceivedTime;
     cloned->twitchBadges = this->twitchBadges;
@@ -157,6 +159,7 @@ std::shared_ptr<Message> Message::clone() const
     cloned->platform = this->platform;
     cloned->clientDetection = this->clientDetection;
     cloned->roomMode = this->roomMode;
+    cloned->channelNotice = this->channelNotice;
     cloned->giftNotice = this->giftNotice;
     std::ranges::transform(this->elements, std::back_inserter(cloned->elements),
                            [](const auto &element) {
@@ -177,7 +180,6 @@ QJsonObject Message::toJson() const
         {"localizedName"_L1, this->localizedName},
         {"userID"_L1, this->userID},
         {"timeoutUser"_L1, this->timeoutUser},
-        {"timeoutUserID"_L1, this->timeoutUserID},
         {"channelName"_L1, this->channelName},
         {"usernameColor"_L1, this->usernameColor.name(QColor::HexArgb)},
         {"count"_L1, static_cast<qint64>(this->count)},
@@ -187,6 +189,8 @@ QJsonObject Message::toJson() const
     };
 
     QJsonArray twitchBadges;
+    if (!this->timeoutUserID.isEmpty())
+        msg["timeoutUserID"_L1] = this->timeoutUserID;
     for (const auto &badge : this->twitchBadges)
     {
         twitchBadges.append(badge.key_);

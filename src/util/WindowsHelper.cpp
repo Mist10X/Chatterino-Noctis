@@ -10,6 +10,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDir>
 #include <QFileInfo>
 #include <QSettings>
 
@@ -63,13 +64,20 @@ void flushClipboard()
 const QString RUN_KEY =
     uR"(HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run)"_s;
 
+// Legacy entries at other paths may belong to a separate upstream installation.
+static bool ownsLegacyStartupEntry(const QSettings &settings)
+{
+    const auto legacy = QDir(QCoreApplication::applicationDirPath()).filePath(u"Leafyrino.exe"_s);
+    const auto command = u"\""_s + QDir::toNativeSeparators(legacy) + u"\" --autorun"_s;
+    return settings.value(u"Leafyrino"_s).toString().compare(command, Qt::CaseInsensitive) == 0;
+}
+
 bool isRegisteredForStartup()
 {
     QSettings settings(RUN_KEY, QSettings::NativeFormat);
 
-    return !settings.value(isolation::AUTOSTART_VALUE_NAME)
-                .toString()
-                .isEmpty();
+    return !settings.value(isolation::AUTOSTART_VALUE_NAME).toString().isEmpty() ||
+           ownsLegacyStartupEntry(settings);
 }
 
 void setRegisteredForStartup(bool isRegistered)
@@ -94,6 +102,10 @@ void setRegisteredForStartup(bool isRegistered)
     else
     {
         settings.remove(isolation::AUTOSTART_VALUE_NAME);
+    }
+    if (ownsLegacyStartupEntry(settings))
+    {
+        settings.remove(u"Leafyrino"_s);
     }
 }
 

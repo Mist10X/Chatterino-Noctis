@@ -68,8 +68,6 @@
 #include "singletons/Fonts.hpp"
 #include "singletons/helper/LoggingChannel.hpp"
 // #include "providers/moltorino/MoltorinoPresence.hpp"
-#include "common/network/NetworkRequest.hpp"
-#include "common/network/NetworkResult.hpp"
 #include "providers/moltorino/MoltorinoSupporterBadges.hpp"
 #include "singletons/Logging.hpp"
 #include "singletons/Paths.hpp"
@@ -98,10 +96,8 @@
 #include <QDialog>
 #include <QDateTime>
 #include <QDesktopServices>
-#include <QFontDatabase>
 #include <QTimer>
 #include <QUrl>
-#include <QUrlQuery>
 
 namespace {
 
@@ -119,7 +115,7 @@ ISoundController *makeSoundController(Settings &settings)
     switch (soundBackend)
     {
         case SoundBackend::Miniaudio: {
-            return new MiniaudioBackend(settings.soundMiniaudioKeepEngineAlive);
+            return new MiniaudioBackend(settings);
         }
         break;
 
@@ -129,7 +125,7 @@ ISoundController *makeSoundController(Settings &settings)
         break;
 
         default: {
-            return new MiniaudioBackend(settings.soundMiniaudioKeepEngineAlive);
+            return new MiniaudioBackend(settings);
         }
         break;
     }
@@ -184,6 +180,7 @@ IApplication *INSTANCE = nullptr;
 namespace chatterino {
 
 IApplication::IApplication()
+    : monoFontId(-1)
 {
     INSTANCE = this;
 }
@@ -275,7 +272,7 @@ void Application::initialize(Settings &settings, const Paths &paths)
         getSettings()->currentVersion.getValue() != "" &&
         getSettings()->currentVersion.getValue() != CHATTERINO_VERSION)
     {
-        auto *box = new QMessageBox(QMessageBox::Information, "Leafyrino",
+        auto *box = new QMessageBox(QMessageBox::Information, "Chatterino Noctis",
                                     "Show changelog?",
                                     QMessageBox::Yes | QMessageBox::No);
         box->setAttribute(Qt::WA_DeleteOnClose);
@@ -300,6 +297,9 @@ void Application::initialize(Settings &settings, const Paths &paths)
 
     this->ffzBadges->load();
     this->bttvBadges->load();
+    this->ffzApBadges->initialize();
+    this->dankChatBadges->initialize();
+    this->chatsenBadges->initialize();
     this->bluzyrinoBadges->initialize();
     this->jilChatBadges->initialize();
     this->limerinoBadges->initialize();
@@ -316,6 +316,7 @@ void Application::initialize(Settings &settings, const Paths &paths)
 
     this->notifications->initialize();
 
+    this->folhinhaBadges->loadFolhinhaBadges();
     this->twitchBadges->loadTwitchBadges();
     mist1xmark::startOnline();
 
@@ -336,7 +337,7 @@ void Application::initialize(Settings &settings, const Paths &paths)
                     if (auto channel = split->getChannel(); !channel->isEmpty())
                     {
                         channel->addSystemMessage(
-                            "Chatterino unexpectedly crashed and restarted. "
+                            "Chatterino Noctis unexpectedly crashed and restarted. "
                             "You can disable automatic restarts in the "
                             "settings.");
                     }
@@ -356,75 +357,6 @@ void Application::initialize(Settings &settings, const Paths &paths)
 
     this->streamerMode->start();
 
-    // getMoltorinoPresence()->init();
-
-    {
-        auto &s = *getSettings();
-        const auto clientId = s.botBadgeClientID.getValue().trimmed();
-        const auto clientSecret = s.botBadgeClientSecret.getValue().trimmed();
-        const auto expiryStr = s.botBadgeAppTokenExpiry.getValue().trimmed();
-
-        if (!clientId.isEmpty() && !clientSecret.isEmpty())
-        {
-            bool needsRefresh = false;
-
-            if (expiryStr.isEmpty())
-            {
-                needsRefresh = true;
-            }
-            else
-            {
-                auto expiry = QDateTime::fromString(expiryStr, Qt::ISODate);
-
-                needsRefresh =
-                    !expiry.isValid() ||
-                    QDateTime::currentDateTimeUtc().secsTo(expiry) < 86400;
-            }
-
-            if (needsRefresh)
-            {
-                QUrl tokenUrl("https://id.twitch.tv/oauth2/token");
-                QUrlQuery tokenQuery;
-                tokenQuery.addQueryItem("client_id", clientId);
-                tokenQuery.addQueryItem("client_secret", clientSecret);
-                tokenQuery.addQueryItem("grant_type", "client_credentials");
-                tokenUrl.setQuery(tokenQuery);
-
-                NetworkRequest(tokenUrl, NetworkRequestType::Post)
-                    .timeout(15000)
-                    .onSuccess([](const NetworkResult &res) {
-                        auto json = res.parseJson();
-                        auto token =
-                            json.value("access_token").toString().trimmed();
-                        auto expiresIn = json.value("expires_in").toInt();
-
-                        if (!token.isEmpty())
-                        {
-                            auto &settings = *getSettings();
-                            settings.botBadgeAppAccessToken = token;
-                            settings.botBadgeAppTokenExpiry =
-                                QDateTime::currentDateTimeUtc()
-                                    .addSecs(expiresIn)
-                                    .toString(Qt::ISODate);
-                            settings.requestSave();
-
-                            qCDebug(chatterinoApp)
-                                << "Bot badge app token refreshed.";
-                        }
-                    })
-                    .onError([](const NetworkResult &res) {
-                        qCWarning(chatterinoApp)
-                            << "Failed to refresh bot badge app token:"
-                            << res.formatError();
-                    })
-                    .execute();
-            }
-        }
-    }
-
-    this->monoFontId =
-        QFontDatabase::addApplicationFont(":/fonts/consolas.otf");
-
     this->initialized = true;
 }
 
@@ -441,7 +373,11 @@ int Application::run()
 
     if (!this->args_.isFramelessEmbed)
     {
-        this->windows->getMainWindow().show();
+        auto &window = this->windows->getMainWindow();
+        if (!window.isVisible())
+        {
+            window.show();
+        }
     }
 
     if (this->args_.uiSnapshot)

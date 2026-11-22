@@ -2,7 +2,7 @@
 Builds a release of Chatterino Noctis: the installer, a portable zip and
 SHA256SUMS.txt.
 
-  .\build-release.ps1 -Version 1.0.0 -Exe <built Leafyrino.exe> -Runtime <folder with the Qt/OpenSSL/VC runtime> -Out <folder>
+  .\build-release.ps1 -Version 1.0.0 -Exe <built Chatterino Noctis.exe> -Runtime <folder with the Qt/OpenSSL/VC runtime> -Out <folder>
 
 The runtime folder is a working installation (or a fresh deployment); only the
 files on the allowlist below are taken from it, never a profile (Settings,
@@ -26,28 +26,50 @@ if (Test-Path $Out) { throw "Output folder already exists: $Out" }
 $versionHeader = Join-Path $PSScriptRoot '..\..\src\common\Mist1XVersion.hpp'
 $inSource = [regex]::Match((Get-Content $versionHeader -Raw), 'MIST1X_VERSION "([^"]+)"').Groups[1].Value
 if ($inSource -ne $Version) { throw "MIST1X_VERSION in src/common/Mist1XVersion.hpp is '$inSource', not '$Version'. Change it and rebuild first." }
-
-# Check the compiled EXE as well as the source version. A locally installed
-# personal build can share the version number and must never be packaged.
-$binaryEncoding = [Text.Encoding]::GetEncoding(28591)
-$binary = $binaryEncoding.GetString([IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Exe).Path))
-function Test-BinaryMarker([string] $Marker) {
-    $utf16 = $binaryEncoding.GetString([Text.Encoding]::Unicode.GetBytes($Marker))
-    return $binary.Contains($Marker) -or $binary.Contains($utf16)
+# Validate the exact bytes that will be packaged. The public and Personal
+# checkouts can share both the product name and the numeric release version.
+$exePath = (Resolve-Path -LiteralPath $Exe).Path
+$versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($exePath)
+if ($versionInfo.ProductName -ne 'Chatterino Noctis' -or
+    $versionInfo.OriginalFilename -ne 'Chatterino Noctis.exe') {
+    throw "Expected the Chatterino Noctis executable: $exePath"
 }
-if (-not (Test-BinaryMarker "ChatterinoNoctis/$Version")) {
-    throw "The executable does not report version $Version to the update service."
+if ($versionInfo.FileVersion -ne $Version -or $versionInfo.ProductVersion -ne $Version) {
+    throw "The main executable's version metadata does not match $Version."
 }
-foreach ($marker in @('archive-bridge.json', 'archive-card', '/archive/socketName',
-                     'ArchiveBanPopup', 'UsercardArchiveToggle', 'panel-control.txt')) {
-    if (Test-BinaryMarker $marker) {
-        throw "Personal integration marker in public executable: $marker"
+$exeBytes = [IO.File]::ReadAllBytes($exePath)
+$byteEncoding = [Text.Encoding]::GetEncoding(28591)
+$binaryText = $byteEncoding.GetString($exeBytes)
+function Test-CompiledMarker([string] $Marker) {
+    $wide = $byteEncoding.GetString([Text.Encoding]::Unicode.GetBytes($Marker))
+    return $binaryText.Contains($Marker) -or $binaryText.Contains($wide)
+}
+if (-not (Test-CompiledMarker ("ChatterinoNoctis/$Version" + [char]0))) {
+    throw "The executable has a different Noctis update version than $Version."
+}
+foreach ($marker in @('twitch-auto-replies.json', 'NoctisCategoryTracker.exe',
+                      'archive-bridge.json', 'archive-card', '/archive/socketName',
+                      'ArchiveBanPopup', 'UsercardArchiveToggle', 'panel-control.txt',
+                      'local-test-chat', 'LocalTestChat', 'AutoReplyPrimaryTabs',
+                      'Mist1XUsersDialog', 'Bot Badge (Developer)')) {
+    if (Test-CompiledMarker $marker) {
+        throw "The executable contains a Personal-only feature: $marker"
     }
+}
+# Old shortcuts and existing Run entries launch this forwarding executable.
+$launcher = Join-Path (Split-Path -LiteralPath $exePath) 'Leafyrino.exe'
+$launcherInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($launcher)
+if ($launcherInfo.ProductName -ne 'Chatterino Noctis' -or
+    $launcherInfo.FileDescription -ne 'Chatterino Noctis compatibility launcher' -or
+    $launcherInfo.OriginalFilename -ne 'Leafyrino.exe' -or
+    $launcherInfo.ProductVersion -ne $Version) {
+    throw "Expected the compatibility launcher beside the main executable."
 }
 New-Item -ItemType Directory -Force $staging, $dist | Out-Null
 
 # 1. Program: the built exe and the runtime it needs (allowlist).
-Copy-Item $Exe (Join-Path $staging 'Leafyrino.exe')
+[IO.File]::WriteAllBytes((Join-Path $staging 'Chatterino Noctis.exe'), $exeBytes)
+Copy-Item -LiteralPath $launcher -Destination $staging
 $runtimeFiles = @(
     'Qt6Charts.dll', 'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Network.dll', 'Qt6OpenGL.dll',
     'Qt6OpenGLWidgets.dll', 'Qt6Svg.dll', 'Qt6Widgets.dll',
@@ -55,10 +77,11 @@ $runtimeFiles = @(
     'libcrypto-3-x64.dll', 'libssl-3-x64.dll',
     'concrt140.dll', 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
     'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll', 'vccorlib140.dll',
-    'vcruntime140.dll', 'vcruntime140_1.dll', 'vcruntime140_threads.dll',
-    'modes'
+    'vcruntime140.dll', 'vcruntime140_1.dll', 'vcruntime140_threads.dll'
 )
 foreach ($file in $runtimeFiles) { Copy-Item (Join-Path $Runtime $file) $staging }
+# Release packages must not inherit an existing installation's nightly mode.
+[IO.File]::WriteAllText((Join-Path $staging 'modes'), "portable`n", [Text.Encoding]::ASCII)
 $runtimeDirs = @('generic', 'iconengines', 'imageformats', 'networkinformation',
                  'platforms', 'styles', 'tls', 'crashpad')
 foreach ($dir in $runtimeDirs) { Copy-Item (Join-Path $Runtime $dir) $staging -Recurse }
@@ -71,7 +94,11 @@ Copy-Item (Join-Path $repo 'LICENSES') $staging -Recurse
 Copy-Item (Join-Path $repo 'resources\licenses') (Join-Path $staging 'LICENSES\third-party') -Recurse
 Copy-Item (Join-Path $repo 'CREDITS.md') (Join-Path $staging 'Авторы и лицензии.txt')
 Copy-Item (Join-Path $here 'Руководство.html') $staging
-Copy-Item (Join-Path $here 'Что нового.txt') $staging
+$notes = Join-Path $here "notes-$Version.md"
+if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) {
+    throw "Release notes not found: $notes"
+}
+Copy-Item -LiteralPath $notes -Destination (Join-Path $staging 'Что нового.txt')
 New-Item -ItemType Directory (Join-Path $staging 'Themes') | Out-Null
 Copy-Item (Join-Path $here 'Mist-Dark.json') (Join-Path $staging 'Themes')
 
@@ -100,7 +127,8 @@ $expectedPortable = Join-Path (Resolve-Path -LiteralPath $Out).Path $portableNam
 if ($resolvedPortable -ne $expectedPortable) { throw "Unexpected portable staging path: $resolvedPortable" }
 Remove-Item -LiteralPath $resolvedPortable -Recurse -Force
 
-# Transitional asset names allow previously installed clients to update.
+# Keep transitional asset names so versions published before Noctis can update
+# normally. Both names point to the same verified installer or portable ZIP.
 Copy-Item (Join-Path $dist "ChatterinoNoctis-Setup-$Version.exe") (Join-Path $dist "ChatterinoByMist1X-Setup-$Version.exe")
 Copy-Item (Join-Path $dist "$portableName.zip") (Join-Path $dist "ChatterinoByMist1X-$Version-portable.zip")
 

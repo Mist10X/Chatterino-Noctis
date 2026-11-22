@@ -11,6 +11,7 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QFrame>
+#include <QVariantAnimation>
 
 // The own timeout in the input box (like Chatterino+): red with a countdown,
 // green once it is over, normal after the first message. Synthetic channel,
@@ -20,13 +21,19 @@
 #include "Application.hpp"
 #include "common/LinkParser.hpp"
 #include "common/UiLanguage.hpp"
+#include "messages/Emote.hpp"
 #include "messages/Image.hpp"
 #include "messages/MessageBuilder.hpp"
 #include "messages/MessageElement.hpp"
 #include "messages/MessageParseArgs.hpp"
+#include "messages/layouts/MessageLayout.hpp"
+#include "messages/layouts/MessageLayoutElement.hpp"
+#include "controllers/accounts/AccountController.hpp"
+#include "providers/twitch/TwitchAccount.hpp"
 #include "providers/links/ImagePreview.hpp"
 #include "singletons/ImageUploader.hpp"
 #include "widgets/helper/UploadPreview.hpp"
+#include "widgets/TooltipWidget.hpp"
 #include "providers/twitch/IrcMessageHandler.hpp"
 #include "providers/twitch/Mist1XMark.hpp"
 #include "widgets/splits/InputHighlighter.hpp"
@@ -45,12 +52,21 @@
 #include "widgets/helper/CornerBanners.hpp"
 #include "singletons/Theme.hpp"
 #include <QTextEdit>
+#include <QKeyEvent>
+#include <QListWidget>
+#include <QPushButton>
 #include <QMouseEvent>
+#include <QMenu>
+#include <QTemporaryDir>
+#include <QScreen>
 
 #include <IrcMessage>
 #include <QBuffer>
+#include <QRegion>
 #include <QSyntaxHighlighter>
+#include <QTextBlock>
 #include <QTextCharFormat>
+#include <QTextLayout>
 #include <QCoreApplication>
 #include <cstdio>
 #include <QElapsedTimer>
@@ -84,10 +100,34 @@ namespace chatterino {
 class TwitchChannelTestAccess
 {
 public:
+    static void loadStartupHistory(TwitchChannel &channel)
+    {
+        channel.loadRecentMessages();
+    }
+
+    static bool historyBadgeRefreshPending(const TwitchChannel &channel)
+    {
+        return channel.historyBadgeRefreshQueued_;
+    }
+
+    static void noteLoadedHistoryForBadges(
+        TwitchChannel &channel, const std::vector<MessagePtr> &messages)
+    {
+        channel.noteLoadedHistoryForBadges(messages);
+    }
+
     static void setSlowMode(TwitchChannel &channel, int seconds)
     {
         auto modes = *channel.accessRoomModes();
         modes.slowMode = seconds;
+        channel.setRoomModes(modes);
+    }
+
+    static void setSlowAndFollowerMode(TwitchChannel &channel, int seconds, int minutes)
+    {
+        auto modes = *channel.accessRoomModes();
+        modes.slowMode = seconds;
+        modes.followerOnly = minutes;
         channel.setRoomModes(modes);
     }
 };
@@ -139,6 +179,178 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
     const auto endedText = uiText("Your timeout has ended — you can chat again");
     const auto unbannedText =
         uiText("You have been unbanned — you can chat again");
+
+    {
+        const bool wasEnabled = getSettings()->enableChannelPointsDisplay.getValue();
+        getSettings()->enableChannelPointsDisplay = true;
+        channel->setChannelPointBalance(150694);
+        pump(50);
+        auto *points = split.getInput().findChild<QLabel *>("ChannelPointsBalancePill");
+        const auto expected = activeUiLanguage().startsWith(u"ru")
+                                  ? QStringLiteral("150,6к")
+                                  : QStringLiteral("150.6k");
+        check("channel points show a shortened balance without exact-sum tooltip",
+              points && points->isVisible() && points->text() == expected &&
+                  !points->toolTip().contains("150") &&
+                  channel->channelPointBalance() == 150694);
+        shot(QStringLiteral("-points-compact"));
+        if (points)
+        {
+            auto *animation = points->findChild<QVariantAnimation *>();
+            const int height = split.getInput().height();
+            const int width = points->width();
+            channel->setChannelPointBalance(151694);
+            pump(50);
+            check("earned points animate while the actual balance is current",
+                  animation && animation->state() == QAbstractAnimation::Running &&
+                      animation->currentValue().toReal() > 0.0 &&
+                      animation->currentValue().toReal() < 1.0 &&
+                      points->width() == width &&
+                      split.getInput().height() == height &&
+                      channel->channelPointBalance() == 151694);
+            shot(QStringLiteral("-points-animated"));
+            channel->setChannelPointBalance(134694);
+            pump(60);
+            check("spending retargets an ongoing points animation without resizing",
+                  animation && animation->state() == QAbstractAnimation::Running &&
+                      points->width() == width && split.getInput().height() == height);
+            pump(280);
+            const auto spent = activeUiLanguage().startsWith(u"ru")
+                                   ? QStringLiteral("134,6к")
+                                   : QStringLiteral("134.6k");
+            check("points animation settles at the real target",
+                  animation && animation->state() == QAbstractAnimation::Stopped &&
+                      animation->currentValue().toReal() == 1.0 && points->text() == spent &&
+                      split.getInput().height() == height);
+            channel->setChannelPointBalance(134699);
+            check("small change still animates even when abbreviated value stays the same",
+                  animation && animation->state() == QAbstractAnimation::Running &&
+                      points->text() == spent);
+        }
+        getSettings()->enableChannelPointsDisplay = wasEnabled;
+    }
+
+#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
+    {
+        auto &input = split.getInput();
+        auto *send = input.findChild<Button *>("chatSendButton");
+        auto *card = input.findChild<QWidget *>("channelPointRewardPromptWidget");
+        auto *title = input.findChild<QLabel *>("channelPointRewardPromptTitle");
+        auto *cancel = input.findChild<QPushButton *>("channelPointRewardPromptCancel");
+        check("reward composer controls exist", send && card && title && cancel);
+        if (send && card && title && cancel)
+        {
+            int submitted = 0;
+            QString submittedText;
+            auto open = [&] {
+                input.showChannelPointRewardPrompt(
+                    QStringLiteral("Замутить зрителя на 10 минут"), QColor("#e12828"),
+                    uiText("Add a message"), true,
+                    [&](const QString &text) {
+                        ++submitted;
+                        submittedText = text;
+                    });
+                pump(60);
+            };
+            input.setInputText("ordinary draft");
+            split.resize(820, 250);
+            open();
+            check("reward is a separate localized card and Esc placeholder",
+                  card->isVisible() && title->text() ==
+                    uiText("Reward: %1").arg(QStringLiteral("Замутить зрителя на 10 минут")) &&
+                  edit->placeholderText() == uiText("Enter a message · Esc to cancel") &&
+                  edit->toPlainText().isEmpty());
+            shot(QStringLiteral("-reward"));
+            send->leftClicked();
+            check("empty reward cannot submit or fall through to chat",
+                  submitted == 0 && !card->isHidden());
+            input.setInputText("reward draft");
+            QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(edit, &escape);
+            check("Esc cancels without submitting and restores the ordinary draft",
+                  submitted == 0 && card->isHidden() &&
+                  edit->toPlainText() == "ordinary draft" &&
+                  edit->placeholderText() != uiText("Enter a message · Esc to cancel"));
+            open();
+            input.setInputText("fixture reward text");
+            send->leftClicked();
+            check("one explicit reward submission uses just the reward text",
+                  submitted == 1 && submittedText == "fixture reward text" &&
+                  card->isHidden() && edit->toPlainText() == "ordinary draft");
+            open();
+            cancel->click();
+            check("close button cancels without submitting",
+                  submitted == 1 && card->isHidden());
+            // Simulate selecting a different channel. A stale reward must not
+            // use the captured previous channel's token or callback.
+            open();
+            auto other = std::make_shared<TwitchChannel>("reward_other");
+            split.setChannel(IndirectChannel(std::static_pointer_cast<Channel>(other)));
+            pump(60);
+            check("channel change cancels stale reward input",
+                  submitted == 1 && card->isHidden() && edit->toPlainText().isEmpty());
+            split.setChannel(IndirectChannel(std::static_pointer_cast<Channel>(channel)));
+            input.setInputText({});
+            split.resize(560, 220);
+            pump(60);
+        }
+    }
+#endif
+
+    // Real SplitInput layout, not a text-edit sized by the test itself:
+    // an ordinary message must keep its original one-line height even though
+    // it would wrap at the editor's hypothetical minimum width. The optional
+    // character count must not create a second row of controls either.
+    {
+        auto &input = split.getInput();
+        const bool oldLengthSetting = getSettings()->showMessageLength;
+        const auto message = QStringLiteral("ейфазыафаыфаыфджлыаф");
+        auto *length = input.findChild<QLabel *>(QStringLiteral("chatMessageLength"));
+        split.resize(880, 280);
+        for (const bool showLength : {false, true})
+        {
+            getSettings()->showMessageLength = showLength;
+            input.setInputText({});
+            pump(80);
+            const int emptyHeight = input.height();
+            const int emptyEditorHeight = edit->height();
+            const int emptyMinimum = edit->minimumSizeHint().height();
+            edit->insertPlainText(message.left(1));
+            pump(50);
+            bool stable = input.height() == emptyHeight &&
+                          edit->height() == emptyEditorHeight;
+            edit->insertPlainText(message.mid(1));
+            pump(80);
+            stable &= input.height() == emptyHeight &&
+                      edit->height() == emptyEditorHeight &&
+                      edit->minimumSizeHint().height() == emptyMinimum &&
+                      edit->document()->firstBlock().layout()->lineCount() == 1;
+            std::fprintf(stderr, "plain input length=%d: empty=%d typed=%d (editor %d -> %d)\n",
+                         showLength, emptyHeight, input.height(),
+                         emptyEditorHeight, edit->height());
+            check(showLength ? "one-line input stays the same height with character count"
+                             : "one-line input stays the same height without character count",
+                  stable && length && length->isVisible() == showLength &&
+                      (!showLength || length->text() == QString::number(message.size())));
+        }
+        shot(QStringLiteral("-typed-one-line"));
+        input.setInputText({});
+        split.resize(360, 280);
+        pump(80);
+        const int narrowEmptyHeight = input.height();
+        input.setInputText(QStringLiteral("проверка переноса сообщения ").repeated(3));
+        pump(100);
+        check("real input grows when its text actually wraps",
+              edit->document()->firstBlock().layout()->lineCount() > 1 &&
+                  input.height() > narrowEmptyHeight &&
+                  edit->document()->size().height() <= edit->viewport()->height() + 1);
+        input.setInputText({});
+        pump(80);
+        check("clearing wrapped input restores one-line height", input.height() == narrowEmptyHeight);
+        getSettings()->showMessageLength = oldLengthSetting;
+        split.resize(560, 220);
+        pump(80);
+    }
 
     // 1. timed out (CLEARCHAT with ban-duration / msg_timedout notice)
     // (Typing into the real input needs app services this fixture lacks,
@@ -664,14 +876,14 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
                   ip::key(QStringLiteral("https://kappa.lol/abc")));
 
         // a picture under the message
-        QPixmap shot(300, 169);
+        QPixmap shot(1920, 1080);
         shot.fill(QColor(47, 168, 79));
         {
             QPainter painter(&shot);
-            painter.fillRect(QRect(0, 0, 150, 169), QColor(40, 90, 200));
+            painter.fillRect(QRect(0, 0, 960, 1080), QColor(40, 90, 200));
         }
         const auto link = QStringLiteral("https://kappa.lol/demo01");
-        ip::insertForTesting(link, Image::fromResourcePixmap(shot));
+        ip::rememberUpload(link, Image::fromResourcePixmap(shot));
         auto pictures =
             std::make_shared<TwitchChannel>(QStringLiteral("pictures_room"));
         split.setChannel(
@@ -687,16 +899,49 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
                 return dynamic_cast<ImagePreviewElement *>(element.get()) !=
                        nullptr;
             });
+        QTemporaryDir uploadLog;
+        const auto originalLogPath = getSettings()->logPath.getValue();
+        const bool originallyEnabled = getSettings()->imageUploaderEnabled;
+        getSettings()->imageUploaderEnabled = true;
+        getSettings()->logPath = uploadLog.path();
+        QFile file(uploadLog.filePath("ImageUploader.json"));
+        const QJsonArray entries{QJsonObject{{"imageLink", link},
+                                             {"deletionLink", "https://example.invalid/delete?fixture"}}};
+        if (uploadLog.isValid() && file.open(QIODevice::WriteOnly))
+        {
+            file.write(QJsonDocument(entries).toJson());
+            file.close();
+        }
+        auto &accounts = getApp()->getAccounts()->twitch.accounts;
+        const auto accountIndex = accounts.append(std::make_shared<TwitchAccount>(
+            QStringLiteral("image_owner"), QString{}, QString{}, QStringLiteral("314")));
+        auto *images = getApp()->getImageUploader();
+        message->loginName = QStringLiteral("another_viewer");
+        message->userID = QStringLiteral("314");
+        check("reposting another account's uploaded picture has no delete action",
+              images->deletableImages(*message).isEmpty());
+        message->loginName = QStringLiteral("Image_Owner");
+        message->userID = QStringLiteral("900");
+        check("a mismatched Twitch UID has no delete action",
+              images->deletableImages(*message).isEmpty());
+        message->userID = QStringLiteral("314");
+        check("a saved author's posted link matches the local upload",
+              images->deletableImages(*message) == QStringList{link});
         pictures->addMessage(message, MessageContext::Repost);
         pump(400);
         const auto image = split.getChannelView().grab().toImage();
         int green = 0;
         int blue = 0;
+        QPoint picturePixel;
         for (int y = 0; y < image.height(); ++y)
         {
             for (int x = 0; x < image.width(); ++x)
             {
                 const QColor c = image.pixelColor(x, y);
+                if (c == QColor(47, 168, 79) && picturePixel.isNull())
+                {
+                    picturePixel = QPoint(x, y);
+                }
                 green += std::abs(c.red() - 47) < 6 &&
                          std::abs(c.green() - 168) < 6 &&
                          std::abs(c.blue() - 79) < 6;
@@ -709,10 +954,112 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
                      green, blue);
         check("a screenshot link gets its picture under the message",
               hasPreview && green > 3000 && blue > 3000);
+        {
+            auto &view = split.getChannelView();
+            const bool previous = getSettings()->linkInfoTooltip;
+            getSettings()->linkInfoTooltip = true;
+            const auto at = picturePixel / image.devicePixelRatio() + QPoint(0, 3);
+            QMouseEvent move(QEvent::MouseMove, at, view.mapToGlobal(at),
+                             Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(&view, &move);
+            pump(30);
+            const auto dpr = view.devicePixelRatioF();
+            const auto wanted = shot.size().scaled(
+                QSize(640, 420).boundedTo(view.screen()->availableSize() * 0.8) * dpr,
+                Qt::KeepAspectRatio);
+            bool sharp = false;
+            std::fprintf(stderr, "screenshot hover at %d,%d on DPR %.2f: expected %dx%d pixels\n",
+                         at.x(), at.y(), dpr, wanted.width(), wanted.height());
+            for (auto *window : QApplication::topLevelWidgets())
+            {
+                auto *tooltip = qobject_cast<TooltipWidget *>(window);
+                if (!tooltip || !tooltip->isVisible())
+                    continue;
+                for (auto *label : tooltip->findChildren<QLabel *>())
+                {
+                    const auto displayed = label->pixmap();
+                    if (!label->isVisible() || displayed.isNull())
+                        continue;
+                    const auto actual = label->grab().toImage();
+                    std::fprintf(stderr, "hover label pixmap %dx%d at %.2f, rendered %dx%d\n",
+                                 displayed.width(), displayed.height(), displayed.devicePixelRatio(),
+                                 actual.width(), actual.height());
+                    const auto quarter = actual.pixelColor(actual.width() / 4, actual.height() / 2);
+                    const auto threeQuarters = actual.pixelColor(actual.width() * 3 / 4, actual.height() / 2);
+                    // At fractional DPR the integer QLabel geometry and its QIcon
+                    // can each round a physical edge by one pixel.
+                    sharp = std::abs(actual.width() - wanted.width()) <= 2 &&
+                            std::abs(actual.height() - wanted.height()) <= 2 &&
+                            std::abs(displayed.width() - wanted.width()) <= 2 &&
+                            std::abs(displayed.height() - wanted.height()) <= 2 &&
+                            qFuzzyCompare(actual.devicePixelRatio(), dpr) &&
+                            quarter == QColor(40, 90, 200) && threeQuarters == QColor(47, 168, 79);
+                    if (sharp)
+                        break;
+                }
+                if (sharp)
+                {
+                    if (!screenshotBase.isEmpty())
+                        tooltip->grab().save(screenshotBase + "-expanded-picture.png", "PNG");
+                    break;
+                }
+            }
+            check("hover on the rendered screenshot expands it at native display density", sharp);
+            QEvent leave(QEvent::Leave);
+            QApplication::sendEvent(&view, &leave);
+            getSettings()->linkInfoTooltip = previous;
+        }
         if (!screenshotBase.isEmpty())
         {
             image.save(screenshotBase + "-picture.png", "PNG");
         }
+
+        const auto &layouts = split.getChannelView().getMessagesSnapshot();
+        QPoint deleteCenter;
+        bool gapIsClear = false;
+        if (!layouts.empty())
+        {
+            const auto &layout = layouts.back();
+            for (int y = 0; y < layout->getHeight() && deleteCenter.isNull(); y += 2)
+            {
+                for (int x = layout->getWidth() / 2; x < layout->getWidth(); x += 2)
+                {
+                    auto *element = layout->getElementAt(QPointF(x, y));
+                    if (element && element->getLink().type == Link::DeleteUploadedImage)
+                    {
+                        deleteCenter = element->getRect().center().toPoint();
+                        auto *beside = layout->getElementAt(deleteCenter - QPoint(25, 0));
+                        gapIsClear = !beside || beside->getLink().type != Link::DeleteUploadedImage;
+                        break;
+                    }
+                }
+            }
+        }
+        check("the screenshot delete button has its own small hit target on the right",
+              !deleteCenter.isNull() && gapIsClear);
+        if (!deleteCenter.isNull())
+        {
+            auto &view = split.getChannelView();
+            const QPointF global = view.mapToGlobal(deleteCenter);
+            QMouseEvent press(QEvent::MouseButtonPress, deleteCenter, global,
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QMouseEvent release(QEvent::MouseButtonRelease, deleteCenter, global,
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(&view, &press);
+            QApplication::sendEvent(&view, &release);
+            auto *menu = view.findChild<QMenu *>("deleteUploadedPictureMenu");
+            check("click opens the deletion action for the public picture host",
+                  menu && menu->actions().size() == 1 &&
+                      menu->actions().front()->text().contains("kappa.lol") &&
+                      !menu->actions().front()->text().contains("fixture"));
+            if (menu)
+            {
+                menu->close();
+            }
+        }
+        accounts.removeAt(accountIndex);
+        getSettings()->logPath = originalLogPath;
+        getSettings()->imageUploaderEnabled = originallyEnabled;
 
         // the card above the input
         auto *uploader = getApp()->getImageUploader();
@@ -752,6 +1099,9 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
             check("after the upload it has the delete button",
                   card->isVisible() && card->deleteButton()->isVisible() &&
                       card->link() == uploaded);
+            const auto cached = ip::cachedUpload(uploaded);
+            check("an uploaded 1080p screenshot retains a 1280x720 source for chat and hover",
+                  cached && cached->size() == QSizeF(1280, 720));
             const auto geometry = card->geometry();
             const auto viewHeight = split.getChannelView().height();
             std::fprintf(stderr, "upload card: %d,%d %dx%d in a view %d high\n",
@@ -788,6 +1138,57 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
                   stays && !bare.isVisible());
             view.hide();
         }
+    }
+
+    {
+        auto status = std::make_shared<TwitchChannel>("connection_fixture");
+        split.setChannel(IndirectChannel(std::static_pointer_cast<Channel>(status)));
+        split.resize(800, 330);
+        const auto add = [&](const QString &text, MessageFlags flags) {
+            MessageBuilder builder(systemMessage, text);
+            builder->flags.set(flags);
+            status->addMessage(builder.release(), MessageContext::Repost);
+        };
+        add("connected", MessageFlag::ConnectedMessage);
+        add("joined channel", MessageFlag::None);
+        add(QStringLiteral("Связь с чатом нестабильна: 3 обрывов с 02:35, сейчас нет связи. Переподключаемся, /reconnect — сразу."),
+            MessageFlag::DisconnectedMessage);
+        add(QStringLiteral("Связь с чатом нестабильна: 3 обрывов с 02:35, восстановлена в 02:45"),
+            MessageFlag::ConnectedMessage);
+        add("Twitch Servers requested us to reconnect, reconnecting",
+            MessageFlag::None);
+        MessageBuilder ordinary;
+        ordinary->loginName = "viewer";
+        ordinary->displayName = "Viewer";
+        ordinary->messageText = "joined channel";
+        ordinary.emplace<TimestampElement>();
+        ordinary.emplace<TextElement>("Viewer:", MessageElementFlag::Username);
+        ordinary.emplace<TextElement>("joined channel", MessageElementFlag::Text);
+        status->addMessage(ordinary.release(), MessageContext::Repost);
+        pump(260);
+        const auto image = split.getChannelView().grab().toImage();
+        int blue = 0, amber = 0;
+        for (int y = 0; y < image.height(); ++y)
+        {
+            for (int x = 0; x < image.width(); ++x)
+            {
+                const auto c = image.pixelColor(x, y);
+                blue += c.blue() > c.red() + 14 && c.blue() > c.green() + 10 &&
+                        c.red() > 55 && c.green() > 55;
+                amber += c.red() > c.blue() + 25 && c.green() > c.blue() + 10 &&
+                         c.red() > 65;
+            }
+        }
+        check("connection and interruption notices use distinct subdued accents",
+              blue > 30 && amber > 30);
+        const auto rows = status->getMessageSnapshot();
+        check("connection notice styling preserves original text and normal chat",
+              rows.size() == 6 && rows[0]->messageText == "connected" &&
+              rows[1]->messageText == "joined channel" &&
+              rows[5]->messageText == "joined channel" &&
+              !rows[5]->flags.has(MessageFlag::System));
+        if (!screenshotBase.isEmpty())
+            image.save(screenshotBase + "-connection.png", "PNG");
     }
 
     // 17. whispers as cards: header, the sender's name as written, global
@@ -838,6 +1239,79 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
             split.getChannelView().grab().save(screenshotBase + "-whispers.png",
                                                "PNG");
         }
+        check("quick whisper opens a distinct local conversation",
+              split.selectWhisperPeer("OneShkof") &&
+                  split.whisperPeer() == "oneshkof");
+        split.getInput().setInputText("unsent local draft");
+        check("quick whisper never changes recipient of an unsent draft",
+              !split.selectWhisperPeer("AnotherUser") &&
+                  split.whisperPeer() == "oneshkof" &&
+                  split.getInput().getInputText() == "unsent local draft");
+        split.getInput().setInputText({});
+        check("quick whisper can select a new conversation with empty input",
+              split.selectWhisperPeer("AnotherUser") &&
+                  split.whisperPeer() == "anotheruser");
+        auto *picker = split.findChild<QPushButton *>("WhisperConversations");
+        auto *panel = split.findChild<QFrame *>("WhisperConversationPanel");
+        auto *list = split.findChild<QListWidget *>("WhisperConversationList");
+        check("whisper conversation picker is present", picker && panel && list);
+        if (picker && panel && list)
+        {
+            const QRect chatBefore = split.getChannelView().geometry();
+            picker->click();
+            const int firstHeight = panel->height();
+            pump(200);
+            check("conversation list reveals below its anchor without moving chat",
+                  !panel->isHidden() && panel->height() > firstHeight &&
+                      panel->y() >= picker->geometry().bottom() + 1 &&
+                      split.getChannelView().geometry() == chatBefore &&
+                      list->currentItem() && list->currentItem()->text() == "AnotherUser");
+            if (!screenshotBase.isEmpty())
+                split.grab().save(screenshotBase + "-whisper-picker.png", "PNG");
+            const auto panelBefore = panel->geometry();
+            const auto rowsBefore = list->count();
+            MessageBuilder arrived;
+            arrived->whisperPeer = "newpeer";
+            arrived->displayName = "NewPeer";
+            arrived->flags.set(MessageFlag::Whisper);
+            arrived.emplace<TextElement>("test", MessageElementFlag::Text);
+            const auto anotherPeer = arrived.release();
+            whispers->addMessage(anotherPeer, MessageContext::Repost);
+            pump(25);
+            check("arriving conversation keeps the open list and current row stationary",
+                  panel->isVisible() && panel->geometry() == panelBefore &&
+                      list->count() == rowsBefore + 1 &&
+                      list->item(rowsBefore)->text() == "NewPeer" &&
+                      list->currentItem() && list->currentItem()->text() == "AnotherUser");
+            const auto initialSize = split.size();
+            split.resize(245, 175);
+            pump(40);
+            check("conversation list fits a resized split and never opens upwards",
+                  panel->isVisible() && panel->y() == picker->y() + picker->height() &&
+                      split.rect().contains(panel->geometry()));
+            split.resize(initialSize);
+            pump(40);
+            QKeyEvent home(QEvent::KeyPress, Qt::Key_Home, Qt::NoModifier);
+            QApplication::sendEvent(list, &home);
+            QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(list, &enter);
+            pump(200);
+            check("conversation keyboard selection returns to all messages",
+                  panel->isHidden() && split.whisperPeer().isEmpty() &&
+                      picker->text() == uiText("All conversations") &&
+                      split.getChannelView().geometry() == chatBefore);
+            picker->click();
+            QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(list, &escape);
+            pump(150);
+            check("Escape reverses an opening conversation list",
+                  panel->isHidden() && split.whisperPeer().isEmpty());
+            picker->click();
+            whispers->clearMessages();
+            pump(30);
+            check("resetting whispers dismisses the list and clears old peers",
+                  panel->isHidden() && list->count() == 1 && split.whisperPeer().isEmpty());
+        }
     }
 
     // 18. emotes in the input are set taller than the text: the input grows
@@ -871,6 +1345,118 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
         std::fprintf(stderr, "input height: plain=%d with emotes=%d\n", plain,
                      grown);
         check("taller emotes make the input taller", grown > plain + 4);
+    }
+
+    // Selecting an inline emote must not expose the hidden name or repaint
+    // an adjacent line. A very narrow input forces that emote to wrap.
+    {
+        const QString emoteName = QStringLiteral("SelectionWWWWWWWWWWWWWWWW");
+        static const QPixmap emotePixmap = [] {
+            QPixmap picture(56, 28);
+            picture.fill(QColor(0, 255, 0));
+            return picture;
+        }();
+        auto room = std::make_shared<TwitchChannel>(
+            QStringLiteral("input_selection_fixture"));
+        auto emotes = std::make_shared<EmoteMap>();
+        emotes->emplace(EmoteName(emoteName),
+                        std::make_shared<Emote>(Emote{
+                            .name = EmoteName(emoteName),
+                            .images = ImageSet{
+                                Image::fromResourcePixmap(emotePixmap)},
+                        }));
+        room->setBttvEmotes(std::move(emotes));
+
+        ResizingTextEdit box;
+        box.setFont(edit != nullptr ? edit->font() : box.font());
+        auto colors = box.palette();
+        colors.setColor(QPalette::Base, QColor(16, 16, 22));
+        colors.setColor(QPalette::Text, Qt::white);
+        colors.setColor(QPalette::Highlight, QColor(156, 138, 204));
+        colors.setColor(QPalette::HighlightedText, Qt::red);
+        box.setPalette(colors);
+
+        InputHighlighter highlighter(*getApp()->getSpellChecker(), nullptr);
+        highlighter.setEmotePreviewEnabled(true);
+        highlighter.setDocument(box.document());
+        highlighter.setChannel(room);
+        box.paintOverlay = [&](QPainter &painter) {
+            highlighter.paintEmotes(painter, box);
+        };
+        const QString text = emoteName + QStringLiteral(" following text");
+        box.setPlainText(text);
+        box.show();
+        box.setFocus();
+        highlighter.rehighlight();
+        pump(50);
+        const auto spanFormats = box.document()->firstBlock().layout()->formats();
+        const auto reserved = std::ranges::find_if(spanFormats, [&](const auto &range) {
+            return range.start == 0 && range.length == emoteName.size() &&
+                   range.format.foreground().color().alpha() == 0;
+        });
+        check("inline emote reserves width without negative letter spacing",
+              highlighter.showsEmotes() && reserved != spanFormats.end() &&
+                  reserved->format.fontLetterSpacing() >= 0);
+
+        for (const int width : {260, 36})
+        {
+            box.resize(width, 150);
+            QTextCursor cursor(box.document());
+            cursor.setPosition(0);
+            cursor.setPosition(int(emoteName.size()), QTextCursor::KeepAnchor);
+            box.setTextCursor(cursor);
+            pump(60);
+
+            const auto block = box.document()->firstBlock();
+            const auto *layout = block.layout();
+            QRegion allowed;
+            for (int i = 0; i < layout->lineCount(); ++i)
+            {
+                const auto line = layout->lineAt(i);
+                const int start = line.textStart();
+                const int end = std::min(start + line.textLength(),
+                                         int(emoteName.size()));
+                if (start >= end)
+                {
+                    break;
+                }
+                QTextCursor startCursor(block);
+                startCursor.setPosition(block.position() + start);
+                const auto caret = box.cursorRect(startCursor);
+                const auto span = line.cursorToX(end) - line.cursorToX(start);
+                const qreal dpr = box.viewport()->devicePixelRatioF();
+                allowed += QRectF(caret.left() * dpr, caret.top() * dpr,
+                                  span * dpr, caret.height() * dpr)
+                               .toAlignedRect();
+            }
+            const auto image = box.viewport()->grab().toImage();
+            bool hasEmote = false;
+            bool outside = false;
+            bool hiddenTextVisible = false;
+            for (int y = 0; y < image.height(); ++y)
+            {
+                for (int x = 0; x < image.width(); ++x)
+                {
+                    const auto color = image.pixelColor(x, y);
+                    if (color.green() > 220 && color.red() < 40 &&
+                        color.blue() < 40)
+                    {
+                        hasEmote = true;
+                        outside |= !allowed.contains(QPoint(x, y));
+                    }
+                    hiddenTextVisible |= color.red() > 220 &&
+                                         color.green() < 40 && color.blue() < 40;
+                }
+            }
+            check(QStringLiteral("selected inline emote stays inside its visual "
+                                 "line at width %1").arg(width),
+                  hasEmote && !outside && !hiddenTextVisible &&
+                      box.toPlainText() == text &&
+                      box.textCursor().selectedText() == emoteName &&
+                      (width != 36 ||
+                       layout->lineAt(0).textLength() < emoteName.size()));
+        }
+        box.hide();
     }
 
     // 19. "/w <name> " at the start of the input is a «DM to <name>» chip
@@ -939,7 +1525,9 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
         getSettings()->enableSmoothScrollingNewMessages = false;
         auto room = std::make_shared<TwitchChannel>(
             QStringLiteral("scroll_room_%1_%2").arg(limit).arg(extra));
-        room->setMessageLimit(limit);
+        room->followMessageLimit(room->messageLimitChanged, [limit] {
+            return limit;
+        });
         split.setChannel(IndirectChannel(std::static_pointer_cast<Channel>(room)));
         split.resize(560, 420);
         split.show();
@@ -1045,6 +1633,22 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
         check(QStringLiteral("the jump to new messages leaves no blank space "
                              "(limit %1, case %2)").arg(limit).arg(extra),
               jump != nullptr && paused < 40 && after < 40);
+    }
+
+    {
+        auto room = std::make_shared<Channel>("short-history", Channel::Type::None);
+        split.setChannel(IndirectChannel(room));
+        split.resize(560, 180);
+        for (int i = 0; i < 7; ++i)
+            room->addMessage(makeSystemMessage(QStringLiteral("short history row %1").arg(i)), MessageContext::Repost);
+        pump(150);
+        auto &bar = split.getChannelView().getScrollBar();
+        bar.scrollToBottom(false);
+        pump(50);
+        split.resize(560, 650);
+        pump(150);
+        check("short history resized to fit resets stale scroll position and page size",
+              !bar.isVisible() && qAbs(bar.getCurrentValue() - bar.getMinimum()) < 0.001 && bar.getPageSize() >= 7);
     }
 
     // 22. Tab after typing in the Russian layout by mistake

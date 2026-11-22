@@ -1397,7 +1397,7 @@ MoltorinoAuthToken resolveModerationToken(const QString &channelId,
         {
             *errorMessage =
                 QString("No saved account has cached moderator access "
-                        "for #%1. Refresh accounts in Settings -> Moltorino -> "
+                        "for #%1. Refresh accounts in Settings -> Sign-in for extra features -> "
                         "Authentication or add the account that moderates this "
                         "channel.")
                     .arg(channelLogin);
@@ -1432,7 +1432,7 @@ MoltorinoAuthToken resolveSavedBroadcasterToken(const QString &channelId,
     {
         *errorMessage =
             QString("No saved broadcaster account matches #%1. Add the "
-                    "broadcaster account in Settings -> Moltorino -> "
+                    "broadcaster account in Settings -> Sign-in for extra features -> "
                     "Authentication.")
                 .arg(channelLogin);
     }
@@ -1462,7 +1462,7 @@ MoltorinoAuthToken resolveBroadcasterToken(const QString &channelId,
         {
             *errorMessage =
                 QString("No saved account matches #%1. Add the broadcaster "
-                        "account in Settings -> Moltorino -> Authentication.")
+                        "account in Settings -> Sign-in for extra features -> Authentication.")
                     .arg(channelLogin);
         }
         return {};
@@ -1495,7 +1495,7 @@ MoltorinoAuthToken resolveSelectedUserToken(QString *errorMessage)
     {
         *errorMessage =
             "Saved login for the current Twitch account was not found. "
-            "Add this account in Settings -> Moltorino -> Authentication.";
+            "Add this account in Settings -> Sign-in for extra features -> Authentication.";
     }
     return {};
 }
@@ -1547,7 +1547,7 @@ MoltorinoAuthToken resolveCurrentUserToken(QString *errorMessage)
         {
             *errorMessage =
                 "Saved login for the current Twitch account was not found. "
-                "Add this account in Settings -> Moltorino -> Authentication.";
+                "Add this account in Settings -> Sign-in for extra features -> Authentication.";
         }
         return {};
     }

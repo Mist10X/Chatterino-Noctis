@@ -11,6 +11,7 @@
 #include <QPoint>
 #include <QRect>
 #include <QRegion>
+#include <QHash>
 
 #include <memory>
 #include <optional>
@@ -31,6 +32,7 @@ enum class TextDirection : uint8_t {
 };
 
 class MessageLayoutElement;
+class MessageElement;
 struct Selection;
 struct MessagePaintContext;
 
@@ -46,6 +48,12 @@ struct MessageLayoutContainer {
     void addElement(MessageLayoutElement *element);
 
     void addElementNoLineBreak(MessageLayoutElement *element);
+
+    // Record links rendered as a page title for this particular layout.
+    void markLinkTitle(const MessageElement *element, const QString &url);
+
+    /// Place an action against the right margin with only its icon hit-testable.
+    void addTrailingAction(MessageLayoutElement *element, qreal inset);
 
     void ensureSingleSpaceBeforeNextElement();
 
@@ -180,6 +188,7 @@ private:
     TextDirection textDirection_ = TextDirection::Neutral;
 
     std::vector<std::unique_ptr<MessageLayoutElement>> elements_;
+    QHash<const MessageElement *, QString> titleLinks_;
 
     std::vector<Line> lines_;
 

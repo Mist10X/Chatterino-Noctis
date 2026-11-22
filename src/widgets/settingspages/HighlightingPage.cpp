@@ -6,6 +6,7 @@
 #include "widgets/settingspages/HighlightingPage.hpp"
 
 #include "Application.hpp"
+#include "controllers/sound/ISoundController.hpp"
 #include "controllers/highlights/BadgeHighlightModel.hpp"
 #include "controllers/highlights/HighlightBadge.hpp"
 #include "controllers/highlights/HighlightBlacklistModel.hpp"
@@ -25,6 +26,8 @@
 #include <QFileDialog>
 #include <QHeaderView>
 #include <QPushButton>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QStandardItemModel>
 #include <QTableView>
 #include <QTabWidget>
@@ -62,7 +65,7 @@ HighlightingPage::HighlightingPage()
                     uiText("Play notification sounds and highlight messages based on "
                     "certain patterns.\n"
                     "Message highlights are prioritized over badge highlights "
-                    "and user highlights."));
+                    "and user highlights."))->setWordWrap(true);
 
                 auto *view =
                     highlights
@@ -76,17 +79,9 @@ HighlightingPage::HighlightingPage()
                                  uiText("Flash\ntaskbar"), uiText("Enable\nregex"),
                                  uiText("Case-\nsensitive"), uiText("Play\nsound"),
                                  uiText("Custom\nsound"), uiText("Color")});
-                view->getTableView()->horizontalHeader()->setSectionResizeMode(
-                    QHeaderView::Fixed);
-                view->getTableView()->horizontalHeader()->setSectionResizeMode(
-                    0, QHeaderView::Stretch);
                 view->getTableView()->setItemDelegateForColumn(
                     HighlightModel::Column::Color, new ColorItemDelegate(view));
-
-                QTimer::singleShot(1, [view] {
-                    view->getTableView()->resizeColumnsToContents();
-                    view->getTableView()->setColumnWidth(0, 400);
-                });
+                view->setReadableColumns({0}, true);
 
                 std::ignore = view->addButtonPressed.connect([] {
                     getSettings()->highlightedMessages.append(HighlightPhrase{
@@ -108,7 +103,7 @@ HighlightingPage::HighlightingPage()
                     uiText("Play notification sounds and highlight messages from "
                     "certain users.\n"
                     "User highlights are prioritized over badge highlights, "
-                    "but under message highlights."));
+                    "but under message highlights."))->setWordWrap(true);
                 EditableModelView *view =
                     pingUsers
                         .emplace<EditableModelView>(
@@ -126,18 +121,10 @@ HighlightingPage::HighlightingPage()
                                  uiText("Flash\ntaskbar"), uiText("Enable\nregex"),
                                  uiText("Case-\nsensitive"), uiText("Play\nsound"),
                                  uiText("Custom\nsound"), uiText("Color")});
-                view->getTableView()->horizontalHeader()->setSectionResizeMode(
-                    QHeaderView::Fixed);
-                view->getTableView()->horizontalHeader()->setSectionResizeMode(
-                    0, QHeaderView::Stretch);
                 view->getTableView()->setItemDelegateForColumn(
                     UserHighlightModel::Column::Color,
                     new ColorItemDelegate(view));
-
-                QTimer::singleShot(1, [view] {
-                    view->getTableView()->resizeColumnsToContents();
-                    view->getTableView()->setColumnWidth(0, 200);
-                });
+                view->setReadableColumns({0}, true);
 
                 std::ignore = view->addButtonPressed.connect([] {
                     getSettings()->highlightedUsers.append(HighlightPhrase{
@@ -159,7 +146,7 @@ HighlightingPage::HighlightingPage()
                     uiText("Play notification sounds and highlight messages based on "
                     "user badges.\n"
                     "Badge highlights are prioritized under user and message "
-                    "highlights."));
+                    "highlights."))->setWordWrap(true);
                 auto *view = badgeHighlights
                                  .emplace<EditableModelView>(
                                      (new BadgeHighlightModel(nullptr))
@@ -168,18 +155,10 @@ HighlightingPage::HighlightingPage()
                                  .getElement();
                 view->setTitles({uiText("Name"), uiText("Show In\nMentions"), uiText("Flash\ntaskbar"),
                                  uiText("Play\nsound"), uiText("Custom\nsound"), uiText("Color")});
-                view->getTableView()->horizontalHeader()->setSectionResizeMode(
-                    QHeaderView::Fixed);
-                view->getTableView()->horizontalHeader()->setSectionResizeMode(
-                    0, QHeaderView::Stretch);
                 view->getTableView()->setItemDelegateForColumn(
                     BadgeHighlightModel::Column::Color,
                     new ColorItemDelegate(view));
-
-                QTimer::singleShot(1, [view] {
-                    view->getTableView()->resizeColumnsToContents();
-                    view->getTableView()->setColumnWidth(0, 200);
-                });
+                view->setReadableColumns({0}, true);
 
                 std::ignore = view->addButtonPressed.connect([this] {
                     auto d = std::make_shared<BadgePickerDialog>(
@@ -213,7 +192,7 @@ HighlightingPage::HighlightingPage()
             {
                 disabledUsers.emplace<QLabel>(
                     uiText("Disable notification sounds and highlights from certain "
-                    "users (e.g. bots)."));
+                    "users (e.g. bots)."))->setWordWrap(true);
                 EditableModelView *view =
                     disabledUsers
                         .emplace<EditableModelView>(
@@ -223,15 +202,7 @@ HighlightingPage::HighlightingPage()
 
                 view->addRegexHelpLink();
                 view->setTitles({uiText("Username"), uiText("Enable\nregex")});
-                view->getTableView()->horizontalHeader()->setSectionResizeMode(
-                    QHeaderView::Fixed);
-                view->getTableView()->horizontalHeader()->setSectionResizeMode(
-                    0, QHeaderView::Stretch);
-
-                QTimer::singleShot(1, [view] {
-                    view->getTableView()->resizeColumnsToContents();
-                    view->getTableView()->setColumnWidth(0, 200);
-                });
+                view->setReadableColumns({0}, true);
 
                 std::ignore = view->addButtonPressed.connect([] {
                     getSettings()->blacklistedUsers.append(
@@ -260,6 +231,7 @@ HighlightingPage::HighlightingPage()
                 uiText("This sound will play for all highlight phrases that have "
                 "sound enabled and don't have a custom sound set."));
             label->setTextFormat(Qt::RichText);
+            label->setWordWrap(true);
             label->setTextInteractionFlags(Qt::TextBrowserInteraction |
                                            Qt::LinksAccessibleByKeyboard);
             label->setOpenExternalLinks(true);
@@ -295,11 +267,39 @@ HighlightingPage::HighlightingPage()
                 this->managedConnections_);
         }
 
+        auto volumeRow = layout.emplace<QHBoxLayout>().withoutMargin();
+        auto volumeCaption = volumeRow.emplace<QLabel>(uiText("Sound volume"));
+        auto *volume = volumeRow.emplace<QSlider>(Qt::Horizontal).getElement();
+        volume->setObjectName("NotificationSoundVolume");
+        volumeCaption->setBuddy(volume);
+        volume->setAccessibleName(volumeCaption->text());
+        volume->setRange(0, 100);
+        volume->setPageStep(10);
+        volumeRow->setStretchFactor(volume, 1);
+        auto *percentage = volumeRow.emplace<QLabel>().getElement();
+        percentage->setObjectName("NotificationSoundVolumeValue");
+        percentage->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        percentage->setMinimumWidth(percentage->fontMetrics().horizontalAdvance("100%") + 8);
+        auto *preview = volumeRow.emplace<QPushButton>(uiText("Preview sound")).getElement();
+        preview->setObjectName("NotificationSoundPreview");
+        getSettings()->soundVolume.connect([volume, percentage](int value) {
+            const QSignalBlocker blocker(volume);
+            volume->setValue(value);
+            percentage->setText(QString::number(volume->value()) + u'%');
+        }, this->managedConnections_);
+        QObject::connect(volume, &QSlider::valueChanged, this, [](int value) {
+            getSettings()->soundVolume = value;
+        });
+        QObject::connect(preview, &QPushButton::clicked, this, [] {
+            const auto path = getSettings()->pathHighlightSound.getValue();
+            getApp()->getSound()->play(path.isEmpty() ? QUrl() : QUrl::fromLocalFile(path));
+        });
+
         layout.append(createCheckBox(
-            uiText("Play highlight sound even when Chatterino is focused"),
+            uiText("Play highlight sound even when Chatterino Noctis is focused"),
             getSettings()->highlightAlwaysPlaySound));
         layout.append(createCheckBox(
-            uiText("Flash taskbar only stops highlighting when Chatterino is focused"),
+            uiText("Flash taskbar only stops highlighting when Chatterino Noctis is focused"),
             getSettings()->longAlerts));
     }
 

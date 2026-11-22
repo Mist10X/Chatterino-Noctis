@@ -1,3 +1,4 @@
+#include "widgets/helper/ServiceHealthCard.hpp"
 #include "common/UiLanguage.hpp"
 #include "widgets/Window.hpp"
 
@@ -48,6 +49,7 @@
 
 #include <QApplication>
 #include <QTimer>
+#include <QPointer>
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QHeaderView>
@@ -69,10 +71,6 @@ Window::Window(WindowType type, QWidget *parent)
     this->addCustomTitlebarButtons();
     this->addShortcuts();
     this->addLayout();
-    if (this->type_ == WindowType::Main)
-    {
-        initUpdateBanner(this, this->signalHolder_);
-    }
 
 #ifdef Q_OS_MACOS
     this->addMenuBar();
@@ -82,6 +80,12 @@ Window::Window(WindowType type, QWidget *parent)
         getApp()->getAccounts()->twitch.currentUserChanged.connect([this] {
             this->onAccountSelected();
         }));
+    this->signalHolder_.managedConnect(
+        getApp()->getAccounts()->twitch.currentUserNameChanged,
+        [this] { this->onAccountSelected(); });
+    this->signalHolder_.managedConnect(
+        getApp()->getAccounts()->twitch.currentUserDisplayNameChanged,
+        [this] { this->onAccountSelected(); });
     this->onAccountSelected();
 
     if (type == WindowType::Main)
@@ -244,6 +248,7 @@ void Window::addCustomTitlebarButtons()
     // shown only while a newer Chatterino Noctis is out
     auto *update = this->addTitleBarButton<PixmapButton>([] {});
     initUpdateButton(*update, [] {}, this->signalHolder_);
+    initUpdateBanner(this, this->signalHolder_);
     if (!getApp()->getArgs().uiSnapshot && !getApp()->getArgs().dontSaveSettings)
     {
         QTimer::singleShot(1200, this, [this] {
@@ -258,7 +263,11 @@ void Window::addCustomTitlebarButtons()
             this->userLabel_->mapToGlobal(
                 this->userLabel_->rect().bottomLeft()));
     });
-    this->userLabel_->setMinimumWidth(20 * this->scale());
+
+    auto *health = this->addTitleBarButton<PixmapButton>([] {});
+    auto *healthCard = new ServiceHealthCard(health);
+    QObject::connect(health, &Button::leftClicked, healthCard, &ServiceHealthCard::open);
+    this->signalHolder_.managedConnect(servicehealth::changed, [healthCard] { healthCard->refresh(); });
 
     this->streamerModeTitlebarIcon_ =
         this->addTitleBarButton<PixmapButton>([this] {
@@ -557,6 +566,11 @@ void Window::addShortcuts()
                  getApp()->getTwitch()->getOrAddChannel(si.channelName));
              split->setFilters(si.filters);
              splitContainer->insertSplit(split);
+             if (auto *actualContainer =
+                     dynamic_cast<SplitContainer *>(split->parentWidget()))
+             {
+                 splitContainer = actualContainer;
+             }
              splitContainer->setSelected(split);
              this->notebook_->select(splitContainer);
              return "";
@@ -816,7 +830,7 @@ void Window::onAccountSelected()
     }
     else
     {
-        windowTitle += " - " + user->getUserName();
+        windowTitle += " - " + user->getDisplayName();
     }
 #endif
 
@@ -835,7 +849,7 @@ void Window::onAccountSelected()
         }
         else
         {
-            this->userLabel_->setText(user->getUserName());
+            this->userLabel_->setText(user->getDisplayName());
         }
     }
 }

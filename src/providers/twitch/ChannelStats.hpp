@@ -9,7 +9,9 @@
 #include <QColor>
 #include <QDateTime>
 #include <QHash>
+#include <QJsonArray>
 #include <QMap>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -36,6 +38,7 @@ struct ChannelStatsData {
     /// Reading the beginning of the stream from the public logs.
     enum class History {
         NotNeeded,
+        Available,
         Loading,
         Done,
         /// some stretches could not be read
@@ -45,6 +48,8 @@ struct ChannelStatsData {
     };
 
     QDateTime since;
+    QDateTime streamStarted;
+    bool countLimitReached = false;
     bool sinceStreamStart = false;
     bool live = false;
     int messages = 0;
@@ -55,6 +60,7 @@ struct ChannelStatsData {
     int firstMessages = 0;             // first messages in the channel
     QStringList newChatters;           // their logins (the first 500)
     QMap<qint64, int> perMinute;       // minute since epoch -> messages
+    QSet<qint64> incompleteMinutes;   // no messages recovered for these minutes
 
     History history = History::NotNeeded;
     /// The logs fill [since, historyUntil); read up to historyRead so far.
@@ -69,7 +75,10 @@ public:
     /// already in it are counted too.
     static void attach(const std::shared_ptr<Channel> &channel);
     /// A copy of the numbers so far (empty if the channel is not counted).
-    static ChannelStatsData get(const QString &channelName);
+    static ChannelStatsData get(const QString &channelName, bool anonymous = false);
+    static void requestHistory(const QString &channelName, bool anonymous = false);
+    /// Offline deterministic checks (only available in the test application).
+    static QJsonArray fixtureChecks();
 };
 
 }  // namespace chatterino

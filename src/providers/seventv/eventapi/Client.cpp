@@ -5,6 +5,7 @@
 #include "providers/seventv/eventapi/Client.hpp"
 
 #include "Application.hpp"
+#include "messages/Emote.hpp"
 #include "providers/chatterino/ChatterinoBadges.hpp"
 #include "providers/seventv/eventapi/Dispatch.hpp"
 #include "providers/seventv/eventapi/Message.hpp"
@@ -14,11 +15,13 @@
 #include "providers/seventv/SeventvPaints.hpp"
 #include "providers/seventv/SeventvPersonalEmotes.hpp"
 #include "providers/seventv/SeventvPersonalLookup.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "util/PostToThread.hpp"
 #include "util/QMagicEnum.hpp"
 #include "util/Variant.hpp"
 
 #include <QJsonArray>
+#include <QSet>
 
 namespace chatterino::seventv::eventapi {
 
@@ -392,8 +395,31 @@ void Client::onEntitlementCreate(
     switch (entitlement.kind)
     {
         case CosmeticKind::Badge: {
+            // The API can send assignments for users already in the registry.
+            // Only an actual Twitch badge change should refresh chat rows.
+            QSet<QString> changedUsers;
+            for (const auto &user : entitlement.connections)
+            {
+                if (const auto *twitch = std::get_if<TwitchUser>(&user))
+                {
+                    const auto existing = badges->getBadge(UserId{twitch->id});
+                    if (!existing || (*existing)->id.string != entitlement.refID)
+                    {
+                        changedUsers.insert(twitch->id);
+                    }
+                }
+            }
             badges->assignBadgeToUsers(entitlement.refID,
                                        entitlement.connections);
+            // Ignore an assignment for a badge whose definition is not loaded.
+            changedUsers.removeIf([&](const QString &userID) {
+                const auto applied = badges->getBadge(UserId{userID});
+                return !applied || (*applied)->id.string != entitlement.refID;
+            });
+            if (!changedUsers.isEmpty())
+            {
+                notifyChatBadgesChangedForUsers(std::move(changedUsers));
+            }
         }
         break;
         case CosmeticKind::Paint: {
@@ -457,8 +483,24 @@ void Client::onEntitlementDelete(
     switch (entitlement.kind)
     {
         case CosmeticKind::Badge: {
+            QSet<QString> changedUsers;
+            for (const auto &user : entitlement.connections)
+            {
+                if (const auto *twitch = std::get_if<TwitchUser>(&user))
+                {
+                    const auto existing = badges->getBadge(UserId{twitch->id});
+                    if (existing && (*existing)->id.string == entitlement.refID)
+                    {
+                        changedUsers.insert(twitch->id);
+                    }
+                }
+            }
             badges->clearBadgeFromUsers(entitlement.refID,
                                         entitlement.connections);
+            if (!changedUsers.isEmpty())
+            {
+                notifyChatBadgesChangedForUsers(std::move(changedUsers));
+            }
         }
         break;
         case CosmeticKind::Paint: {

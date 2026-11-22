@@ -1770,12 +1770,10 @@ void RewardQueueDialog::updateSortButton()
     if (this->newestFirst_)
     {
         this->sortButton_->setText(uiText("Sort by newest"));
-        this->sortButton_->setToolTip(uiText("Showing the most recent requests first"));
         return;
     }
 
     this->sortButton_->setText(uiText("Sort by oldest"));
-    this->sortButton_->setToolTip(uiText("Showing the oldest requests first"));
 }
 
 void RewardQueueDialog::selectReward(const QString &rewardId)
@@ -1934,7 +1932,7 @@ void RewardQueueDialog::setStatus(const QString &text, bool error)
 {
     this->statusIsError_ = error;
     this->statusLabel_->setText(text);
-    this->statusLabel_->setStyleSheet(error ? QStringLiteral("color: #ff9e9e;")
+    this->statusLabel_->setStyleSheet(error ? QStringLiteral("color: palette(bright-text);")
                                             : QString());
 }
 

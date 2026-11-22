@@ -8,6 +8,7 @@
 
 #include <private/qpixmapfilter_p.h>
 #include <QFontMetricsF>
+#include <QImage>
 #include <QLabel>
 #include <QPainter>
 
@@ -26,11 +27,68 @@ qreal textBaseline(const QFont &font, const QRectF &rect)
     return rect.bottom() - metrics.descent();
 }
 
+/// The drop-shadow filter returns a flattened foreground-over-shadow image.
+/// Interpolate it with the original glyph image in premultiplied alpha space
+/// wherever the widget would cut the glow. Unlike fading the whole pixmap,
+/// this cannot make the actual lettering transparent at the top/bottom edge.
+void featherClippedShadows(QPixmap &composite, const QPixmap &foreground,
+                           const QRectF &clip, qreal pad, qreal glyphHeight)
+{
+    const auto ratio = composite.devicePixelRatio();
+    auto image = composite.toImage().convertToFormat(
+        QImage::Format_ARGB32_Premultiplied);
+    const auto original = foreground.toImage().convertToFormat(
+        QImage::Format_ARGB32_Premultiplied);
+    const auto region = clip.translated(pad, pad).intersected(
+        QRectF(0, 0, image.width() / ratio, image.height() / ratio));
+    const auto feather = std::max<qreal>(2, glyphHeight * 0.28);
+
+    auto blend = [](int original, int composite, int amount) {
+        return (original * (256 - amount) + composite * amount + 128) / 256;
+    };
+    for (int y = 0; y < image.height(); ++y)
+    {
+        auto *row = reinterpret_cast<QRgb *>(image.scanLine(y));
+        const auto *glyphRow =
+            reinterpret_cast<const QRgb *>(original.constScanLine(y));
+        const qreal ly = (y + 0.5) / ratio;
+        const qreal dy = std::min(ly - region.top(), region.bottom() - ly);
+        for (int x = 0; x < image.width(); ++x)
+        {
+            const qreal lx = (x + 0.5) / ratio;
+            const qreal distance = std::min(
+                dy, std::min(lx - region.left(), region.right() - lx));
+            const qreal t = std::clamp(
+                (distance - 0.5 / ratio) / feather, qreal(0), qreal(1));
+            if (t == 1)
+            {
+                continue;
+            }
+            if (t == 0)
+            {
+                row[x] = glyphRow[x];
+                continue;
+            }
+
+            const int amount = qRound(t * t * (3 - 2 * t) * 256);
+            const QRgb glyph = glyphRow[x];
+            const QRgb shadowed = row[x];
+            row[x] = qRgba(blend(qRed(glyph), qRed(shadowed), amount),
+                           blend(qGreen(glyph), qGreen(shadowed), amount),
+                           blend(qBlue(glyph), qBlue(shadowed), amount),
+                           blend(qAlpha(glyph), qAlpha(shadowed), amount));
+        }
+    }
+    composite = QPixmap::fromImage(std::move(image));
+    composite.setDevicePixelRatio(ratio);
+}
+
 }  // namespace
 
 QPixmap Paint::getPixmap(const QString &text, const QFont &font,
                          QColor userColor, QSizeF size, float scale, float dpr,
-                         bool centerVertically, qreal *margin) const
+                         bool centerVertically, qreal *margin,
+                         const QRectF *shadowClip) const
 {
     QSizeF drawSize = size;
     qreal pad = 0;
@@ -47,7 +105,8 @@ QPixmap Paint::getPixmap(const QString &text, const QFont &font,
         pad = std::ceil(pad);
         *margin = pad;
     }
-    if (centerVertically && getSettings()->displaySevenTVPaintShadows)
+    if (centerVertically && margin == nullptr &&
+        getSettings()->displaySevenTVPaintShadows)
     {
         float shadowExtent = 0;
         for (const auto &shadow : this->getDropShadows())
@@ -116,8 +175,10 @@ QPixmap Paint::getPixmap(const QString &text, const QFont &font,
     if (!this->getDropShadows().empty() &&
         getSettings()->displaySevenTVPaintShadows)
     {
+        const QPixmap foreground = shadowClip ? pixmap : QPixmap{};
         QPixmap outMap((canvasSize * dpr).toSize());
         outMap.setDevicePixelRatio(dpr);
+        bool shadowDrawn = false;
         for (const auto &shadow : this->getDropShadows())
         {
             if (!shadow.isValid())
@@ -136,6 +197,12 @@ QPixmap Paint::getPixmap(const QString &text, const QFont &font,
                 filter.draw(&outPainter, {0, 0}, pixmap);
             }
             outMap.swap(pixmap);
+            shadowDrawn = true;
+        }
+        if (shadowClip != nullptr && shadowDrawn)
+        {
+            featherClippedShadows(pixmap, foreground, *shadowClip, pad,
+                                  size.height());
         }
     }
 

@@ -18,6 +18,7 @@
 #include "controllers/spellcheck/SpellChecker.hpp"
 #include "messages/Link.hpp"
 #include "messages/Message.hpp"
+#include "providers/kick/KickAccount.hpp"
 #include "providers/kick/KickChannel.hpp"
 #include "providers/potat/PotatCommands.hpp"
 #include "providers/supibot/SupibotCommands.hpp"
@@ -52,6 +53,7 @@
 #include "widgets/helper/MessageView.hpp"
 #include "widgets/helper/ChannelPointsLabel.hpp"
 #include "widgets/helper/ResizingTextEdit.hpp"
+#include "widgets/helper/RoundAvatar.hpp"
 #include "widgets/helper/UploadPreview.hpp"
 #include "widgets/Notebook.hpp"
 #include "widgets/Scrollbar.hpp"
@@ -72,7 +74,7 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QLocale>
-#include <QPainterPath>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -94,6 +96,48 @@ using namespace Qt::Literals::StringLiterals;
 namespace chatterino {
 
 namespace {
+
+// The input toolbar has its own visual treatment: quiet glyphs, generous
+// click targets and a rounded surface only while the pointer is over them.
+class InputActionButton final : public SvgButton
+{
+public:
+    explicit InputActionButton(const QString &path)
+        : SvgButton({.dark = path, .light = path}, nullptr, QSize{3, 3})
+    {
+        this->setCursor(Qt::PointingHandCursor);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        if (this->enabled() && (this->mouseOver() || this->leftMouseButtonDown()))
+        {
+            QColor accent = this->theme->splits.input.text;
+            accent.setAlphaF(this->leftMouseButtonDown() ? 0.19F : 0.09F);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(accent);
+            const auto radius = 5.F * this->scale();
+            painter.drawRoundedRect(QRectF(this->rect()).adjusted(1, 1, -1, -1),
+                                    radius, radius);
+        }
+
+        // SVG tinting uses SourceIn, so render it in a transparent surface
+        // independently of the toolbar and the hover background.
+        const qreal dpr = this->devicePixelRatioF();
+        QPixmap icon(this->size() * dpr);
+        icon.setDevicePixelRatio(dpr);
+        icon.fill(Qt::transparent);
+        {
+            QPainter layer(&icon);
+            this->paintContent(layer);
+        }
+        painter.setOpacity(this->enabled() ? 1.0 : 0.45);
+        painter.drawPixmap(0, 0, icon);
+    }
+};
 
 constexpr int RAID_STATUS_PROGRESS_RANGE = 100'000;
 constexpr int RAID_STATUS_PROGRESS_TICK_MS = 1000;
@@ -153,17 +197,6 @@ void updateInputActionLabelMinimumWidth(QLabel *label)
                                                    : compactWidgetWidth(label));
 }
 
-QString formatChannelPointsValue(qint64 balance)
-{
-    if (balance < 0)
-    {
-        return QStringLiteral("...");
-    }
-
-    // the whole number, as Chatterino+ shows it ("13 450", not "13k")
-    return getSystemLocale().toString(balance);
-}
-
 QString formatChannelPointsToolTip(qint64 balance)
 {
     const auto action =
@@ -177,9 +210,7 @@ QString formatChannelPointsToolTip(qint64 balance)
 
     if (balance >= 0)
     {
-        const auto locale = getSystemLocale();
-        return uiText(QStringLiteral("Channel Points: %1\n%2"))
-            .arg(locale.toString(balance), action);
+        return action;
     }
 
     return uiText(QStringLiteral("Channel Points: loading...\n%1")).arg(action);
@@ -265,7 +296,7 @@ QString raidViewerText(int viewerCount)
 /// The raid target's avatar (round), once it has loaded; the URL comes with
 /// the raid or, without one, from Twitch by the target's ID.
 std::optional<QPixmap> raidAvatar(const TwitchChannel::RaidEvent &raid,
-                                  int size)
+                                  int size, qreal ratio)
 {
     static QHash<QString, QString> urls;  // target ID -> avatar URL
     static QHash<QString, ImagePtr> images;
@@ -300,17 +331,12 @@ std::optional<QPixmap> raidAvatar(const TwitchChannel::RaidEvent &raid,
     {
         return std::nullopt;
     }
-    const auto ratio = qApp->devicePixelRatio();
-    QPixmap round(QSize(size, size) * ratio);
+    auto round = roundAvatarPixmap(*pixmap, avatarPixelSize(size, ratio));
+    if (round.isNull())
+    {
+        return std::nullopt;
+    }
     round.setDevicePixelRatio(ratio);
-    round.fill(Qt::transparent);
-    QPainter painter(&round);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    QPainterPath circle;
-    circle.addEllipse(QRectF(0, 0, size, size));
-    painter.setClipPath(circle);
-    painter.drawPixmap(QRect(0, 0, size, size), *pixmap);
     return round;
 }
 
@@ -748,12 +774,12 @@ SplitInput::SplitInput(QWidget *parent, Split *_chatWidget,
 
 void SplitInput::handleImagePaste(const QMimeData *source)
 {
+    auto channel = this->split_->getChannel();
     if (!getSettings()->imageUploaderEnabled)
     {
         return;
     }
 
-    auto channel = this->split_->getChannel();
     auto *imageUploader = getApp()->getImageUploader();
 
     auto [images, imageProcessError] = imageUploader->getImages(source);
@@ -765,15 +791,27 @@ void SplitInput::handleImagePaste(const QMimeData *source)
         return;
     }
 
+    if (!imageProcessError.isEmpty())
+    {
+        channel->addSystemMessage(imageProcessError);
+    }
     if (getSettings()->askOnImageUpload.getValue())
     {
+        QStringList names;
+        for (auto pending = images; !pending.empty(); pending.pop())
+        {
+            const auto &image = pending.front();
+            names.append(image.filePath.isEmpty()
+                             ? uiText("Clipboard image (%1)").arg(image.format)
+                             : QFileInfo(image.filePath).fileName());
+        }
         QMessageBox msgBox(this->window());
-        msgBox.setWindowTitle(uiText("Leafyrino"));
+        msgBox.setWindowTitle(uiText("Chatterino Noctis"));
+        msgBox.setTextFormat(Qt::PlainText);
         msgBox.setText(uiText("Image upload"));
         msgBox.setInformativeText(
-            uiText("You are uploading an image to a 3rd party service not in "
-            "control of the Leafyrino team. You may not be able to "
-            "remove the image from the site. Are you okay with this?"));
+            uiText("Upload %1 image(s) to the external service?").arg(names.size()) +
+            QStringLiteral("\n") + names.join(u'\n'));
         auto *cancel = msgBox.addButton(QMessageBox::Cancel);
         auto *yes = msgBox.addButton(QMessageBox::Yes);
         auto *yesDontAskAgain =
@@ -998,7 +1036,13 @@ void SplitInput::initLayout()
     rewardPromptWidget->setAttribute(Qt::WA_StyledBackground, true);
     auto rewardPromptLayout =
         rewardPromptWidget.setLayoutType<QHBoxLayout>().withoutMargin();
-    rewardPromptLayout->setContentsMargins(6, 1, 6, 1);
+    rewardPromptLayout->setContentsMargins(10, 5, 8, 5);
+    rewardPromptLayout->setSpacing(8);
+    rewardPromptLayout.emplace<QLabel>().assign(
+        &this->ui_.channelPointRewardPromptIcon);
+    this->ui_.channelPointRewardPromptIcon->setObjectName("channelPointRewardPromptIcon");
+    this->ui_.channelPointRewardPromptIcon->setText(QStringLiteral("◆"));
+    this->ui_.channelPointRewardPromptIcon->setAlignment(Qt::AlignCenter);
     rewardPromptLayout.emplace<QLabel>().assign(
         &this->ui_.channelPointRewardPromptTitle);
     this->ui_.channelPointRewardPromptTitle->setObjectName(
@@ -1006,6 +1050,23 @@ void SplitInput::initLayout()
     this->ui_.channelPointRewardPromptTitle->setTextFormat(Qt::PlainText);
     this->ui_.channelPointRewardPromptTitle->setAlignment(Qt::AlignLeft |
                                                           Qt::AlignVCenter);
+    this->ui_.channelPointRewardPromptTitle->setWordWrap(true);
+    this->ui_.channelPointRewardPromptTitle->setMinimumWidth(0);
+    this->ui_.channelPointRewardPromptTitle->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Preferred);
+    rewardPromptLayout->setStretch(1, 1);
+    rewardPromptLayout.emplace<QPushButton>().assign(
+        &this->ui_.channelPointRewardPromptCancel);
+    auto *cancelReward = this->ui_.channelPointRewardPromptCancel;
+    cancelReward->setObjectName("channelPointRewardPromptCancel");
+    cancelReward->setText(QStringLiteral("×"));
+    cancelReward->setToolTip(uiText("Cancel reward (Esc)"));
+    cancelReward->setAccessibleName(uiText("Cancel reward (Esc)"));
+    cancelReward->setCursor(Qt::PointingHandCursor);
+    cancelReward->setFocusPolicy(Qt::NoFocus);
+    QObject::connect(cancelReward, &QPushButton::clicked, this, [this] {
+        this->hideChannelPointRewardPrompt();
+    });
     rewardPromptWidget->hide();
 #endif
 
@@ -1032,6 +1093,7 @@ void SplitInput::initLayout()
     textEdit->viewport()->installEventFilter(this);
 
     hboxLayout.emplace<LabelButton>("SEND").assign(&this->ui_.sendButton);
+    this->ui_.sendButton->setObjectName("chatSendButton");
     this->ui_.sendButton->hide();
 
     QObject::connect(this->ui_.sendButton, &Button::leftClicked, [this] {
@@ -1056,6 +1118,7 @@ void SplitInput::initLayout()
     box->setSpacing(0);
     {
         this->ui_.textEditLength = new QLabel();
+        this->ui_.textEditLength->setObjectName(QStringLiteral("chatMessageLength"));
         this->ui_.textEditLength->setAlignment(Qt::AlignRight);
         makeInputActionLabelCompressible(this->ui_.textEditLength);
         this->ui_.textEditLength->hide();
@@ -1075,30 +1138,15 @@ void SplitInput::initLayout()
         this->ui_.channelPointsLabel->installEventFilter(this);
         this->ui_.channelPointsLabel->hide();
 
-        this->ui_.predictionButton = new SvgButton(
-            {
-                .dark = ":/buttons/prediction-darkMode.svg",
-                .light = ":/buttons/prediction-lightMode.svg",
-            },
-            nullptr, QSize{3, 3});
+        this->ui_.predictionButton = new InputActionButton(":/buttons/noctis-prediction.svg");
         this->ui_.predictionButton->setToolTip(uiText("Create prediction"));
         this->ui_.predictionButton->hide();
 
-        this->ui_.pollButton = new SvgButton(
-            {
-                .dark = ":/buttons/poll-darkMode.svg",
-                .light = ":/buttons/poll-lightMode.svg",
-            },
-            nullptr, QSize{3, 3});
+        this->ui_.pollButton = new InputActionButton(":/buttons/noctis-poll.svg");
         this->ui_.pollButton->setToolTip(uiText("Open poll"));
         this->ui_.pollButton->hide();
 
-        this->ui_.badgeButton = new SvgButton(
-            {
-                .dark = ":/buttons/badge-darkMode.svg",
-                .light = ":/buttons/badge-lightMode.svg",
-            },
-            nullptr, QSize{3, 3});
+        this->ui_.badgeButton = new InputActionButton(":/buttons/noctis-badge.svg");
         this->ui_.badgeButton->setToolTip(uiText("Select badge"));
         this->ui_.badgeButton->hide();
 
@@ -1111,20 +1159,17 @@ void SplitInput::initLayout()
         this->ui_.outgoingTranslateButton->setToolTip(uiText("Outgoing translation"));
         this->ui_.outgoingTranslateButton->hide();
 
-        this->ui_.emoteButton = new SvgButton(
-            {
-                .dark = ":/buttons/emote.svg",
-                .light = ":/buttons/emoteDark.svg",
-            },
-            nullptr, QSize{3, 3});
+        this->ui_.emoteButton = new InputActionButton(":/buttons/noctis-emote.svg");
 
         box->addStretch(1);
-        box->addWidget(this->ui_.textEditLength, 0, Qt::AlignRight);
 
         auto *buttonsRow = new QHBoxLayout();
         this->ui_.buttonsRow = buttonsRow;
         buttonsRow->setContentsMargins(0, 0, 0, 0);
         buttonsRow->setSpacing(0);
+        // Keep the optional character count in the action row. Typing the
+        // first character must not add a new row above the controls.
+        buttonsRow->addWidget(this->ui_.textEditLength, 0, Qt::AlignBottom);
         buttonsRow->addWidget(this->ui_.sendWaitStatus, 0, Qt::AlignBottom);
         buttonsRow->addWidget(this->ui_.channelPointsLabel, 0, Qt::AlignBottom);
         buttonsRow->addWidget(this->ui_.predictionButton, 0, Qt::AlignBottom);
@@ -1246,10 +1291,7 @@ QSize SplitInput::minimumSizeHint() const
     const int emoteWidth = getSettings()->hideEmojiButton
                                ? 0
                                : compactWidgetWidth(this->ui_.emoteButton);
-    const int translateWidth =
-        getSettings()->showOutgoingTranslationButton
-            ? compactWidgetWidth(this->ui_.outgoingTranslateButton)
-            : 0;
+    const int translateWidth = 0;
     const int sendWidth =
         this->ui_.sendButton != nullptr && this->ui_.sendButton->isVisible()
             ? compactWidgetWidth(this->ui_.sendButton)
@@ -1305,6 +1347,13 @@ void SplitInput::relayoutParentWidgets()
 
 void SplitInput::themeChangedEvent()
 {
+    auto iconColor = this->theme->splits.input.text;
+    iconColor.setAlphaF(0.64F);
+    for (auto *button : {this->ui_.predictionButton, this->ui_.pollButton,
+                         this->ui_.badgeButton, this->ui_.emoteButton})
+    {
+        button->setColor(iconColor);
+    }
     {
         QPalette palette;
         palette.setColor(QPalette::WindowText, this->theme->splits.input.text);
@@ -1315,8 +1364,20 @@ void SplitInput::themeChangedEvent()
         auto channelPointsColor = this->theme->splits.input.text;
         channelPointsColor.setAlphaF(0.72F);
         pointsPalette.setColor(QPalette::WindowText, channelPointsColor);
-        this->ui_.channelPointsLabel->setPalette(pointsPalette);
         this->ui_.sendWaitStatus->setPalette(pointsPalette);
+        const auto base = this->theme->splits.input.background;
+        const auto accent = this->theme->accent;
+        const auto blend = [](QColor from, QColor to, qreal weight) {
+            return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * weight,
+                                    from.greenF() + (to.greenF() - from.greenF()) * weight,
+                                    from.blueF() + (to.blueF() - from.blueF()) * weight);
+        };
+        pointsPalette.setColor(QPalette::Window, blend(base, accent, .10));
+        pointsPalette.setColor(QPalette::Mid, blend(base, accent, .24));
+        pointsPalette.setColor(QPalette::Highlight, blend(base, accent, .17));
+        pointsPalette.setColor(QPalette::WindowText,
+                               blend(this->theme->splits.input.text, accent, .36));
+        this->ui_.channelPointsLabel->setPalette(pointsPalette);
     }
 
     {
@@ -1372,14 +1433,6 @@ void SplitInput::themeChangedEvent()
                 "QLabel#translationPreviewLabel { color: #6b3300; "
                 "background: transparent; }");
         }
-#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
-        this->ui_.channelPointRewardPromptWidget->setStyleSheet(
-            "QWidget#channelPointRewardPromptWidget { background: rgba(145, "
-            "70, 255, 0.14); border-top: 1px solid rgba(145, 70, 255, "
-            "0.45); }"
-            "QLabel#channelPointRewardPromptTitle { color: #4d237d; "
-            "background: transparent; }");
-#endif
     }
     else
     {
@@ -1413,15 +1466,11 @@ void SplitInput::themeChangedEvent()
                 "QLabel#translationPreviewLabel { color: #ffe7c2; "
                 "background: transparent; }");
         }
-#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
-        this->ui_.channelPointRewardPromptWidget->setStyleSheet(
-            "QWidget#channelPointRewardPromptWidget { background: rgba(91, "
-            "46, 153, 0.82); border-top: 1px solid #b982ff; }"
-            "QLabel#channelPointRewardPromptTitle { color: #f1eaff; "
-            "background: transparent; }");
-#endif
     }
 
+#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
+    this->updateRewardPromptStyle();
+#endif
     // update vbox
     this->applyOuterMargin();
     if (this->replyTarget_ != nullptr)
@@ -1437,7 +1486,7 @@ void SplitInput::themeChangedEvent()
 void SplitInput::updateEmoteButton()
 {
     auto scale = this->scale();
-    auto buttonSize = int(std::round(17 * scale));
+    auto buttonSize = int(std::round(22 * scale));
     auto labelBottomInset = int(std::round(1 * scale));
 
     this->ui_.emoteButton->setFixedSize(buttonSize, buttonSize);
@@ -1457,7 +1506,7 @@ void SplitInput::updateEmoteButton()
     if (this->ui_.textEditLength)
     {
         this->ui_.textEditLength->setContentsMargins(
-            0, 0, int(std::round(2 * scale)), 0);
+            0, 0, int(std::round(4 * scale)), labelBottomInset);
     }
 
     if (this->ui_.channelPointsLabel)
@@ -1540,8 +1589,7 @@ void SplitInput::updateActionRowCompactness()
     };
 
     const bool showEmoteButton = !getSettings()->hideEmojiButton;
-    const bool showTranslateButton =
-        getSettings()->showOutgoingTranslationButton;
+    const bool showTranslateButton = false;
     if (hasRealWidth && this->ui_.sendButton != nullptr &&
         this->ui_.sendButton->isVisible())
     {
@@ -1570,6 +1618,8 @@ void SplitInput::updateActionRowCompactness()
 
     const bool showChannelPoints = reserveEvenIfTight(
         this->ui_.channelPointsLabel, this->channelPointsLabelWanted_);
+    const bool showTextLength = tryFit(this->ui_.textEditLength,
+        !this->ui_.textEditLength->text().isEmpty());
     const bool showPredictionButton =
         tryFit(this->ui_.predictionButton, this->predictionButtonWanted_);
     const bool showPollButton =
@@ -1578,7 +1628,6 @@ void SplitInput::updateActionRowCompactness()
         tryFit(this->ui_.badgeButton, this->badgeButtonWanted_);
     const bool showSendWaitStatus =
         tryFit(this->ui_.sendWaitStatus, this->sendWaitStatusWanted_);
-    const bool showTextLength = !this->ui_.textEditLength->text().isEmpty();
 
     bool changed = false;
     changed |= setExplicitVisible(this->ui_.emoteButton, showEmoteButton);
@@ -1640,6 +1689,14 @@ void SplitInput::openEmotePopup()
 
 QString SplitInput::handleSendMessage(const std::vector<QString> &arguments)
 {
+#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
+    // Reward activation has its own one-shot submit action. Never let its
+    // input fall through to the ordinary chat/reply/slow-mode send paths.
+    if (this->submitChannelPointRewardPrompt())
+    {
+        return "";
+    }
+#endif
     ChannelPtr c;
     if (this->replyTarget_)
     {
@@ -1654,13 +1711,15 @@ QString SplitInput::handleSendMessage(const std::vector<QString> &arguments)
         return "";
     }
 
-#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
-    if (this->submitChannelPointRewardPrompt())
+    QString message = this->currentOutgoingMessageBody();
+    if (c->getType() == Channel::Type::TwitchWhispers &&
+        !this->split_->whisperPeer().isEmpty() &&
+        !message.trimmed().isEmpty() && !message.startsWith('/') &&
+        (!message.startsWith('.') ||
+         getApp()->getCommands()->commandTriggerLen(message) == 0))
     {
-        return "";
+        message = "/w " + this->split_->whisperPeer() + " " + message;
     }
-#endif
-
     auto openPollDialogCommand = [this, &arguments,
                                   &c](const QString &message) {
         const auto trimmed = message.trimmed();
@@ -1688,7 +1747,6 @@ QString SplitInput::handleSendMessage(const std::vector<QString> &arguments)
         return true;
     };
 
-    QString message = this->currentOutgoingMessageBody();
     if (openPollDialogCommand(message))
     {
         return "";
@@ -1834,8 +1892,22 @@ bool SplitInput::maybeSendTranslatedMessage(
         this->ui_.translationPreviewWidget->show();
     }
 
+    auto *accounts = getApp()->getAccounts();
+    const auto senderId = [accounts, kick = channel->isKickChannel()] {
+        if (kick)
+        {
+            return QString::number(accounts->kick.current()->userID());
+        }
+        return accounts->twitch.getCurrent()->getUserId();
+    };
+    const auto originalSender = senderId();
     auto sendTranslated = [this, channel, sourceMessage, replyMessageID,
-                           arguments](QString translatedText) {
+                           arguments, senderId, originalSender](QString translatedText) {
+        if (senderId() != originalSender)
+        {
+            channel->addSystemMessage(uiText("The account changed before the translation was ready. Send the message again."));
+            return;
+        }
         translatedText = translatedText.trimmed();
         translatedText.replace('\n', ' ');
         if (translatedText.isEmpty())
@@ -2401,7 +2473,7 @@ bool SplitInput::eventFilter(QObject *obj, QEvent *event)
                 tc->refreshChannelPointsIfStale(true);
             }
 
-            this->ui_.channelPointsLabel->setText("...");
+            this->ui_.channelPointsLabel->setStatusText("...");
             this->ui_.channelPointsLabel->setToolTip(
                 uiText("Channel Points: refreshing..."));
             this->updateActionRowCompactness();
@@ -2468,6 +2540,16 @@ void SplitInput::installTextEditEvents()
     // the textEdit object, so it will always be deleted before SplitInput
     std::ignore =
         this->ui_.textEdit->keyPressed.connect([this](QKeyEvent *event) {
+#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
+            if (this->channelPointRewardPromptSubmit_ &&
+                event->key() == Qt::Key_Escape &&
+                event->modifiers() == Qt::NoModifier)
+            {
+                this->hideChannelPointRewardPrompt();
+                event->accept();
+                return;
+            }
+#endif
             if (this->handleCommandCompletionKey(event))
             {
                 event->accept();
@@ -2501,16 +2583,6 @@ void SplitInput::installTextEditEvents()
                     }
                 }
             }
-
-#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
-            if (this->channelPointRewardPromptSubmit_ &&
-                event->key() == Qt::Key_Escape)
-            {
-                this->hideChannelPointRewardPrompt();
-                event->accept();
-                return;
-            }
-#endif
 
             // One of the last remaining of it's kind, the copy shortcut.
             // For some bizarre reason Qt doesn't want this key be rebound.
@@ -3053,10 +3125,12 @@ void SplitInput::updateRaidStatus()
     if (auto *avatar = this->ui_.raidStatusWidget->findChild<QLabel *>(
             "raidStatusAvatar"))
     {
-        const auto key = raid->targetId + raid->targetProfileImage;
+        const auto ratio = avatar->devicePixelRatioF();
+        const auto key = raid->targetId + raid->targetProfileImage +
+                         u'@' + QString::number(ratio);
         if (avatar->property("raidAvatar").toString() != key)
         {
-            if (auto pixmap = raidAvatar(*raid, 20))
+            if (auto pixmap = raidAvatar(*raid, avatar->width(), ratio))
             {
                 avatar->setPixmap(*pixmap);
                 avatar->setProperty("raidAvatar", key);
@@ -4218,8 +4292,8 @@ void SplitInput::editTextChanged()
         this->updateNukePreview(text);
 
         text = text.trimmed();
-        text = app->getCommands()->execCommand(text, this->split_->getChannel(),
-                                               true);
+        const auto channel = this->split_->getChannel();
+        text = app->getCommands()->execCommand(text, channel, true);
     }
 
     this->updateOutgoingTranslationPreview();
@@ -4410,6 +4484,12 @@ void SplitInput::giveFocus(Qt::FocusReason reason)
 
 void SplitInput::setReply(MessagePtr target, std::weak_ptr<Channel> channel)
 {
+#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
+    if (target && this->channelPointRewardPromptSubmit_)
+    {
+        this->hideChannelPointRewardPrompt();
+    }
+#endif
     auto oldParent = this->replyTarget_;
     if (this->enableInlineReplying_ && oldParent)
     {
@@ -4572,12 +4652,19 @@ void SplitInput::updateTextEditPalette()
 
     // Placeholder text color (red / green while the own user is restricted)
     const bool light = this->theme->isLightTheme();
+    auto normalPlaceholder = this->theme->messages.textColors.chatPlaceholder;
+#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
+    if (this->channelPointRewardPromptSubmit_)
+    {
+        normalPlaceholder = light ? QColor("#695580") : QColor("#aba1bf");
+    }
+#endif
     p.setColor(QPalette::PlaceholderText,
                this->ownRestrictionTint_ == 1
                    ? (light ? QColor(0xb42323) : QColor(0xff9d9d))
                : this->ownRestrictionTint_ == 2
                    ? (light ? QColor(0x1f7a35) : QColor(0x93e3a6))
-                   : this->theme->messages.textColors.chatPlaceholder);
+                   : normalPlaceholder);
 
     // Text color
     p.setColor(QPalette::Text, this->theme->messages.textColors.regular);
@@ -4662,27 +4749,113 @@ void SplitInput::checkSpellingChanged()
 }
 
 #if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
+void SplitInput::updateRewardPromptStyle()
+{
+    const auto accent = this->rewardPromptColor_.isValid() ? this->rewardPromptColor_ : this->theme->accent;
+    const auto base = this->theme->splits.input.background;
+    const auto tint = [&](qreal weight) {
+        return QColor::fromRgbF(base.redF() + (accent.redF() - base.redF()) * weight,
+                                base.greenF() + (accent.greenF() - base.greenF()) * weight,
+                                base.blueF() + (accent.blueF() - base.blueF()) * weight).name();
+    };
+    this->ui_.channelPointRewardPromptWidget->setStyleSheet(QStringLiteral(
+        "QWidget#channelPointRewardPromptWidget { background: %1; border: 1px solid %2; border-radius: 7px; }"
+        "QLabel, QPushButton { color: %3; background: transparent; border: 0; }"
+        "QLabel#channelPointRewardPromptIcon { color: %4; }"
+        "QPushButton:hover { background: %2; border-radius: 4px; }")
+        .arg(tint(.12), tint(.32), this->theme->window.text.name(), tint(.70)));
+}
+
+bool SplitInput::acceptsRewardPromptFor(const TwitchChannel *channel) const
+{
+    return channel && this->split_->getSelectedChannel().get() == channel;
+}
+
 void SplitInput::showChannelPointRewardPrompt(
-    const QString &title, const QString &placeholder, bool requireText,
+    const QString &title, const QColor &color, const QString &placeholder, bool requireText,
     std::function<void(const QString &)> submitCallback)
 {
+    if (this->channelPointRewardPromptSubmit_)
+    {
+        this->hideChannelPointRewardPrompt();
+    }
+    this->stopHistorySearchIfNecessary();
+    this->rewardPromptChannel_ = this->split_->getSelectedChannel();
+    this->rewardPromptAccount_ =
+        getApp()->getAccounts()->twitch.getCurrent()->getUserId();
+    this->rewardPromptDraft_ = this->ui_.textEdit->toPlainText();
+    this->rewardPromptDraftReply_ = this->replyTarget_;
+    this->rewardPromptDraftReplyChannel_ = this->replyChannel_;
+    this->setReply(nullptr, {});
+    this->clearInput();
+    this->ui_.replyWrapper->hide();
+    this->rewardPromptPlaceholder_ = requireText
+        ? uiText("Enter a message · Esc to cancel")
+        : uiText("Enter to redeem · Esc to cancel");
     this->channelPointRewardPromptSubmit_ = std::move(submitCallback);
     this->channelPointRewardPromptRequiresText_ = requireText;
-    this->ui_.channelPointRewardPromptTitle->setText(title);
+    this->ui_.channelPointRewardPromptTitle->setText(
+        uiText("Reward: %1").arg(title));
+    this->rewardPromptColor_ = color;
+    this->updateRewardPromptStyle();
     this->ui_.channelPointRewardPromptTitle->setToolTip(placeholder);
     this->ui_.channelPointRewardPromptWidget->show();
+    this->applyRewardPromptPlaceholder();
     this->ui_.textEdit->setFocus(Qt::OtherFocusReason);
     this->relayoutParentWidgets();
 }
 
 void SplitInput::hideChannelPointRewardPrompt()
 {
+    if (this->ui_.channelPointRewardPromptWidget->isHidden())
+        return;
+    const bool sameContext = this->rewardPromptContextMatches();
+    auto draft = std::exchange(this->rewardPromptDraft_, QString{});
+    auto draftReply = std::exchange(this->rewardPromptDraftReply_, MessagePtr{});
+    auto draftReplyChannel = std::exchange(this->rewardPromptDraftReplyChannel_,
+                                             std::weak_ptr<Channel>{});
     this->channelPointRewardPromptSubmit_ = nullptr;
     this->channelPointRewardPromptRequiresText_ = false;
+    this->rewardPromptChannel_.reset();
+    this->rewardPromptAccount_.clear();
+    this->rewardPromptPlaceholder_.clear();
     this->ui_.channelPointRewardPromptTitle->clear();
     this->ui_.channelPointRewardPromptTitle->setToolTip({});
     this->ui_.channelPointRewardPromptWidget->hide();
+    // A cancelled reward's text must not become an ordinary chat message.
+    this->clearInput();
+    if (sameContext)
+    {
+        if (draftReply)
+            this->setReply(std::move(draftReply), std::move(draftReplyChannel));
+        this->ui_.textEdit->setPlainText(draft);
+        this->ui_.textEdit->moveCursor(QTextCursor::EndOfBlock);
+    }
+    this->split_->updateInputPlaceholder();
+    this->updateTextEditPalette();
     this->relayoutParentWidgets();
+}
+
+bool SplitInput::rewardPromptContextMatches() const
+{
+    const auto channel = this->rewardPromptChannel_.lock();
+    return channel && channel == this->split_->getSelectedChannel() &&
+           this->rewardPromptAccount_ ==
+               getApp()->getAccounts()->twitch.getCurrent()->getUserId();
+}
+
+bool SplitInput::applyRewardPromptPlaceholder()
+{
+    if (!this->channelPointRewardPromptSubmit_)
+        return false;
+    if (!this->rewardPromptContextMatches())
+    {
+        this->hideChannelPointRewardPrompt();
+        return false;
+    }
+    this->ui_.textEdit->setPlaceholderText(this->rewardPromptPlaceholder_);
+    this->updateTextEditPalette();
+    return true;
 }
 
 bool SplitInput::submitChannelPointRewardPrompt()
@@ -4690,6 +4863,11 @@ bool SplitInput::submitChannelPointRewardPrompt()
     if (!this->channelPointRewardPromptSubmit_)
     {
         return false;
+    }
+    if (!this->rewardPromptContextMatches())
+    {
+        this->hideChannelPointRewardPrompt();
+        return true;
     }
 
     auto text = this->ui_.textEdit->toPlainText();
@@ -4701,7 +4879,6 @@ bool SplitInput::submitChannelPointRewardPrompt()
 
     auto callback = std::move(this->channelPointRewardPromptSubmit_);
     this->hideChannelPointRewardPrompt();
-    this->clearInput();
     if (callback)
     {
         callback(text);
@@ -4715,6 +4892,7 @@ void SplitInput::bindChannelPoints(TwitchChannel *channel)
     this->channelPointSignal_ = pajlada::Signals::ScopedConnection();
     this->modStateSignal_ = pajlada::Signals::ScopedConnection();
     this->pollStateSignal_ = pajlada::Signals::ScopedConnection();
+    this->predictionStateSignal_ = pajlada::Signals::ScopedConnection();
     this->focusedPointsConnection_ = pajlada::Signals::ScopedConnection();
     this->focusLostPointsConnection_ = pajlada::Signals::ScopedConnection();
 
@@ -4726,9 +4904,13 @@ void SplitInput::bindChannelPoints(TwitchChannel *channel)
             return poll->has_value() &&
                    (*poll)->status.compare("ACTIVE", Qt::CaseInsensitive) == 0;
         }();
+        const bool hasPrediction = channel != nullptr &&
+                                   channel->accessPrediction()->has_value();
         this->predictionButtonWanted_ = getSettings()->enablePredictions &&
                                         getSettings()->showPredictionButton &&
-                                        canModerate;
+                                        (canModerate || hasPrediction);
+        this->ui_.predictionButton->setToolTip(
+            hasPrediction ? uiText("Open prediction") : uiText("Create prediction"));
         this->pollButtonWanted_ = getSettings()->enablePolls &&
                                   getSettings()->showPollButton &&
                                   (canModerate || hasActivePoll);
@@ -4753,6 +4935,7 @@ void SplitInput::bindChannelPoints(TwitchChannel *channel)
     this->modStateSignal_ =
         channel->userStateChanged.connect(updateActionButtons);
     this->pollStateSignal_ = channel->pollChanged.connect(updateActionButtons);
+    this->predictionStateSignal_ = channel->predictionChanged.connect(updateActionButtons);
 
     if (!getSettings()->enableChannelPointsDisplay)
     {
@@ -4777,7 +4960,7 @@ void SplitInput::bindChannelPoints(TwitchChannel *channel)
     this->channelPointsLabelWanted_ = true;
     if (this->ui_.channelPointsLabel->text().isEmpty())
     {
-        this->ui_.channelPointsLabel->setText("...");
+        this->ui_.channelPointsLabel->setStatusText("...");
     }
     this->updateChannelPointsDisplay(channel);
     auto connectPoints = [this, channel]() {
@@ -4809,7 +4992,8 @@ void SplitInput::bindChannelPoints(TwitchChannel *channel)
 
 void SplitInput::clearChannelPointsDisplay()
 {
-    this->ui_.channelPointsLabel->clear();
+    this->ui_.channelPointsLabel->setStatusText({});
+    this->ui_.channelPointsLabel->setIconUrl({});
     this->ui_.channelPointsLabel->setToolTip(channelPointsIdleToolTip());
     this->channelPointsLabelWanted_ = false;
     this->channelPointsManualRefreshLoading_ = false;
@@ -4824,16 +5008,27 @@ void SplitInput::updateChannelPointsDisplay(TwitchChannel *channel)
         return;
     }
 
+    auto *label = this->ui_.channelPointsLabel;
+    const auto identity = channel->getName() + u':' +
+                          getApp()->getAccounts()->twitch.getCurrent()->getUserId();
+    label->setIconUrl(channel->channelPointsIconUrl());
+    const auto previousText = label->text();
     if (channel->isChannelPointsFetchInFlight())
     {
-        if (this->channelPointsManualRefreshLoading_ ||
-            this->ui_.channelPointsLabel->text().isEmpty())
+        if (this->channelPointsManualRefreshLoading_)
         {
-            this->ui_.channelPointsLabel->setText("...");
+            label->setStatusText("...");
+        }
+        else
+        {
+            label->setBalance(channel->channelPointBalance(), identity);
+        }
+        if (previousText != label->text())
+        {
             this->updateActionRowCompactness();
         }
 
-        const auto tooltip = QStringLiteral("Channel Points: refreshing...");
+        const auto tooltip = uiText("Channel Points: refreshing...");
         if (this->ui_.channelPointsLabel->toolTip() != tooltip)
         {
             this->ui_.channelPointsLabel->setToolTip(tooltip);
@@ -4845,9 +5040,6 @@ void SplitInput::updateChannelPointsDisplay(TwitchChannel *channel)
 
     const auto balance = channel->channelPointBalance();
     const auto &error = channel->lastChannelPointsError();
-    const auto text = (balance < 0 && !error.isEmpty())
-                          ? QStringLiteral("--")
-                          : formatChannelPointsValue(balance);
     auto tooltip = (balance < 0 && !error.isEmpty())
                        ? uiText(QStringLiteral("Channel Points unavailable"))
                        : formatChannelPointsToolTip(balance);
@@ -4856,10 +5048,16 @@ void SplitInput::updateChannelPointsDisplay(TwitchChannel *channel)
         tooltip += "\nError: " + error;
     }
 
-    this->ui_.channelPointsLabel->setIconUrl(channel->channelPointsIconUrl());
-    if (this->ui_.channelPointsLabel->text() != text)
+    if (balance < 0 && !error.isEmpty())
     {
-        this->ui_.channelPointsLabel->setText(text);
+        label->setStatusText("--");
+    }
+    else
+    {
+        label->setBalance(balance, identity);
+    }
+    if (previousText != label->text())
+    {
         this->updateActionRowCompactness();
     }
 
@@ -4881,10 +5079,23 @@ void SplitInput::updateFonts()
     channelPointsFont.setFeature(QFont::Tag("tnum"), 1);
 #endif
     this->ui_.textEditLength->setFont(channelPointsFont);
-    this->ui_.channelPointsLabel->setFont(channelPointsFont);
+    auto pointsFont = app->getFonts()->getFont(FontStyle::ChatMediumBold, this->scale() * .90F);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+    pointsFont.setFeature(QFont::Tag("tnum"), 1);
+#endif
+    this->ui_.channelPointsLabel->setFont(pointsFont);
     this->ui_.sendWaitStatus->setFont(channelPointsFont);
 #if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
-    this->ui_.channelPointRewardPromptTitle->setFont(channelPointsFont);
+    this->ui_.channelPointRewardPromptTitle->setFont(
+        app->getFonts()->getFont(FontStyle::ChatMedium, this->scale()));
+    this->ui_.channelPointRewardPromptIcon->setFont(channelPointsFont);
+    this->ui_.channelPointRewardPromptCancel->setFont(
+        app->getFonts()->getFont(FontStyle::ChatMedium, this->scale()));
+    this->ui_.channelPointRewardPromptCancel->setFixedSize(
+        int(23 * this->scale()), int(23 * this->scale()));
+    this->ui_.channelPointRewardPromptWidget->layout()->setContentsMargins(
+        int(10 * this->scale()), int(4 * this->scale()),
+        int(8 * this->scale()), int(4 * this->scale()));
 #endif
 
     this->ui_.replyLabel->setFont(

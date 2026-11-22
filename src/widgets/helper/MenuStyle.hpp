@@ -8,9 +8,10 @@ class QMenu;
 
 namespace chatterino {
 
-/// The look of the split menu: rounded, roomy items with the accent color
-/// under the pointer, in the current theme's colors. Submenus made with
-/// addMenu() get it too.
+/// Apply the Noctis surface to menus created by the client or by Qt itself.
+void installMenuStyle();
+
+/// Prepare a menu immediately if its geometry is needed before Qt polishes it.
 void styleMenu(QMenu *menu);
 
 }  // namespace chatterino

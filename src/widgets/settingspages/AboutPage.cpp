@@ -20,6 +20,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
+#include <QPointer>
 #include <QStringBuilder>
 #include <QTextEdit>
 #include <QTextStream>
@@ -322,7 +323,7 @@ void AboutPage::addLicense(QFormLayout *form, const QString &name,
                     BaseWindow::BoundsCheckOnShow,
                 },
                 parent);
-            window->setWindowTitle(uiText("Leafyrino - License for ") + name);
+            window->setWindowTitle(uiText("Chatterino Noctis - License for ") + name);
             window->setAttribute(Qt::WA_DeleteOnClose);
             auto *layout = new QVBoxLayout();
             auto *edit = new QTextEdit;

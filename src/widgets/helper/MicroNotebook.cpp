@@ -136,4 +136,14 @@ void MicroNotebook::setShowHeader(bool showHeader)
     this->horizontalSeparator->setVisible(showHeader);
 }
 
+int MicroNotebook::headerHeightHint() const
+{
+    if (this->topWidget->isHidden())
+    {
+        return 0;
+    }
+    return this->topWidget->sizeHint().height() +
+           this->horizontalSeparator->sizeHint().height();
+}
+
 }  // namespace chatterino

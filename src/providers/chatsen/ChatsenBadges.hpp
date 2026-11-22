@@ -20,7 +20,7 @@ using EmotePtr = std::shared_ptr<const Emote>;
 class ChatsenBadges final
 {
 public:
-    ChatsenBadges();
+    void initialize();
 
     // Retorna o badge de maior prioridade do usuário, se houver.
     // Prioridade: developer > early_supporter > early_bird > patreon tiers

@@ -206,8 +206,7 @@ int main(int argc, char **argv)
     QCoreApplication::setApplicationVersion(CHATTERINO_VERSION);
     QCoreApplication::setOrganizationName(isolation::ORGANIZATION_NAME);
     QCoreApplication::setOrganizationDomain(isolation::ORGANIZATION_DOMAIN);
-    // Must match the installed .desktop / Flatpak app-id so the shell
-    // associates this window with Leafyrino's icon (not Chatterino's).
+    // Keep the installed desktop/Flatpak ID for existing pins and sandbox data.
     QGuiApplication::setDesktopFileName("com.leafyzito.leafyrino");
 #ifdef Q_OS_WIN
     SetCurrentProcessExplicitAppUserModelID(
@@ -237,10 +236,8 @@ int main(int argc, char **argv)
         auto errorMessage =
             QString::fromUtf8(error.what()) +
             QStringLiteral(
-                "\n\nChatterino Noctis keeps its profile only next to Leafyrino.exe "
-                "(or in --portable-dir) and never falls back to another "
-                "location, so it did not start. Move it to a folder you can "
-                "write to.");
+                "\n\nChoose a writable profile directory with --portable-dir "
+                "or move Chatterino Noctis to a folder you can write to.");
         std::cerr << errorMessage.toLocal8Bit().constData() << '\n';
         std::cerr.flush();
         QMessageBox box;
@@ -289,20 +286,20 @@ int main(int argc, char **argv)
         }
 
         qCInfo(chatterinoApp).noquote()
-            << "Leafyrino Qt SSL library build version:"
+            << "Chatterino Noctis Qt SSL library build version:"
             << QSslSocket::sslLibraryBuildVersionString();
         qCInfo(chatterinoApp).noquote()
-            << "Leafyrino Qt SSL library version:"
+            << "Chatterino Noctis Qt SSL library version:"
             << QSslSocket::sslLibraryVersionString();
 #if QT_VERSION >= QT_VERSION_CHECK(6, 1, 0)
         qCInfo(chatterinoApp).noquote()
-            << "Leafyrino Qt SSL active backend:" << QSslSocket::activeBackend()
+            << "Chatterino Noctis Qt SSL active backend:" << QSslSocket::activeBackend()
             << "of" << QSslSocket::availableBackends().join(", ");
 #    if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-        qCInfo(chatterinoApp) << "Leafyrino Qt SSL active backend features:"
+        qCInfo(chatterinoApp) << "Chatterino Noctis Qt SSL active backend features:"
                               << QSslSocket::supportedFeatures();
 #    endif
-        qCInfo(chatterinoApp) << "Leafyrino Qt SSL active backend protocols:"
+        qCInfo(chatterinoApp) << "Chatterino Noctis Qt SSL active backend protocols:"
                               << QSslSocket::supportedProtocols();
 #endif
 
@@ -310,7 +307,8 @@ int main(int argc, char **argv)
 #ifndef Q_OS_MACOS
         if (!args.remoteRestart && !args.isFramelessEmbed &&
             settings.trayHideOnClose.getValue() &&
-            activateExistingGuiInstance(*paths))
+            activateExistingGuiInstance(
+                *paths, args.activateChannel ? args.activateChannel->name : QString{}))
         {
             return 0;
         }

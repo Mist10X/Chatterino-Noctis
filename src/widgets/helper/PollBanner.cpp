@@ -2,10 +2,12 @@
 #include "widgets/helper/PollBanner.hpp"
 
 #include "Application.hpp"
+#include "singletons/Fonts.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "widgets/buttons/SvgButton.hpp"
 #include "widgets/dialogs/PollDialog.hpp"
+#include "widgets/helper/BannerText.hpp"
 #include "widgets/splits/Split.hpp"
 
 #include <QDateTime>
@@ -26,9 +28,6 @@ namespace chatterino {
 
 namespace {
 constexpr int BASE_ICON_SIZE = 14;
-constexpr int BASE_HEADER_FONT_SIZE = 11;
-constexpr int BASE_TITLE_FONT_SIZE = 15;
-constexpr int BASE_SUMMARY_FONT_SIZE = 12;
 constexpr int BASE_BAR_HEIGHT = 3;
 constexpr int BASE_TOP_MARGIN = 4;
 constexpr int BASE_BOTTOM_MARGIN = 7;
@@ -270,6 +269,8 @@ PollBanner::PollBanner(Split *split, QWidget *parent)
     this->contentLayout_->setSpacing(2);
 
     this->titleLabel_ = new QLabel(this);
+    this->titleLabel_->setObjectName("PollTitle");
+    this->titleLabel_->setTextFormat(Qt::PlainText);
     this->titleLabel_->setWordWrap(false);
     this->titleLabel_->setSizePolicy(QSizePolicy::Ignored,
                                      QSizePolicy::Preferred);
@@ -313,6 +314,13 @@ PollBanner::PollBanner(Split *split, QWidget *parent)
             this->update();
         },
         this->managedConnections_);
+
+    this->signalHolder_.managedConnect(getApp()->getFonts()->fontChanged, [this] {
+        if (this->isVisible())
+        {
+            this->scaleChangedEvent(this->scale());
+        }
+    });
 
     getSettings()->pollBannerContentScale.connect(
         [this](const float &, auto) {
@@ -469,12 +477,6 @@ void PollBanner::scaleChangedEvent(float scale)
     BaseWidget::scaleChangedEvent(scale);
 
     const int iconSize = scaledInt(BASE_ICON_SIZE * scale);
-    this->headerFontSize_ = scaledInt(BASE_HEADER_FONT_SIZE * scale);
-    const float contentScale = pollBannerContentScale();
-    this->titleFontSize_ =
-        scaledInt(BASE_TITLE_FONT_SIZE * scale * contentScale);
-    this->summaryFontSize_ =
-        scaledInt(BASE_SUMMARY_FONT_SIZE * scale * contentScale);
 
     this->icon_->setFixedSize(iconSize, iconSize);
     this->closeButton_->setFixedSize(iconSize, iconSize);
@@ -666,9 +668,7 @@ void PollBanner::updateTimer()
         if (remainingSeconds <= 0)
         {
             this->timerLabel_->setText(uiText("ENDED"));
-            this->timerLabel_->setStyleSheet(
-                QString("font-size: %1px; color: #9ca3af; font-weight: 700;")
-                    .arg(this->headerFontSize_));
+            setBannerTextColor(this->timerLabel_, this->theme->messages.textColors.system);
             this->timerLabel_->show();
             this->updateTimer_->stop();
             this->updateLayout();
@@ -677,17 +677,13 @@ void PollBanner::updateTimer()
 
         this->timerLabel_->setText(
             uiText(QString("%1 left")).arg(formatRemainingPollTime(remainingSeconds)));
-        this->timerLabel_->setStyleSheet(
-            QString("font-size: %1px; color: #a855f7; font-weight: 700;")
-                .arg(this->headerFontSize_));
+        setBannerTextColor(this->timerLabel_, this->theme->accent);
         this->timerLabel_->show();
         return;
     }
 
     this->timerLabel_->setText(uiText("ENDED"));
-    this->timerLabel_->setStyleSheet(
-        QString("font-size: %1px; color: #9ca3af; font-weight: 700;")
-            .arg(this->headerFontSize_));
+    setBannerTextColor(this->timerLabel_, this->theme->messages.textColors.system);
     this->timerLabel_->show();
 }
 
@@ -746,7 +742,7 @@ void PollBanner::updateLayout()
     }
     else
     {
-        metadata = QStringLiteral("Poll");
+        metadata = uiText(QStringLiteral("Poll"));
     }
     const auto age = formatPollAge(this->poll_->createdAt);
     if (!age.isEmpty())
@@ -781,15 +777,15 @@ void PollBanner::updateLayout()
         outcomePercent(leaderIt->totalVotes, this->poll_->totalVotes,
                        static_cast<int>(this->poll_->choices.size()));
     const auto tone = pollToneForChoice(*this->poll_, leaderIndex, votingEnded);
-    auto dimTextColor = this->theme->splits.header.text;
-    dimTextColor.setAlphaF(0.55F);
+    const auto dimTextColor = this->theme->messages.textColors.system;
 
     if (this->poll_->totalVotes <= 0)
     {
         this->summaryLabel_->setText(
             uiText(QString("<span style=\"color:%1;\">%2</span>"))
                 .arg(dimTextColor.name(QColor::HexArgb),
-                     votingEnded ? "Voting ended: no votes" : "No votes yet"));
+                     votingEnded ? uiText(QStringLiteral("Voting ended: no votes"))
+                                 : uiText(QStringLiteral("No votes yet"))));
         this->distributionBar_->show();
         this->update();
         return;
@@ -810,11 +806,12 @@ void PollBanner::updateLayout()
     }
 
     const bool tiedEndedPoll = votingEnded && leadingChoices > 1;
-    QString resultLabel = votingEnded ? "Winner:" : "Leading:";
+    QString resultLabel = votingEnded ? uiText(QStringLiteral("Winner:"))
+                                      : uiText(QStringLiteral("Leading:"));
     QString resultTitle = leaderIt->title;
     if (tiedEndedPoll)
     {
-        resultLabel = "Tie:";
+        resultLabel = uiText(QStringLiteral("Tie:"));
         resultTitle = tiedTitles.join(" / ");
         if (leadingChoices > tiedTitles.size())
         {
@@ -837,21 +834,18 @@ void PollBanner::updateLayout()
 
 void PollBanner::updateLabelStyles()
 {
-    const QColor textColor = this->theme->splits.header.text;
-    const auto dimColor = QString("rgba(%1, %2, %3, 0.55)")
-                              .arg(textColor.red())
-                              .arg(textColor.green())
-                              .arg(textColor.blue());
-
-    this->metadataLabel_->setStyleSheet(QString("font-size: %1px; color: %2;")
-                                            .arg(this->headerFontSize_)
-                                            .arg(dimColor));
-    this->titleLabel_->setStyleSheet(
-        QString("font-size: %1px; font-weight: bold; color: %2;")
-            .arg(this->titleFontSize_)
-            .arg(textColor.name()));
-    this->summaryLabel_->setStyleSheet(
-        QString("font-size: %1px;").arg(this->summaryFontSize_));
+    auto *fonts = getApp()->getFonts();
+    const auto scale = this->scale();
+    const auto contentScale = scale * pollBannerContentScale();
+    const auto caption = fonts->getFont(FontStyle::ChatMediumSmall, scale);
+    auto timerFont = caption;
+    timerFont.setWeight(QFont::DemiBold);
+    this->metadataLabel_->setFont(caption);
+    this->timerLabel_->setFont(timerFont);
+    this->titleLabel_->setFont(fonts->getFont(FontStyle::ChatMediumBold, contentScale));
+    this->summaryLabel_->setFont(fonts->getFont(FontStyle::ChatMedium, contentScale));
+    setBannerTextColor(this->metadataLabel_, this->theme->messages.textColors.system);
+    setBannerTextColor(this->titleLabel_, this->theme->messages.textColors.regular);
 }
 
 void PollBanner::openPollDialog()

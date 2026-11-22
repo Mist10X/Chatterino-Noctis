@@ -6,6 +6,7 @@
 
 #include "Test.hpp"
 
+#include <chatterino-test/TestConfig.hpp>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QEventLoop>

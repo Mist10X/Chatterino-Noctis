@@ -13,6 +13,7 @@
 #include "providers/ffz/FfzBadges.hpp"
 #include "providers/ffz/FfzEmotes.hpp"
 #include "providers/twitch/api/Helix.hpp"
+#include "providers/twitch/ChatDeliveryEvidence.hpp"
 #include "providers/twitch/eventsub/SubscriptionHandle.hpp"
 #include "providers/twitch/TwitchEmotes.hpp"
 #include "util/QStringHash.hpp"
@@ -26,6 +27,8 @@
 #include <QColor>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QHash>
+#include <QSet>
 #include <QRegularExpression>
 
 #include <atomic>
@@ -73,6 +76,10 @@ using HelixChannelBadges = HelixGlobalBadges;
 
 class TwitchIrcServer;
 class TwitchAccount;
+
+/// Called after a global badge provider publishes its assignments. Thread-safe.
+void notifyGlobalChatBadgesChanged();
+void notifyChatBadgesChangedForUsers(QSet<QString> userIds);
 
 const int MAX_QUEUED_REDEMPTIONS = 16;
 const int MAX_RECENT_CHANNEL_POINT_REDEMPTIONS = 1024;
@@ -301,7 +308,6 @@ public:
     bool sendSpamMessageViaHelix(
         const QString &message, int duplicateNonce,
         std::function<void(bool sent, QString error)> callback);
-    void sendBotMessage(const QString &message);
     void sendReply(const QString &message, const QString &replyId);
     bool isMod() const override;
     bool isLeadMod() const;
@@ -487,6 +493,10 @@ public:
     void setFfzCustomVipBadge(std::optional<EmotePtr> badge);
 
     void addTwitchBadgeSets(const HelixChannelBadges &channelBadges);
+    /// Reconcile badges of already loaded recent history, without fetching it again.
+    void scheduleHistoryBadgeRefresh(const QSet<QString> &userIds = {});
+    std::function<MessagePtr(const QString &, TwitchChannel *)>
+        historyBadgeProviderForTesting;
 
     // Cheers
     std::optional<CheerEmote> cheerEmote(const QString &string) const;
@@ -649,6 +659,9 @@ public:
     /// start the slow mode wait from now. A message that never shows up
     /// starts no wait, so it can be sent again at once.
     void noteOwnMessageSent();
+    void watchChatDelivery(const QString &sender);
+    void observeChatDelivery(const QString &sender, const QString &id);
+    void confirmChatDelivery(const QString &sender, const QString &id);
 
     bool isLoadingRecentMessages() const;
 
@@ -683,6 +696,9 @@ private:
     void refreshCheerEmotes();
     void loadRecentMessages();
     void loadRecentMessagesReconnect();
+    void noteLoadedHistoryForBadges(const std::vector<MessagePtr> &messages);
+    static void processQueuedHistoryBadgeRefreshes();
+    bool refreshHistoryBadgeBatch();
     void cleanUpReplyThreads();
     void showLoginMessage();
     void showAnonymousReadOnlyMessage();
@@ -825,6 +841,15 @@ private:
     std::optional<std::chrono::time_point<std::chrono::system_clock>>
         lastConnectedAt_{};
     std::atomic_flag loadingRecentMessages_ = ATOMIC_FLAG_INIT;
+    bool historyBadgeRefreshQueued_ = false;
+    bool historyBadgeRefreshStarted_ = false;
+    bool historyBadgeRefreshAllPending_ = false;
+    QSet<QString> historyBadgeUserIds_;
+    QSet<QString> historyBadgeRefreshUsersPending_;
+    QSet<QString> historyBadgeRefreshUsers_;
+    size_t historyBadgeRefreshCursor_ = 0;
+    std::vector<MessagePtr> historyBadgeRefreshSnapshot_;
+    QHash<QString, MessagePtr> historyBadgeRefreshCache_;
     std::unordered_map<QString, std::weak_ptr<MessageThread>> threads_;
 
 protected:
@@ -870,6 +895,7 @@ private:
 
     // --
     QString lastSentMessage_;
+    ChatDeliveryEvidence chatDeliveryEvidence_;
     QObject lifetimeGuard_;
     QTimer chattersListTimer_;
     QTimer threadClearTimer_;

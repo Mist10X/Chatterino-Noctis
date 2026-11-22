@@ -9,6 +9,8 @@
 #include "common/Modes.hpp"
 #include "common/QLogging.hpp"
 #include "controllers/filters/FilterRecord.hpp"
+#include "controllers/accounts/AccountController.hpp"
+#include "providers/twitch/TwitchAccount.hpp"
 #include "controllers/highlights/HighlightBadge.hpp"
 #include "controllers/highlights/HighlightBlacklistUser.hpp"
 #include "controllers/highlights/HighlightPhrase.hpp"
@@ -137,6 +139,17 @@ bool Settings::isHighlightedUser(const QString &username)
 
 void Settings::migrate(bool isTest)
 {
+    if (!this->noctisThemeMigrated)
+    {
+        QStringSetting themeName("/appearance/theme/name", "Noctis-Dark");
+        const auto selectedTheme = themeName.getValue();
+        if (selectedTheme == QStringLiteral("Mist-Dark.json") ||
+            selectedTheme == QStringLiteral("Noctis-Dark.json"))
+        {
+            themeName = QString("Noctis-Dark");
+        }
+        this->noctisThemeMigrated = true;
+    }
 }
 
 bool Settings::isBlacklistedUser(const QString &username)
@@ -762,6 +775,12 @@ bool Settings::shouldSendHelixChat() const
         case ChatSendProtocol::Helix:
             return true;
         case ChatSendProtocol::Default:
+        {
+            // Decide once, before sending. Never fall back to IRC after a
+            // dispatched Helix attempt, even if the result is ambiguous.
+            auto *app = dynamic_cast<Application *>(tryGetApp());
+            return app && app->getAccounts()->twitch.getCurrent()->hasHelixChatWriteScope();
+        }
         case ChatSendProtocol::IRC:
             return false;
         default:

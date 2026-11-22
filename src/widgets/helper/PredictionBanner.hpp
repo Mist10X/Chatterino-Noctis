@@ -72,10 +72,6 @@ private:
     QHBoxLayout *outcomeRowLayout_{};
     Split *split_{};
 
-    int headerFontSize_{11};
-    int titleFontSize_{13};
-    int outcomeFontSize_{12};
-
     TwitchChannel *twitchChannel_{};
     std::optional<TwitchChannel::PredictionEvent> prediction_;
     QTimer *updateTimer_{};

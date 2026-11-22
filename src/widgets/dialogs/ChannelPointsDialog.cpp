@@ -16,7 +16,9 @@
 #    include "widgets/buttons/SvgButton.hpp"
 #    include "widgets/dialogs/ChannelPointsChartDialog.hpp"
 #    include "widgets/dialogs/RewardQueueDialog.hpp"
+#    include "widgets/helper/ChannelAvatarLabel.hpp"
 #    include "widgets/helper/Line.hpp"
+#    include "widgets/helper/UsercardResizeGrip.hpp"
 #    include "widgets/splits/SplitInput.hpp"
 
 #    include <QCursor>
@@ -50,10 +52,9 @@ namespace chatterino {
 
 namespace {
 
-constexpr QSize DEFAULT_DIALOG_SIZE(390, 510);
+constexpr QSize DEFAULT_DIALOG_SIZE(368, 436);
 constexpr int HEADER_SEPARATOR_HEIGHT = 8;
 constexpr float CONTENT_SCALE_MULTIPLIER = 1.08F;
-constexpr int REWARD_GRID_COLUMNS = 3;
 constexpr int EMOTE_GRID_COLUMNS = 4;
 constexpr int EMOTE_GRID_INITIAL_LIMIT = 48;
 constexpr int EMOTE_GRID_LIMIT_STEP = 48;
@@ -72,21 +73,6 @@ float readableFontScale(float scale)
 int scaledMetric(float scale, int base, int minimum)
 {
     return std::max(minimum, int(std::round(base * scale)));
-}
-
-int rewardCardMinimumWidth(float scale)
-{
-    return scaledMetric(scale, 72, 38);
-}
-
-int rewardCardPreferredWidth(float scale)
-{
-    return std::max(rewardCardMinimumWidth(scale), scaledMetric(scale, 92, 48));
-}
-
-int rewardTitleMinimumHeight(float scale)
-{
-    return scaledMetric(scale, 32, 22);
 }
 
 int emoteTileMinimumWidth(float scale)
@@ -348,10 +334,6 @@ QColor rewardColor(const GqlChannelPointReward &reward)
     auto color = QColor(reward.backgroundColor);
     if (color.isValid())
     {
-        auto hsv = color.toHsv();
-        hsv.setHsv(hsv.hue(), std::max(190, hsv.saturation()),
-                   std::max(235, hsv.value()), 255);
-        color = hsv.toRgb();
         return color;
     }
 
@@ -385,57 +367,6 @@ bool shouldShowReward(const GqlChannelPointReward &reward)
 float rewardImageSizeRatio(const GqlChannelPointReward &reward)
 {
     return isSupportedAutomaticReward(reward) ? 0.40F : 0.50F;
-}
-
-QStringList twoLineTitle(const QString &title, const QFontMetrics &metrics,
-                         int width)
-{
-    width = std::max(1, width);
-    const auto words = title.simplified().split(' ', Qt::SkipEmptyParts);
-    if (words.isEmpty())
-    {
-        return {};
-    }
-
-    QStringList lines;
-    QString current;
-    for (const auto &word : words)
-    {
-        const auto candidate = current.isEmpty() ? word : current + ' ' + word;
-        if (metrics.horizontalAdvance(candidate) <= width || current.isEmpty())
-        {
-            current = candidate;
-            continue;
-        }
-
-        lines.push_back(current);
-        current = word;
-        if (lines.size() == 1)
-        {
-            continue;
-        }
-
-        break;
-    }
-
-    if (lines.size() < 2 && !current.isEmpty())
-    {
-        lines.push_back(current);
-    }
-    if (lines.size() > 2)
-    {
-        lines = lines.mid(0, 2);
-    }
-    if (lines.size() == 2)
-    {
-        lines[1] = metrics.elidedText(lines[1], Qt::ElideRight, width);
-    }
-    else if (lines.size() == 1)
-    {
-        lines[0] = metrics.elidedText(lines[0], Qt::ElideRight, width);
-    }
-
-    return lines;
 }
 
 void drawRewardGlyph(QPainter &painter, const QRectF &square,
@@ -594,180 +525,95 @@ public:
         this->setFocusPolicy(Qt::StrongFocus);
         this->setMouseTracking(true);
         this->setAttribute(Qt::WA_Hover, true);
-        QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-        policy.setHeightForWidth(true);
-        this->setSizePolicy(policy);
-        this->setToolTip(
-            reward.prompt.isEmpty()
-                ? reward.title
-                : QStringLiteral("%1\n%2").arg(reward.title, reward.prompt));
+        this->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         this->setFlat(true);
         this->setAccessibleName(reward.title + QStringLiteral(" — ") +
                                 rewardCostLabel(reward, false));
-        if (!isBitsReward(reward) && balance >= 0 && balance < reward.cost)
-        {
-            this->setToolTip(this->toolTip() + '\n' +
-                             uiText("Need %1 more points")
-                                 .arg(fullPoints(reward.cost - balance)));
-        }
     }
 
     void setScale(float scale)
     {
         this->scale_ = scale;
-        const auto minimumWidth = rewardCardMinimumWidth(scale);
-        this->setMinimumSize(minimumWidth, this->heightForWidth(minimumWidth));
-        this->updateGeometry();
-    }
-
-    QSize sizeHint() const override
-    {
-        const auto width = rewardCardPreferredWidth(this->scale_);
-        return {width, this->heightForWidth(width)};
-    }
-
-    bool hasHeightForWidth() const override
-    {
-        return true;
-    }
-
-    int heightForWidth(int width) const override
-    {
-        const auto titleHeight = this->titleAreaHeight();
-        return std::max(1, width) + titleHeight;
+        this->setFont(getApp()->getFonts()->getFont(FontStyle::ChatMedium, scale));
+        this->setFixedHeight(std::max(scaledMetric(scale, 39, 32),
+                                     this->fontMetrics().height() + 14));
     }
 
 protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing, true);
-
-        const auto rect = this->rect();
-        bool unavailable =
-            !this->reward_.isEnabled || !this->reward_.isInStock ||
+        painter.setRenderHint(QPainter::Antialiasing);
+        const auto *theme = getApp()->getThemes();
+        const auto bounds = QRectF(this->rect()).adjusted(.5, .5, -.5, -.5);
+        const bool unavailable = !this->isEnabled() || !this->reward_.isInStock ||
             (!isBitsReward(this->reward_) && this->balance_ >= 0 &&
              this->balance_ < this->reward_.cost);
-        if (!this->isEnabled())
-        {
-            unavailable = true;
-        }
-
-        const int titleHeight = this->titleAreaHeight();
-        const int squareSize = std::max(
-            1,
-            std::min(rect.width(), std::max(1, rect.height() - titleHeight)));
-        QRect square(rect.left() + (rect.width() - squareSize) / 2, rect.top(),
-                     squareSize, squareSize);
-
-        auto surface = getApp()->getThemes()->splits.input.background;
-        painter.setPen(QPen(getApp()->getThemes()->splits.header.border, 1));
+        const auto surface = theme->splits.input.background;
+        painter.setPen(this->hasFocus() ? theme->accent : theme->splits.header.border);
         painter.setBrush(surface);
-        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 7, 7);
-        auto base = rewardColor(this->reward_);
-        base.setAlpha(unavailable ? 28 : 55);
-        if (this->underMouse() && this->isEnabled())
+        painter.drawRoundedRect(bounds, 7, 7);
+        if (this->underMouse() || this->isDown())
         {
-            base = base.lighter(108);
+            auto tint = theme->accent;
+            tint.setAlpha(this->isDown() ? 36 : 20);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(tint);
+            painter.drawRoundedRect(bounds.adjusted(1, 1, -1, -1), 6, 6);
         }
-        if (this->isDown())
-        {
-            base = base.darker(108);
-        }
-
+        const int pad = scaledMetric(this->scale_, 5, 3);
+        const int side = this->height() - 2 * pad;
+        const QRectF tile(pad, pad, side, side);
+        auto accent = rewardColor(this->reward_);
+        accent.setAlpha(unavailable ? 40 : 75);
         painter.setPen(Qt::NoPen);
-        painter.setBrush(base);
-        painter.drawRoundedRect(square.adjusted(5, 5, -5, -1), 6, 6);
-
-        const auto imageSize = squareSize * rewardImageSizeRatio(this->reward_);
-        const QRectF imageRect(square.center().x() - imageSize / 2.0,
-                               square.center().y() - imageSize / 2.0, imageSize,
-                               imageSize);
-        const bool drewImage =
-            drawLoadedImage(painter, imageRect, this->image_);
-        if (!drewImage)
+        painter.setBrush(accent);
+        painter.drawRoundedRect(tile, 6, 6);
+        const auto icon = tile.adjusted(3, 3, -3, -3);
+        if (!drawLoadedImage(painter, icon, this->image_))
         {
-            const auto glyphSize = squareSize * 0.50;
-            const QRectF glyphRect(square.center().x() - glyphSize / 2.0,
-                                   square.center().y() - glyphSize / 2.0,
-                                   glyphSize, glyphSize);
-            drawRewardGlyph(painter, glyphRect, this->reward_, unavailable);
+            drawRewardGlyph(painter, icon, this->reward_, unavailable);
         }
-
+        auto ink = theme->window.text;
         if (unavailable)
         {
-            painter.setBrush(QColor(0, 0, 0, 35));
-            painter.drawRoundedRect(square.adjusted(5, 5, -5, -1), 6, 6);
+            ink.setAlpha(160);
         }
-
-        auto costFont = this->font();
-        costFont.setBold(true);
-        costFont.setPointSizeF(std::max(6.5, costFont.pointSizeF() * 0.82));
+        auto costFont = getApp()->getFonts()->getFont(FontStyle::ChatMediumBold, this->scale_);
         painter.setFont(costFont);
-        QFontMetrics costMetrics(costFont);
-        const auto costText = rewardCostLabel(this->reward_, true);
-        const int pillPaddingX = scaledMetric(this->scale_, 5, 3);
-        const int pillHeight = scaledMetric(this->scale_, 17, 12);
-        const int pillWidth = std::max(
-            scaledMetric(this->scale_, 30, 22),
-            costMetrics.horizontalAdvance(costText) + pillPaddingX * 2);
-        QRect pill(
-            square.left() + (square.width() - pillWidth) / 2,
-            square.bottom() - pillHeight - scaledMetric(this->scale_, 6, 3),
-            pillWidth, pillHeight);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0, 0, 0, unavailable ? 82 : 118));
-        painter.drawRoundedRect(pill, 2, 2);
-
-        painter.setPen(QColor(255, 255, 255, unavailable ? 150 : 245));
-        painter.drawText(pill, Qt::AlignCenter, costText);
-
-        auto titleFont = this->font();
-        titleFont.setBold(true);
-        painter.setFont(titleFont);
-        auto titleColor = getApp()->getThemes()->window.text;
-        titleColor.setAlpha(unavailable ? 150 : 245);
-        painter.setPen(titleColor);
-
-        const auto titleTop =
-            square.bottom() + scaledMetric(this->scale_, 4, 2);
-        const QRect titleRect(rect.left() + 2, titleTop,
-                              std::max(1, rect.width() - 4),
-                              std::max(1, rect.bottom() - titleTop + 1));
-        QFontMetrics titleMetrics(titleFont);
-        const auto lines =
-            twoLineTitle(this->reward_.title, titleMetrics, titleRect.width());
-        const int lineHeight = titleMetrics.lineSpacing();
-        const int textHeight = lineHeight * lines.size();
-        int y = titleRect.top() +
-                std::max(0, (titleRect.height() - textHeight) / 2);
-        for (const auto &line : lines)
+        const auto cost = rewardCostLabel(this->reward_, true);
+        const int costWidth = QFontMetrics(costFont).horizontalAdvance(cost) + 2 * pad;
+        const QRect price(this->width() - costWidth - pad, pad, costWidth, side);
+        painter.setPen(ink);
+        painter.drawText(price, Qt::AlignCenter, cost);
+        const int left = int(tile.right()) + 2 * pad;
+        const QRect title(left, 0, std::max(0, price.left() - left - pad), this->height());
+        painter.setFont(this->font());
+        const auto display = this->fontMetrics().elidedText(this->reward_.title, Qt::ElideRight, title.width());
+        painter.drawText(title, Qt::AlignVCenter | Qt::AlignLeft, display);
+        QStringList details;
+        if (display != this->reward_.title)
         {
-            painter.drawText(
-                QRect(titleRect.left(), y, titleRect.width(), lineHeight),
-                Qt::AlignCenter, line);
-            y += lineHeight;
+            details.push_back(this->reward_.title);
         }
-
-        if (this->hasFocus())
+        if (!this->reward_.prompt.isEmpty())
         {
-            painter.setPen(QPen(QColor(255, 255, 255, 210), 1));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawRoundedRect(square.adjusted(1, 1, -2, -2), 2, 2);
+            details.push_back(this->reward_.prompt);
+        }
+        if (!isBitsReward(this->reward_) && this->balance_ >= 0 &&
+            this->balance_ < this->reward_.cost)
+        {
+            details.push_back(uiText("Need %1 more points")
+                                  .arg(fullPoints(this->reward_.cost - this->balance_)));
+        }
+        const auto hint = details.join('\n');
+        if (hint != this->toolTip())
+        {
+            this->setToolTip(hint);
         }
     }
 
 private:
-    int titleAreaHeight() const
-    {
-        QFont titleFont = this->font();
-        titleFont.setBold(true);
-        QFontMetrics metrics(titleFont);
-        return std::max(
-            rewardTitleMinimumHeight(this->scale_),
-            metrics.lineSpacing() * 2 + scaledMetric(this->scale_, 5, 3));
-    }
-
     GqlChannelPointReward reward_;
     ImagePtr image_;
     qint64 balance_ = -1;
@@ -921,8 +767,10 @@ protected:
 
         const auto rect = this->rect().adjusted(0, 0, -1, -1);
         painter.setPen(Qt::NoPen);
-        painter.setBrush(rewardColor(this->reward_));
-        painter.drawRoundedRect(rect, 2, 2);
+        auto accent = rewardColor(this->reward_);
+        accent.setAlpha(72);
+        painter.setBrush(accent);
+        painter.drawRoundedRect(rect, 9, 9);
 
         const auto imageSize =
             rect.width() * rewardImageSizeRatio(this->reward_);
@@ -952,13 +800,14 @@ std::vector<QPointer<ChannelPointsDialog>> ChannelPointsDialog::activeDialogs_;
 ChannelPointsDialog::ChannelPointsDialog(TwitchChannel *channel,
                                          SplitInput *input, QWidget *parent)
     : DraggablePopup(true, parent)
-    , channel_(channel)
+    , channel_(channel ? channel->sharedFromThis() : nullptr)
     , input_(input)
 {
+    this->setAttribute(Qt::WA_TranslucentBackground);
+    this->setAutoFillBackground(false);
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->setObjectName("ChannelPointsDialog");
     this->setWindowTitle(uiText("Channel Points"));
-    this->setScaleIndependentSize(DEFAULT_DIALOG_SIZE);
     this->layoutRefreshTimer_.setSingleShot(true);
     QObject::connect(&this->layoutRefreshTimer_, &QTimer::timeout, this,
                      [this] {
@@ -982,7 +831,7 @@ ChannelPointsDialog::ChannelPointsDialog(TwitchChannel *channel,
     auto *headerTextLayout = new QVBoxLayout();
     headerTextLayout->setContentsMargins(0, 0, 0, 0);
 
-    this->backButton_ = new QPushButton("<", this->headerWidget_);
+    this->backButton_ = new QPushButton(QStringLiteral("‹"), this->headerWidget_);
     this->backButton_->setObjectName("ChannelPointsHeaderBackButton");
     this->backButton_->setToolTip(uiText("Back to rewards"));
     this->backButton_->setCursor(Qt::PointingHandCursor);
@@ -994,15 +843,30 @@ ChannelPointsDialog::ChannelPointsDialog(TwitchChannel *channel,
 
     this->headerTitleLabel_ =
         new QLabel(uiText("Channel Rewards"), this->headerWidget_);
+    this->headerTitleLabel_->setWordWrap(true);
+    this->headerTitleLabel_->setTextFormat(Qt::PlainText);
     this->headerTitleLabel_->setObjectName("ChannelPointsHeaderTitle");
     this->headerSubtitleLabel_ = new QLabel("", this->headerWidget_);
     this->headerSubtitleLabel_->setObjectName("ChannelPointsHeaderSubtitle");
-    headerTextLayout->addWidget(this->headerTitleLabel_);
+    auto *titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(5);
+    this->headerChannelLabel_ = new QLabel(this->headerWidget_);
+    this->headerChannelLabel_->setObjectName("ChannelPointsHeaderChannel");
+    this->headerChannelLabel_->setWordWrap(true);
+    this->headerChannelLabel_->setTextFormat(Qt::PlainText);
+    this->headerAvatar_ = new ChannelAvatarLabel(
+        this->headerChannelLabel_, this->headerWidget_);
+    titleRow->addWidget(this->headerTitleLabel_);
+    titleRow->addWidget(this->headerAvatar_, 0, Qt::AlignVCenter);
+    titleRow->addWidget(this->headerChannelLabel_, 1);
+    headerTextLayout->addLayout(titleRow);
     headerTextLayout->addWidget(this->headerSubtitleLabel_);
-    headerLayout->addLayout(headerTextLayout);
-    headerLayout->addStretch(1);
+    headerLayout->addLayout(headerTextLayout, 1);
     this->refreshRewardsButton_ =
-        new QPushButton(uiText("Refresh"), this->headerWidget_);
+        new QPushButton(this->headerWidget_);
+    this->refreshRewardsButton_->setAccessibleName(uiText("Refresh"));
+    this->refreshRewardsButton_->setToolTip(uiText("Refresh"));
     this->refreshRewardsButton_->setObjectName("ChannelPointsUtilityButton");
     QObject::connect(this->refreshRewardsButton_, &QPushButton::clicked, this,
                      [this] {
@@ -1019,7 +883,7 @@ ChannelPointsDialog::ChannelPointsDialog(TwitchChannel *channel,
             uiText(QStringLiteral("Open the reward queue")));
         queueButton->setCursor(Qt::PointingHandCursor);
         QObject::connect(queueButton, &QPushButton::clicked, this, [this] {
-            RewardQueueDialog::showDialog(this->channel_, this);
+            RewardQueueDialog::showDialog(this->channel_.get(), this);
         });
         headerLayout->addWidget(queueButton);
     }
@@ -1031,7 +895,7 @@ ChannelPointsDialog::ChannelPointsDialog(TwitchChannel *channel,
         uiText(QStringLiteral("View channel points history chart")));
     chartButton->setCursor(Qt::PointingHandCursor);
     QObject::connect(chartButton, &QPushButton::clicked, this, [this] {
-        ChannelPointsChartDialog::showDialog(this->channel_, this);
+        ChannelPointsChartDialog::showDialog(this->channel_.get(), this);
     });
     headerLayout->addWidget(chartButton);
 
@@ -1050,7 +914,7 @@ ChannelPointsDialog::ChannelPointsDialog(TwitchChannel *channel,
         },
         this, QSize{3, 3});
     this->closeButton_->setScaleIndependentSize(18, 18);
-    this->closeButton_->setToolTip(uiText("Close"));
+    this->closeButton_->setAccessibleName(uiText("Close"));
     this->closeButton_->setCursor(Qt::PointingHandCursor);
     QObject::connect(this->closeButton_, &Button::leftClicked, this,
                      &QWidget::close);
@@ -1067,12 +931,13 @@ ChannelPointsDialog::ChannelPointsDialog(TwitchChannel *channel,
     this->scrollArea_->setFrameShape(QFrame::NoFrame);
     this->scrollArea_->setWidgetResizable(true);
     this->scrollArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    this->scrollArea_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->scrollArea_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     this->mainLayout_->addWidget(this->scrollArea_, 1);
 
     this->contentWidget_ = new QWidget();
     this->contentWidget_->setObjectName("ChannelPointsDialogContent");
     this->contentLayout_ = new QVBoxLayout(this->contentWidget_);
+    this->contentLayout_->setSizeConstraint(QLayout::SetMinimumSize);
     this->contentLayout_->setContentsMargins(8, 7, 8, 8);
     this->contentLayout_->setSpacing(7);
     this->scrollArea_->setWidget(this->contentWidget_);
@@ -1080,7 +945,7 @@ ChannelPointsDialog::ChannelPointsDialog(TwitchChannel *channel,
     this->channelPointsConnection_ =
         this->channel_->channelPointsChanged.connect([this] {
             this->refreshHeader();
-            if (this->view_ == View::Rewards)
+            if (this->view_ != View::Emotes)
             {
                 this->rebuildContent();
             }
@@ -1103,6 +968,10 @@ ChannelPointsDialog::ChannelPointsDialog(TwitchChannel *channel,
     this->refreshHeader();
     this->refreshStyle();
     this->rebuildContent();
+    this->resize(qRound(DEFAULT_DIALOG_SIZE.width() * this->scale()),
+                 qRound(DEFAULT_DIALOG_SIZE.height() * this->scale()));
+    this->resizeGrip_ = new UsercardResizeGrip(this);
+    this->resizeGrip_->syncGeometry(this->scale());
 }
 
 void ChannelPointsDialog::showDialog(TwitchChannel *channel, SplitInput *input,
@@ -1120,7 +989,7 @@ void ChannelPointsDialog::showDialog(TwitchChannel *channel, SplitInput *input,
             it = activeDialogs_.erase(it);
             continue;
         }
-        if ((*it)->channel_ == channel)
+        if ((*it)->channel_.get() == channel)
         {
             (*it)->input_ = input;
             (*it)->raise();
@@ -1149,6 +1018,16 @@ void ChannelPointsDialog::showDialog(TwitchChannel *channel, SplitInput *input,
     dialog->reloadRewards(false);
 }
 
+void ChannelPointsDialog::paintEvent(QPaintEvent *)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(this->theme->splits.header.border);
+    painter.setBrush(this->theme->window.background);
+    const qreal radius = 10 * this->scale();
+    painter.drawRoundedRect(QRectF(rect()).adjusted(.5, .5, -.5, -.5), radius, radius);
+}
+
 void ChannelPointsDialog::themeChangedEvent()
 {
     DraggablePopup::themeChangedEvent();
@@ -1160,15 +1039,26 @@ void ChannelPointsDialog::scaleChangedEvent(float scale)
     DraggablePopup::scaleChangedEvent(scale);
     this->refreshStyle();
     this->applySizeConstraints();
+    if (this->resizeGrip_)
+    {
+        this->resizeGrip_->syncGeometry(scale);
+    }
     this->scheduleLayoutRefresh(0);
 }
 
 void ChannelPointsDialog::resizeEvent(QResizeEvent *event)
 {
     DraggablePopup::resizeEvent(event);
+    if (this->resizeGrip_)
+    {
+        if (this->resizeGrip_->isResizing() && this->view_ == View::RewardDetail)
+        {
+            this->manualDetailHeight_ = event->size().height();
+        }
+        this->resizeGrip_->syncGeometry(this->scale());
+    }
     if (event->oldSize().isValid() &&
-        event->size().width() != event->oldSize().width() &&
-        (this->view_ == View::Rewards || this->view_ == View::Emotes))
+        event->size().width() != event->oldSize().width())
     {
         this->scheduleLayoutRefresh();
     }
@@ -1194,18 +1084,18 @@ void ChannelPointsDialog::refreshHeader()
     const auto channelName = this->channel_->getName().isEmpty()
                                  ? QStringLiteral("channel")
                                  : this->channel_->getName();
-    if (this->view_ == View::RewardDetail && this->selectedRewardValid_)
+    if (this->view_ == View::Emotes && this->selectedRewardValid_)
     {
         this->headerTitleLabel_->setText(this->selectedReward_.title);
-    }
-    else if (this->view_ == View::Emotes && this->selectedRewardValid_)
-    {
-        this->headerTitleLabel_->setText(this->selectedReward_.title);
+        this->headerAvatar_->setChannel({});
+        this->headerChannelLabel_->hide();
     }
     else
     {
-        this->headerTitleLabel_->setText(
-            uiText(QStringLiteral("%1's Rewards")).arg(channelName));
+        this->headerTitleLabel_->setText(uiText("Rewards for"));
+        this->headerChannelLabel_->setText(channelName);
+        this->headerChannelLabel_->show();
+        this->headerAvatar_->setChannel(channelName);
     }
     this->headerSubtitleLabel_->setText(
         uiText(QStringLiteral("Bal: %1")).arg(fullPoints(balance)));
@@ -1220,25 +1110,27 @@ void ChannelPointsDialog::refreshStyle()
     auto *fonts = getApp()->getFonts();
     const auto rawScale = this->scale();
     const auto effectiveScale = contentScale(rawScale);
-    const auto headerScale = readableFontScale(rawScale * 1.30F);
-    const int radius = std::max(1, int(2 * rawScale));
+    const auto headerScale = readableFontScale(rawScale);
+    const int radius = scaledMetric(rawScale, 6, 4);
     const int inputPaddingX = std::max(4, int(5 * effectiveScale));
     const int inputMinHeight = std::max(14, int(20 * effectiveScale));
+    this->getLayoutContainer()->setFont(fonts->getFont(FontStyle::ChatMedium, headerScale));
     this->headerTitleLabel_->setFont(
-        fonts->getFont(FontStyle::UiMediumBold, headerScale));
+        fonts->getFont(FontStyle::ChatMediumBold, headerScale));
+    this->headerChannelLabel_->setFont(
+        fonts->getFont(FontStyle::ChatMediumBold, headerScale));
     this->headerSubtitleLabel_->setFont(
-        fonts->getFont(FontStyle::UiMedium, headerScale));
+        fonts->getFont(FontStyle::ChatMediumSmall, headerScale));
     this->headerSubtitleLabel_->setStyleSheet(QString());
     this->backButton_->setFont(
-        fonts->getFont(FontStyle::UiMediumBold, headerScale));
+        fonts->getFont(FontStyle::ChatMediumBold, headerScale));
 
     this->headerWidget_->layout()->setContentsMargins(
         std::max(2, int(4 * rawScale)), std::max(2, int(3 * rawScale)),
         std::max(2, int(4 * rawScale)), std::max(2, int(3 * rawScale)));
     this->headerWidget_->layout()->setSpacing(std::max(2, int(3 * rawScale)));
-    this->mainLayout_->setContentsMargins(
-        std::max(3, int(5 * rawScale)), std::max(3, int(5 * rawScale)),
-        std::max(3, int(5 * rawScale)), std::max(3, int(5 * rawScale)));
+    const int edge = UsercardResizeGrip::edgeBand(rawScale);
+    this->mainLayout_->setContentsMargins(edge, edge, edge, edge);
     this->mainLayout_->setSpacing(0);
     this->contentLayout_->setContentsMargins(
         scaledMetric(effectiveScale, 8, 4), scaledMetric(effectiveScale, 7, 4),
@@ -1257,10 +1149,12 @@ void ChannelPointsDialog::refreshStyle()
     }
 
     const auto *theme = this->theme;
+    this->refreshRewardsButton_->setIcon(QIcon(theme->isLightTheme()
+        ? ":/buttons/reloadDark.svg" : ":/buttons/reloadLight.svg"));
     auto textColor = theme->window.text;
     auto mutedColor = textColor;
     mutedColor.setAlpha(160);
-    const auto bg = theme->window.background.name();
+    const auto bg = QStringLiteral("transparent");
     const auto text = textColor.name(QColor::HexArgb);
     const auto border = theme->splits.header.border.name();
     const auto muted = mutedColor.name(QColor::HexArgb);
@@ -1277,7 +1171,10 @@ void ChannelPointsDialog::refreshStyle()
             background: %1;
             color: %2;
         }
-        QLabel#ChannelPointsHeaderTitle {
+        QWidget#ChannelPointsRewardSummary { background: %5; border: 1px solid %3; border-radius: %7px; }
+        QLabel#ChannelPointsRewardTitle, QLabel#ChannelPointsRewardPromptLabel { color: %2; background: transparent; }
+        QLabel#ChannelPointsRewardRemainder { color: %13; background: transparent; }
+        QLabel#ChannelPointsHeaderTitle, QLabel#ChannelPointsHeaderChannel {
             color: %2;
             font-weight: 700;
         }
@@ -1303,9 +1200,11 @@ void ChannelPointsDialog::refreshStyle()
             border: 0;
         }
         QScrollBar:vertical {
-            width: 0px;
+            width: 5px;
             background: transparent;
         }
+        QScrollBar::handle:vertical { background: %3; min-height: 22px; border-radius: 2px; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         QWidget#ChannelPointsDialogContent {
             background: transparent;
             color: %2;
@@ -1352,6 +1251,8 @@ void ChannelPointsDialog::refreshStyle()
             text-align: center;
             font-weight: 700;
         }
+        QPushButton#ChannelPointsRedeemButton:enabled { background: %12; border-color: %11; }
+        QPushButton#ChannelPointsRedeemButton:enabled:hover { background: %10; }
         QPushButton#ChannelPointsRedeemButton:disabled,
         QPushButton#ChannelPointsGigantifyConfirmButton:disabled {
             color: %4;
@@ -1366,7 +1267,8 @@ void ChannelPointsDialog::refreshStyle()
                             .arg(radius)
                             .arg(inputPaddingX)
                             .arg(inputMinHeight)
-                            .arg(hoverBg, focusedBorder));
+                            .arg(hoverBg, focusedBorder, theme->isLightTheme() ? "#e8e2f0" : "#302a3d")
+                            .arg(QColor(textColor.red(), textColor.green(), textColor.blue(), 220).name(QColor::HexArgb)));
 }
 
 void ChannelPointsDialog::reloadRewards(bool force)
@@ -1454,6 +1356,7 @@ void ChannelPointsDialog::rebuildContent()
     else if (this->view_ == View::RewardDetail)
     {
         this->rebuildRewardDetail();
+        this->scheduleLayoutRefresh(0);
     }
     else
     {
@@ -1550,54 +1453,10 @@ void ChannelPointsDialog::refreshCurrentLayout()
 
 void ChannelPointsDialog::refreshRewardsLayout()
 {
-    auto *gridWidget = this->contentWidget_->findChild<QWidget *>(
-        QStringLiteral("ChannelPointsRewardGridContent"));
-    auto *grid = gridWidget == nullptr
-                     ? nullptr
-                     : dynamic_cast<QGridLayout *>(gridWidget->layout());
-    if (grid == nullptr)
+    for (auto *card : directChildWidgets<RewardCardButton>(this->contentWidget_))
     {
-        return;
+        card->setScale(this->scale());
     }
-
-    const auto cards = directChildWidgets<RewardCardButton>(gridWidget);
-    if (cards.isEmpty())
-    {
-        return;
-    }
-
-    const auto effectiveScale = contentScale(this->scale());
-    const int horizontalSpacing = scaledMetric(effectiveScale, 5, 3);
-    const int verticalSpacing = scaledMetric(effectiveScale, 6, 4);
-    grid->setHorizontalSpacing(horizontalSpacing);
-    grid->setVerticalSpacing(verticalSpacing);
-
-    const int columns = gridColumnsForWidth(
-        availableContentWidth(this->scrollArea_, this->contentLayout_),
-        rewardCardMinimumWidth(effectiveScale), horizontalSpacing,
-        REWARD_GRID_COLUMNS, cards.size() > 1 ? 2 : 1);
-    int row = 0;
-    int column = 0;
-    for (auto *card : cards)
-    {
-        card->setScale(effectiveScale);
-        card->setFont(getApp()->getFonts()->getFont(
-            FontStyle::UiMedium, readableFontScale(effectiveScale)));
-        grid->removeWidget(card);
-        grid->addWidget(card, row, column);
-        column += 1;
-        if (column >= columns)
-        {
-            column = 0;
-            row += 1;
-        }
-    }
-
-    for (int i = 0; i < REWARD_GRID_COLUMNS; ++i)
-    {
-        grid->setColumnStretch(i, i < columns ? 1 : 0);
-    }
-    gridWidget->updateGeometry();
 }
 
 void ChannelPointsDialog::refreshRewardDetailLayout()
@@ -1613,17 +1472,28 @@ void ChannelPointsDialog::refreshRewardDetailLayout()
     }
 
     for (auto *label : this->contentWidget_->findChildren<QLabel *>(
-             QStringLiteral("ChannelPointsRewardPromptLabel")))
+             QStringLiteral("ChannelPointsRewardTitle")))
     {
         label->setFont(getApp()->getFonts()->getFont(
-            FontStyle::UiMediumBold, readableFontScale(effectiveScale)));
+            FontStyle::ChatMediumBold, this->scale()));
+    }
+
+    const auto detailFont = getApp()->getFonts()->getFont(
+        FontStyle::ChatMedium, this->scale() * 1.06F);
+    for (auto *label : this->contentWidget_->findChildren<QLabel *>())
+    {
+        if (label->objectName() == "ChannelPointsRewardPromptLabel" ||
+            label->objectName() == "ChannelPointsRewardRemainder")
+        {
+            label->setFont(detailFont);
+        }
     }
 
     for (auto *button : this->contentWidget_->findChildren<QPushButton *>(
              QStringLiteral("ChannelPointsRedeemButton")))
     {
         button->setFont(getApp()->getFonts()->getFont(
-            FontStyle::UiMediumBold, readableFontScale(effectiveScale)));
+            FontStyle::ChatMediumBold, readableFontScale(effectiveScale)));
     }
 }
 
@@ -1772,50 +1642,20 @@ void ChannelPointsDialog::rebuildRewards()
         return;
     }
 
-    auto *gridWidget = new QWidget(this->contentWidget_);
-    gridWidget->setObjectName("ChannelPointsRewardGridContent");
-    auto *grid = new QGridLayout(gridWidget);
-    grid->setContentsMargins(0, 0, 0, 0);
-    const auto effectiveScale = contentScale(this->scale());
-    const int horizontalSpacing = scaledMetric(effectiveScale, 5, 3);
-    const int verticalSpacing = scaledMetric(effectiveScale, 6, 4);
-    grid->setHorizontalSpacing(horizontalSpacing);
-    grid->setVerticalSpacing(verticalSpacing);
-
-    const int columns = gridColumnsForWidth(
-        availableContentWidth(this->scrollArea_, this->contentLayout_),
-        rewardCardMinimumWidth(effectiveScale), horizontalSpacing,
-        REWARD_GRID_COLUMNS, visibleRewards.size() > 1 ? 2 : 1);
-    int row = 0;
-    int column = 0;
     bool hasRewardImages = false;
     for (const auto &reward : visibleRewards)
     {
         hasRewardImages = hasRewardImages || !reward.imageUrl.isEmpty();
         auto *card = new RewardCardButton(
-            reward, this->channel_->channelPointBalance(), gridWidget);
+            reward, this->channel_->channelPointBalance(), this->contentWidget_);
         card->setObjectName("ChannelPointsRewardCardButton");
-        card->setScale(effectiveScale);
-        card->setFont(getApp()->getFonts()->getFont(
-            FontStyle::UiMedium, readableFontScale(effectiveScale)));
+        card->setScale(this->scale());
         card->setEnabled(!this->actionInFlight_);
         QObject::connect(card, &QPushButton::clicked, this, [this, reward] {
             this->openRewardDetail(reward);
         });
-        grid->addWidget(card, row, column);
-        column += 1;
-        if (column >= columns)
-        {
-            column = 0;
-            row += 1;
-        }
+        this->contentLayout_->addWidget(card);
     }
-    for (int i = 0; i < columns; ++i)
-    {
-        grid->setColumnStretch(i, 1);
-    }
-
-    this->contentLayout_->addWidget(gridWidget);
     this->contentLayout_->addStretch(1);
     if (hasRewardImages)
     {
@@ -1839,28 +1679,36 @@ void ChannelPointsDialog::rebuildRewardDetail()
     this->setStatus(this->statusText_, this->statusIsError_);
 
     const auto effectiveScale = contentScale(this->scale());
-    auto *prompt = new QLabel(this->contentWidget_);
-    prompt->setObjectName("ChannelPointsRewardPromptLabel");
-    prompt->setWordWrap(true);
-    prompt->setAlignment(Qt::AlignCenter);
-    prompt->setText(this->selectedReward_.prompt);
-    prompt->setVisible(!this->selectedReward_.prompt.isEmpty());
-    prompt->setFont(getApp()->getFonts()->getFont(
-        FontStyle::UiMediumBold, readableFontScale(effectiveScale)));
-    this->contentLayout_->addWidget(prompt);
-
-    this->contentLayout_->addStretch(1);
-
-    auto *preview =
-        new RewardIconPreview(this->selectedReward_, this->contentWidget_);
+    auto *summary = new QWidget(this->contentWidget_);
+    summary->setObjectName("ChannelPointsRewardSummary");
+    summary->setAttribute(Qt::WA_StyledBackground);
+    auto *summaryLayout = new QVBoxLayout(summary);
+    auto *heading = new QHBoxLayout;
+    auto *preview = new RewardIconPreview(this->selectedReward_, summary);
     preview->setScale(effectiveScale);
-    this->contentLayout_->addWidget(preview, 0, Qt::AlignCenter);
+    heading->addWidget(preview);
+    auto *title = new QLabel(this->selectedReward_.title, summary);
+    title->setObjectName("ChannelPointsRewardTitle");
+    title->setTextFormat(Qt::PlainText);
+    title->setWordWrap(true);
+    title->setFont(getApp()->getFonts()->getFont(FontStyle::ChatMediumBold, this->scale()));
+    heading->addWidget(title, 1);
+    summaryLayout->addLayout(heading);
+    if (!this->selectedReward_.prompt.isEmpty())
+    {
+        auto *prompt = new QLabel(this->selectedReward_.prompt, summary);
+        prompt->setObjectName("ChannelPointsRewardPromptLabel");
+        prompt->setTextFormat(Qt::PlainText);
+        prompt->setWordWrap(true);
+        prompt->setFont(getApp()->getFonts()->getFont(
+            FontStyle::ChatMedium, this->scale() * 1.06F));
+        summaryLayout->addWidget(prompt);
+    }
+    this->contentLayout_->addWidget(summary);
     if (!this->selectedReward_.imageUrl.isEmpty())
     {
         this->queueRewardImageRefresh();
     }
-
-    this->contentLayout_->addStretch(2);
 
     const auto balance = this->channel_->channelPointBalance();
     const bool bitsReward = isBitsReward(this->selectedReward_);
@@ -1871,12 +1719,25 @@ void ChannelPointsDialog::rebuildRewardDetail()
                             this->selectedReward_.isEnabled &&
                             this->selectedReward_.isInStock && enoughPoints;
 
+    if (!bitsReward && balance >= 0)
+    {
+        const QString remaining = enoughPoints
+            ? uiText("Balance after redemption: %1").arg(fullPoints(balance - this->selectedReward_.cost))
+            : uiText("Need %1 more points").arg(fullPoints(this->selectedReward_.cost - balance));
+        auto *label = new QLabel(remaining, this->contentWidget_);
+        label->setObjectName("ChannelPointsRewardRemainder");
+        label->setWordWrap(true);
+        label->setFont(getApp()->getFonts()->getFont(
+            FontStyle::ChatMedium, this->scale() * 1.06F));
+        this->contentLayout_->addWidget(label);
+    }
+
     auto *button = new QPushButton(this->contentWidget_);
     button->setObjectName("ChannelPointsRedeemButton");
     button->setCursor(redeemable ? Qt::PointingHandCursor : Qt::ArrowCursor);
     button->setEnabled(redeemable);
     button->setFont(getApp()->getFonts()->getFont(
-        FontStyle::UiMediumBold, readableFontScale(effectiveScale)));
+        FontStyle::ChatMediumBold, readableFontScale(effectiveScale)));
     if (this->actionInFlight_)
     {
         button->setText(uiText("Redeeming..."));
@@ -1898,6 +1759,7 @@ void ChannelPointsDialog::rebuildRewardDetail()
         this->activateSelectedReward();
     });
     this->contentLayout_->addWidget(button);
+    this->contentLayout_->addStretch(1);
 }
 
 void ChannelPointsDialog::rebuildEmotes()
@@ -1988,7 +1850,7 @@ void ChannelPointsDialog::rebuildEmotes()
         selection->setObjectName("ChannelPointsGigantifySelectionLabel");
         selection->setAlignment(Qt::AlignCenter);
         selection->setFont(getApp()->getFonts()->getFont(
-            FontStyle::UiMediumBold, readableFontScale(effectiveScale)));
+            FontStyle::ChatMediumBold, readableFontScale(effectiveScale)));
         this->contentLayout_->addWidget(selection);
 
         auto *messageInput = new QLineEdit(this->contentWidget_);
@@ -2017,7 +1879,7 @@ void ChannelPointsDialog::rebuildEmotes()
                                                  : Qt::PointingHandCursor);
         confirm->setEnabled(!this->actionInFlight_);
         confirm->setFont(getApp()->getFonts()->getFont(
-            FontStyle::UiMediumBold, readableFontScale(effectiveScale)));
+            FontStyle::ChatMediumBold, readableFontScale(effectiveScale)));
         confirm->setText(
             this->actionInFlight_
                 ? uiText(QStringLiteral("Sending..."))
@@ -2202,6 +2064,10 @@ void ChannelPointsDialog::setStatus(const QString &text, bool error)
 void ChannelPointsDialog::showRewardsView()
 {
     this->view_ = View::Rewards;
+    if (this->catalogHeight_ > 0)
+    {
+        this->resize(this->width(), this->catalogHeight_);
+    }
     this->selectedRewardValid_ = false;
     this->selectingModifiedEmote_ = false;
     this->selectingGigantifiedEmote_ = false;
@@ -2221,7 +2087,15 @@ void ChannelPointsDialog::openRewardDetail(const GqlChannelPointReward &reward)
 
     this->selectedReward_ = reward;
     this->selectedRewardValid_ = true;
+    if (this->view_ == View::Rewards)
+    {
+        this->catalogHeight_ = this->height();
+    }
     this->view_ = View::RewardDetail;
+    if (this->manualDetailHeight_ > 0)
+    {
+        this->resize(this->width(), this->manualDetailHeight_);
+    }
     this->setStatus({});
     this->refreshHeader();
     this->rebuildContent();
@@ -2248,10 +2122,10 @@ void ChannelPointsDialog::selectReward(const GqlChannelPointReward &reward)
     {
         if (reward.isUserInputRequired)
         {
-            if (!this->input_)
+            if (!this->input_ || !this->input_->acceptsRewardPromptFor(this->channel_.get()))
             {
                 this->setStatus(
-                    uiText("Open a chat input to redeem this reward."), true);
+                    uiText("Open this reward in a chat input for its channel."), true);
                 return;
             }
             const auto token = this->authTokenOrMessage();
@@ -2259,11 +2133,11 @@ void ChannelPointsDialog::selectReward(const GqlChannelPointReward &reward)
             {
                 return;
             }
-            auto *channel = this->channel_;
+            auto *channel = this->channel_.get();
             const auto channelId = this->redeemChannelId();
             const auto weak = channel->weak_from_this();
             this->input_->showChannelPointRewardPrompt(
-                QStringLiteral("Redeem %1").arg(reward.title),
+                reward.title, rewardColor(reward),
                 reward.prompt.isEmpty()
                     ? uiText(QStringLiteral("Add a message"))
                     : reward.prompt,
@@ -2293,9 +2167,9 @@ void ChannelPointsDialog::selectReward(const GqlChannelPointReward &reward)
 
     if (reward.rewardType == "SINGLE_MESSAGE_BYPASS_SUB_MODE")
     {
-        if (!this->input_)
+        if (!this->input_ || !this->input_->acceptsRewardPromptFor(this->channel_.get()))
         {
-            this->setStatus(uiText("Open a chat input to redeem this reward."),
+            this->setStatus(uiText("Open this reward in a chat input for its channel."),
                             true);
             return;
         }
@@ -2304,14 +2178,14 @@ void ChannelPointsDialog::selectReward(const GqlChannelPointReward &reward)
         {
             return;
         }
-        auto *channel = this->channel_;
+        auto *channel = this->channel_.get();
         const auto channelId = this->redeemChannelId();
         const auto weak = channel->weak_from_this();
         const auto cost = reward.cost;
         const auto successMessage =
             uiText(QStringLiteral("Sub-only message sent"));
         this->input_->showChannelPointRewardPrompt(
-            reward.title, uiText(QStringLiteral("Send a message")), true,
+            reward.title, rewardColor(reward), uiText(QStringLiteral("Send a message")), true,
             [weak, channelId, cost, token,
              successMessage](const QString &text) {
                 auto success = [weak, successMessage](
@@ -2332,9 +2206,9 @@ void ChannelPointsDialog::selectReward(const GqlChannelPointReward &reward)
 
     if (reward.rewardType == "SEND_HIGHLIGHTED_MESSAGE")
     {
-        if (!this->input_)
+        if (!this->input_ || !this->input_->acceptsRewardPromptFor(this->channel_.get()))
         {
-            this->setStatus(uiText("Open a chat input to redeem this reward."),
+            this->setStatus(uiText("Open this reward in a chat input for its channel."),
                             true);
             return;
         }
@@ -2343,14 +2217,14 @@ void ChannelPointsDialog::selectReward(const GqlChannelPointReward &reward)
         {
             return;
         }
-        auto *channel = this->channel_;
+        auto *channel = this->channel_.get();
         const auto channelId = this->redeemChannelId();
         const auto weak = channel->weak_from_this();
         const auto cost = reward.cost;
         const auto successMessage =
             uiText(QStringLiteral("Highlighted message sent"));
         this->input_->showChannelPointRewardPrompt(
-            reward.title, uiText(QStringLiteral("Send a highlighted message")),
+            reward.title, rewardColor(reward), uiText(QStringLiteral("Send a highlighted message")),
             true,
             [weak, channelId, cost, token,
              successMessage](const QString &text) {
@@ -2399,7 +2273,7 @@ void ChannelPointsDialog::selectReward(const GqlChannelPointReward &reward)
         return;
     }
 
-    this->setStatus(uiText("This power-up is not supported by Leafyrino yet."),
+    this->setStatus(uiText("This power-up is not supported by Chatterino Noctis yet."),
                     true);
 }
 
@@ -2487,6 +2361,10 @@ void ChannelPointsDialog::openEmotePicker(const GqlChannelPointReward &reward,
     this->selectedGigantifiedEmoteValid_ = false;
     this->gigantifyMessage_.clear();
     this->view_ = View::Emotes;
+    if (this->catalogHeight_ > 0)
+    {
+        this->resize(this->width(), this->catalogHeight_);
+    }
     this->headerTitleLabel_->setText(reward.title);
     this->emoteSearch_.clear();
     this->emoteVisibleLimit_ = EMOTE_GRID_INITIAL_LIMIT;
@@ -2509,6 +2387,10 @@ void ChannelPointsDialog::openGigantifyPicker(
     this->selectedGigantifiedEmoteValid_ = false;
     this->gigantifyMessage_.clear();
     this->view_ = View::Emotes;
+    if (this->catalogHeight_ > 0)
+    {
+        this->resize(this->width(), this->catalogHeight_);
+    }
     this->headerTitleLabel_->setText(reward.title);
     this->emoteSearch_.clear();
     this->emoteVisibleLimit_ = EMOTE_GRID_INITIAL_LIMIT;
@@ -3033,10 +2915,25 @@ void ChannelPointsDialog::applySizeConstraints()
     const int targetHeight =
         std::max(1, int(DEFAULT_DIALOG_SIZE.height() * this->scale()));
     const int minimumWidth =
-        std::min(targetWidth, std::max(118, int(220 * this->scale())));
+        std::min(targetWidth, std::max(118, int(260 * this->scale())));
     const int minimumHeight =
-        std::min(targetHeight, std::max(120, int(210 * this->scale())));
-    this->setMinimumSize(QSize(minimumWidth, minimumHeight));
+        std::min(targetHeight, std::max(120, int(235 * this->scale())));
+    this->setMinimumSize(minimumWidth, minimumHeight);
+    if (this->view_ == View::RewardDetail && !this->rebuildingContent_ &&
+        this->manualDetailHeight_ == 0 && !(this->resizeGrip_ && this->resizeGrip_->isResizing()))
+    {
+        const auto width = std::max(1, this->scrollArea_->viewport()->width());
+        const auto margins = this->mainLayout_->contentsMargins();
+        const auto headerHeight = this->headerWidget_->heightForWidth(this->width() - margins.left() - margins.right());
+        const auto chrome = margins.top() + margins.bottom() + scaledSeparatorHeight(this->scale()) +
+                            std::max(headerHeight, this->headerWidget_->minimumSizeHint().height());
+        const auto body = this->contentLayout_->hasHeightForWidth()
+                              ? this->contentLayout_->heightForWidth(width)
+                              : this->contentLayout_->sizeHint().height();
+        const int preferredHeight = qRound(292 * this->scale());
+        this->resize(this->width(), std::min(targetHeight,
+            std::max(preferredHeight, chrome + body + 2)));
+    }
 }
 
 }  // namespace chatterino

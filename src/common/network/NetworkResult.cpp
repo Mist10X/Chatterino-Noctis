@@ -14,9 +14,10 @@
 namespace chatterino {
 
 NetworkResult::NetworkResult(NetworkError error, const QVariant &httpStatusCode,
-                             QByteArray data, QByteArray etag)
+                             QByteArray data, QByteArray etag, QString cachedFile)
     : data_(std::move(data))
     , etag_(std::move(etag))
+    , cachedFile_(std::move(cachedFile))
     , error_(error)
 {
     if (httpStatusCode.isValid())

@@ -30,6 +30,7 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
+#include <QTextLayout>
 
 #include <cmath>
 #include <utility>
@@ -460,6 +461,12 @@ void InputHighlighter::highlightEmotes(const QString &text)
     {
         tall.setPointSizeF(tall.pointSizeF() * 1.4);
     }
+    // Qt paints selected highlighter text using the selection foreground,
+    // regardless of its transparent character format. With large negative
+    // letter spacing, those tall glyphs can overlap and extend outside the
+    // emote's reserved width. Compress the glyphs themselves instead and
+    // allocate the remaining width using nonnegative spacing.
+    tall.setStretch(1);
     const QFontMetricsF tallMetrics(tall);
 
     auto it = this->tokenRegex.globalMatch(text);
@@ -504,7 +511,8 @@ void InputHighlighter::highlightEmotes(const QString &text)
         format.setFont(tall);
         format.setFontLetterSpacingType(QFont::AbsoluteSpacing);
         format.setFontLetterSpacing(
-            (width - tallMetrics.horizontalAdvance(match.captured())) /
+            std::max<qreal>(0, width - tallMetrics.horizontalAdvance(
+                                           match.captured())) /
             length);
         this->setFormat(int(match.capturedStart()), length, format);
         data->emotes.push_back({int(match.capturedStart()), emote,
@@ -524,6 +532,8 @@ void InputHighlighter::paintEmotes(QPainter &painter,
     {
         return;
     }
+    painter.save();
+    painter.setClipRect(edit.viewport()->rect(), Qt::IntersectClip);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     const auto scale = float(std::max(1.0, edit.devicePixelRatioF() * 1.5));
     const auto selection = edit.textCursor();
@@ -535,44 +545,85 @@ void InputHighlighter::paintEmotes(QPainter &painter,
         {
             continue;
         }
+        const auto *layout = block.layout();
+        if (!layout)
+        {
+            continue;
+        }
         for (const auto &shown : data->emotes)
         {
-            QTextCursor cursor(block);
-            cursor.setPosition(block.position() + shown.start);
-            const auto caret = edit.cursorRect(cursor);
-            const QRectF target(caret.left() + 1,
-                                caret.center().y() - shown.size.height() / 2,
-                                shown.size.width(), shown.size.height());
-            // A selection paints the hidden letters in a visible colour:
-            // cover them with the selection colour under the emote.
             const auto from = block.position() + shown.start;
-            if (selection.hasSelection() &&
-                selection.selectionStart() < from + shown.length &&
-                selection.selectionEnd() > from)
+            const auto end = shown.start + shown.length;
+            const auto selected = selection.hasSelection() &&
+                                  selection.selectionStart() <
+                                      from + shown.length &&
+                                  selection.selectionEnd() > from;
+
+            // Use each visual line's layout, not the cursor rectangle at the
+            // token's end (which can already belong to the following line).
+            // Mask the hidden selected characters inside their own line.
+            // If an unusually narrow editor wraps the token, keep the image
+            // inside its largest available reserved segment.
+            QRectF imageSlot;
+            const auto firstLine = layout->lineForTextPosition(shown.start);
+            if (!firstLine.isValid())
             {
-                QTextCursor end(block);
-                end.setPosition(from + shown.length);
-                const auto right = edit.cursorRect(end).left();
-                const auto line = edit.cursorRect(cursor);
-                painter.fillRect(QRectF(caret.left(), line.top(),
-                                        std::max<qreal>(1, right - caret.left()),
-                                        line.height()),
-                                 highlight);
+                continue;
             }
+            for (int lineIndex = firstLine.lineNumber();
+                 lineIndex < layout->lineCount(); ++lineIndex)
+            {
+                const auto line = layout->lineAt(lineIndex);
+                const auto startOnLine = std::max(shown.start, line.textStart());
+                const auto endOnLine =
+                    std::min(end, line.textStart() + line.textLength());
+                if (endOnLine <= startOnLine)
+                {
+                    break;
+                }
+
+                QTextCursor cursor(block);
+                cursor.setPosition(block.position() + startOnLine);
+                const auto caret = edit.cursorRect(cursor);
+                const auto width = line.cursorToX(endOnLine) -
+                                   line.cursorToX(startOnLine);
+                const QRectF slot(caret.left() + std::min<qreal>(0, width),
+                                  caret.top(), std::abs(width), caret.height());
+                if (selected && slot.isValid())
+                {
+                    painter.fillRect(slot, highlight);
+                }
+                if (slot.width() > imageSlot.width())
+                {
+                    imageSlot = slot;
+                }
+                if (endOnLine == end)
+                {
+                    break;
+                }
+            }
+            if (!imageSlot.isValid())
+            {
+                continue;
+            }
+
             const auto &image = shown.emote->images.getImageOrLoaded(scale);
             if (auto pixmap = image->pixmapOrLoad())
             {
-                // keep the emote's own proportions inside the reserved box
-                auto box = QSizeF(pixmap->size()).scaled(target.size(),
-                                                         Qt::KeepAspectRatio);
+                const auto box = QSizeF(pixmap->size()).scaled(
+                    shown.size.boundedTo(imageSlot.size()), Qt::KeepAspectRatio);
+                painter.save();
+                painter.setClipRect(imageSlot, Qt::IntersectClip);
                 painter.drawPixmap(
-                    QRectF(target.left() + (target.width() - box.width()) / 2,
-                           target.top() + (target.height() - box.height()) / 2,
+                    QRectF(imageSlot.center().x() - box.width() / 2,
+                           imageSlot.center().y() - box.height() / 2,
                            box.width(), box.height()),
                     *pixmap, QRectF(pixmap->rect()));
+                painter.restore();
             }
         }
     }
+    painter.restore();
 }
 
 void InputHighlighter::highlightBlock(const QString &text)

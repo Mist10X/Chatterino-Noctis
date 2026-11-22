@@ -18,6 +18,7 @@
 #include <QStringBuilder>
 #include <QUrl>
 
+#include <algorithm>
 #include <utility>
 
 namespace chatterino {
@@ -29,6 +30,7 @@ using State = LinkInfo::State;
 /// One answer of the link resolver, shared by every message with that URL.
 struct CachedLink {
     bool ok = false;
+    bool transient = false;
     QString tooltip;
     QString thumbnail;
     QString link;
@@ -37,6 +39,7 @@ struct CachedLink {
 
 constexpr qsizetype MAX_CACHED = 300;
 constexpr qint64 KEEP_RESOLVED_MS = 30LL * 60 * 1000;
+constexpr qint64 RETRY_TRANSIENT_MS = 15000;
 constexpr qint64 KEEP_FAILED_MS = 3LL * 60 * 1000;
 constexpr int REQUEST_TIMEOUT_MS = 8000;
 
@@ -72,6 +75,15 @@ void remember(const QString &url, CachedLink entry)
     }
 }
 
+qint64 lifetime(const CachedLink &entry)
+{
+    if (entry.ok)
+    {
+        return KEEP_RESOLVED_MS;
+    }
+    return entry.transient ? RETRY_TRANSIENT_MS : KEEP_FAILED_MS;
+}
+
 const CachedLink *fresh(const QString &url)
 {
     auto it = cache().constFind(url);
@@ -80,7 +92,7 @@ const CachedLink *fresh(const QString &url)
         return nullptr;
     }
     const auto age = QDateTime::currentMSecsSinceEpoch() - it->at;
-    if (age > (it->ok ? KEEP_RESOLVED_MS : KEEP_FAILED_MS))
+    if (age >= lifetime(*it))
     {
         return nullptr;
     }
@@ -89,7 +101,7 @@ const CachedLink *fresh(const QString &url)
 
 /// Thumbnails are loaded by this client: only public web addresses, never
 /// localhost / LAN / link-local / file and other local resources.
-bool isPublicImageUrl(const QString &text)
+bool isPublicWebUrl(const QString &text)
 {
     const QUrl url(text);
     const auto scheme = url.scheme().toLower();
@@ -152,11 +164,11 @@ void apply(LinkInfo *info, const CachedLink &entry)
 {
     if (entry.ok)
     {
-        if (!entry.thumbnail.isEmpty() && isPublicImageUrl(entry.thumbnail))
+        if (!entry.thumbnail.isEmpty() && isPublicWebUrl(entry.thumbnail))
         {
-            info->setThumbnail(Image::fromUrl({entry.thumbnail}));
+            info->setThumbnail(Image::fromLinkThumbnail({entry.thumbnail}));
         }
-        if (getSettings()->unshortLinks && !entry.link.isEmpty())
+        if (getSettings()->unshortLinks && isPublicWebUrl(entry.link))
         {
             info->setResolvedUrl(entry.link);
         }
@@ -165,6 +177,8 @@ void apply(LinkInfo *info, const CachedLink &entry)
         return;
     }
     info->setTooltip(entry.tooltip);
+    const auto elapsed = entry.at > 0 ? QDateTime::currentMSecsSinceEpoch() - entry.at : 0;
+    info->deferRetry(std::max<qint64>(0, lifetime(entry) - elapsed), entry.transient);
     info->setState(State::Errored);
 }
 
@@ -181,18 +195,10 @@ void finish(const QString &url, const CachedLink &entry)
     }
 }
 
-}  // namespace
-
-void LinkResolver::resolve(LinkInfo *info)
+void resolveInfo(LinkInfo *info)
 {
     assert(info);
-
-    if (info->state() != State::Created)
-    {
-        return;
-    }
-
-    if (!getSettings()->linkInfoTooltip && !getSettings()->showLinkTitles)
+    if (!info->canResolve())
     {
         return;
     }
@@ -202,6 +208,10 @@ void LinkResolver::resolve(LinkInfo *info)
     // Same link seen before (any message): no new request.
     if (const auto *hit = fresh(url))
     {
+        if (info->hasError() && !hit->ok)
+        {
+            return;
+        }
         info->setState(State::Loading);
         apply(info, *hit);
         return;
@@ -224,7 +234,8 @@ void LinkResolver::resolve(LinkInfo *info)
         .onSuccess([url](const NetworkResult &result) {
             const auto root = result.parseJson();
             CachedLink entry;
-            if (root["status"].toInt() == 200)
+            const int status = root["status"].toInt();
+            if (status == 200)
             {
                 entry.ok = true;
                 entry.tooltip = QUrl::fromPercentEncoding(
@@ -238,6 +249,7 @@ void LinkResolver::resolve(LinkInfo *info)
             }
             else
             {
+                entry.transient = status == 0 || status == 408 || status >= 500;
                 entry.tooltip = fallbackTooltip(
                     url, uiText("This site does not provide a preview"));
             }
@@ -245,12 +257,30 @@ void LinkResolver::resolve(LinkInfo *info)
         })
         .onError([url](const NetworkResult &result) {
             CachedLink entry;
+            const int status = result.status().value_or(0);
+            entry.transient = status == 0 || status == 408 || status >= 500;
             entry.tooltip = fallbackTooltip(
                 url, uiText(u"Preview unavailable (") % result.formatError() %
                          u')');
             finish(url, entry);
         })
         .execute();
+}
+
+}  // namespace
+
+void LinkResolver::resolve(LinkInfo *info)
+{
+    if (getSettings()->linkInfoTooltip || getSettings()->showLinkTitles ||
+        getSettings()->unshortLinks)
+    {
+        resolveInfo(info);
+    }
+}
+
+void LinkResolver::resolveThumbnail(LinkInfo *info)
+{
+    resolveInfo(info);
 }
 
 }  // namespace chatterino

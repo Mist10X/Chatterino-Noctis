@@ -112,7 +112,7 @@ ChannelPointsChartDialog::ChannelPointsChartDialog(TwitchChannel *channel,
         },
         this, QSize{3, 3});
     this->closeButton_->setScaleIndependentSize(18, 18);
-    this->closeButton_->setToolTip(uiText(QStringLiteral("Close")));
+    this->closeButton_->setAccessibleName(uiText(QStringLiteral("Close")));
     this->closeButton_->setCursor(Qt::PointingHandCursor);
     QObject::connect(this->closeButton_, &Button::leftClicked, this,
                      &QWidget::close);
@@ -255,7 +255,7 @@ void ChannelPointsChartDialog::refreshHeader()
         uiText(QStringLiteral("%1's channel points"))
             .arg(channelDisplayName(this->channel_)));
     this->headerSubtitleLabel_->setText(
-        uiText(QStringLiteral("Only logged while Leafyrino is open. Dates are shown "
+        uiText(QStringLiteral("Only logged while Chatterino Noctis is open. Dates are shown "
                        "in UTC.")));
 }
 
@@ -268,6 +268,7 @@ void ChannelPointsChartDialog::refreshStyle()
         fonts->getFont(FontStyle::UiMediumBold, headerScale));
     this->headerSubtitleLabel_->setFont(
         fonts->getFont(FontStyle::UiMedium, subtitleScale));
+    this->chartView_->setFont(fonts->getFont(FontStyle::UiMedium, subtitleScale));
 
     const auto *theme = this->theme;
     const auto background = theme->window.background.name();

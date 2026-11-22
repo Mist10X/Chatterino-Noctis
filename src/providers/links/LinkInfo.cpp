@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "providers/links/LinkInfo.hpp"
+#include "providers/links/ImagePreview.hpp"
 
 #include "debug/AssertInGuiThread.hpp"
 
@@ -40,6 +41,27 @@ bool LinkInfo::isPending() const
     return this->state_ == State::Created;
 }
 
+bool LinkInfo::canResolve() const
+{
+    return this->isPending() || (this->hasError() && this->retryAfter_.hasExpired());
+}
+
+int LinkInfo::retryDelay() const
+{
+    return static_cast<int>(this->retryAfter_.remainingTime());
+}
+
+bool LinkInfo::isTransientFailure() const
+{
+    return this->hasError() && this->transientFailure_;
+}
+
+void LinkInfo::deferRetry(qint64 delayMs, bool transient)
+{
+    this->transientFailure_ = transient;
+    this->retryAfter_.setRemainingTime(delayMs);
+}
+
 bool LinkInfo::isLoading() const
 {
     return this->state_ == State::Loading;
@@ -62,7 +84,8 @@ bool LinkInfo::hasError() const
 
 bool LinkInfo::hasThumbnail() const
 {
-    return this->thumbnail_ && !this->thumbnail_->url().string.isEmpty();
+    return this->thumbnail_ && !this->thumbnail_->url().string.isEmpty() &&
+           !imagepreview::wasDeleted(this->originalUrl_);
 }
 
 QString LinkInfo::tooltip() const
@@ -78,7 +101,8 @@ ImagePtr LinkInfo::thumbnail() const
 void LinkInfo::setState(State state)
 {
     assertInGuiThread();
-    assert(state >= this->state_);
+    assert(state >= this->state_ ||
+           (this->hasError() && state == State::Loading));
 
     if (this->state_ == state)
     {

@@ -3103,24 +3103,37 @@ void Helix::sendChatMessage(
         json["reply_parent_message_id"] = args.replyParentMessageID;
     }
 
-    this->makePost("chat/messages", {})
+    auto request = args.oauthToken.isEmpty()
+                       ? this->makePost("chat/messages", {})
+                       : this->makePost("chat/messages", {}, args.clientId,
+                                        args.oauthToken);
+    std::move(request)
         .json(json)
-        .onSuccess([successCallback](const NetworkResult &result) {
+        .timeout(10000)
+        .singleUseUpload()
+        .onSuccess([successCallback, failureCallback](const NetworkResult &result) {
             if (result.status() != 200)
             {
-                qCWarning(chatterinoTwitch)
-                    << "Success result for sending chat message was "
-                    << result.formatError() << "but we expected it to be 200";
+                failureCallback(Error::DeliveryUnknown, result.formatError());
+                return;
             }
-            auto json = result.parseJson();
-
-            successCallback(HelixSentMessage(
-                json.value("data").toArray().at(0).toObject()));
+            const auto data = result.parseJson().value("data").toArray();
+            const auto item = data.size() == 1 ? data.first().toObject()
+                                               : QJsonObject{};
+            if (!item.value("is_sent").isBool() ||
+                (item.value("is_sent").toBool() &&
+                 item.value("message_id").toString().isEmpty()))
+            {
+                failureCallback(Error::DeliveryUnknown, QString{});
+                return;
+            }
+            successCallback(HelixSentMessage(item));
         })
         .onError([failureCallback](const NetworkResult &result) -> void {
-            if (!result.status())
+            if (!result.status() || *result.status() >= 500 ||
+                *result.status() < 400)
             {
-                failureCallback(Error::Unknown, result.formatError());
+                failureCallback(Error::DeliveryUnknown, result.formatError());
                 return;
             }
 

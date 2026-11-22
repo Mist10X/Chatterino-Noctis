@@ -13,6 +13,7 @@
 #include "widgets/buttons/Button.hpp"
 #include "widgets/buttons/SvgButton.hpp"
 #include "widgets/helper/Line.hpp"
+#include "widgets/helper/ChannelAvatarLabel.hpp"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -146,14 +147,15 @@ protected:
         if (this->fillProgress_ > 0.0 && this->fillColor_.isValid() &&
             bounds.width() > 0 && bounds.height() > 0)
         {
-            QPainterPath clip;
-            clip.addRoundedRect(bounds, 2.0, 2.0);
-            painter.setClipPath(clip);
-
             QRectF fill = bounds;
             fill.setWidth(bounds.width() * this->fillProgress_);
-            painter.fillRect(fill, this->fillColor_);
-            painter.setClipping(false);
+            QPainterPath body;
+            body.addRoundedRect(bounds, 2.0, 2.0);
+            QPainterPath progress;
+            progress.addRect(fill);
+            // Paint the actual intersection, not a binary raster clip, so
+            // the rounded end stays antialiased throughout the animation.
+            painter.fillPath(body.intersected(progress), this->fillColor_);
         }
 
         if (this->outlineColor_.isValid())
@@ -306,7 +308,7 @@ std::vector<QPointer<PollDialog>> PollDialog::activeDialogs_;
 
 PollDialog::PollDialog(TwitchChannel *channel, QWidget *parent)
     : DraggablePopup(true, parent)
-    , channel_(channel)
+    , channel_(channel ? channel->sharedFromThis() : nullptr)
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->setObjectName("PollDialog");
@@ -334,7 +336,7 @@ PollDialog::PollDialog(TwitchChannel *channel, QWidget *parent)
     this->headerSubtitleLabel_ = new QLabel("", this->headerWidget_);
     this->headerSubtitleLabel_->setObjectName("PollHeaderSubtitle");
     headerTextLayout->addWidget(this->headerTitleLabel_);
-    headerTextLayout->addWidget(this->headerSubtitleLabel_);
+    headerTextLayout->addWidget(withChannelAvatar(this->headerSubtitleLabel_, this->channel_->getName()));
     headerLayout->addLayout(headerTextLayout, 1);
 
     this->pinButton_ = this->createPinButton();
@@ -353,7 +355,7 @@ PollDialog::PollDialog(TwitchChannel *channel, QWidget *parent)
         },
         this, QSize{3, 3});
     this->closeButton_->setScaleIndependentSize(18, 18);
-    this->closeButton_->setToolTip(uiText("Close"));
+    this->closeButton_->setAccessibleName(uiText("Close"));
     this->closeButton_->setCursor(Qt::PointingHandCursor);
     QObject::connect(this->closeButton_, &Button::leftClicked, this,
                      &QWidget::close);
@@ -428,7 +430,7 @@ void PollDialog::showDialog(TwitchChannel *channel, QWidget *parent,
             it = activeDialogs_.erase(it);
             continue;
         }
-        if ((*it)->channel_ == channel)
+        if ((*it)->channel_.get() == channel)
         {
             (*it)->showInactivePollResults_ = mode == OpenMode::ShowPollResults;
             (*it)->setPoll(pollToShow);
@@ -554,7 +556,7 @@ void PollDialog::refreshHeader()
     if (!this->currentPoll_)
     {
         this->headerTitleLabel_->setText(uiText("Start a Poll"));
-        this->headerSubtitleLabel_->setText('#' + this->channel_->getName());
+        this->headerSubtitleLabel_->setText(this->channel_->getName());
         return;
     }
 
@@ -565,7 +567,7 @@ void PollDialog::refreshHeader()
     const auto status =
         votingEnded ? QString("COMPLETED") : this->currentPoll_->status;
     this->headerSubtitleLabel_->setText(
-        uiText(QString("<span style=\"font-weight:400;\">#%1</span>"
+        uiText(QString("<span style=\"font-weight:400;\">%1</span>"
                 " <span style=\"font-weight:400;\">•</span> "
                 "<span style=\"font-weight:700; color:%2;\">%3</span>"))
             .arg(this->channel_->getName().toHtmlEscaped(),

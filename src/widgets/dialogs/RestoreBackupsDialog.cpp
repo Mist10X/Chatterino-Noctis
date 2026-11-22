@@ -61,13 +61,13 @@ RestoreBackupsDialog::RestoreBackupsDialog(backup::FileData fileData,
           uiText(u"Some backups are damaged or otherwise unreadable."_s))
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
-    this->setWindowTitle(uiText(u"Leafyrino - Restore Backup of ") %
+    this->setWindowTitle(uiText(u"Chatterino Noctis - Restore Backup of ") %
                          this->fileData.fileKind % '?');
 
     auto *layout = new QVBoxLayout(this);
 
     auto *description =
-        new QLabel(uiText(u"Chatterino ") % this->fileData.fileKind.toLower() %
+        new QLabel(uiText(u"Chatterino Noctis ") % this->fileData.fileKind.toLower() %
                    uiText(u" failed to load: ") % prevError % u"<p>" %
                    this->fileData.fileDescription %
                    uiText(u"<p>There are backups of this file.<br>Do you want to "
@@ -129,7 +129,7 @@ RestoreBackupsDialog::RestoreBackupsDialog(backup::FileData fileData,
     });
     QObject::connect(ignoreBtn, &QAbstractButton::clicked, this, [this] {
         auto res = QMessageBox::question(
-            this, uiText(u"Leafyrino - Discard Backup?"_s),
+            this, uiText(u"Chatterino Noctis - Discard Backup?"_s),
             uiText(u"Are you sure you want to discard the backup? Doing so will "_s
             "overwrite and discard any previous settings."));
         if (res == QMessageBox::Yes)

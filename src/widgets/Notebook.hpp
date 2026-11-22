@@ -47,6 +47,7 @@ public:
     NotebookTab *addPageAt(QWidget *page, int position,
                            QString title = QString(), bool select = false);
     void removePage(QWidget *page);
+    bool canClosePage(const QWidget *page) const;
     void duplicatePage(QWidget *page);
     void removeCurrentPage();
 
@@ -101,6 +102,7 @@ public:
 
     bool getShowAddButton() const;
     void setShowAddButton(bool value);
+    float tabScale() const;
 
     void setTabLocation(NotebookTabLocation location);
 
@@ -232,6 +234,7 @@ public:
     SplitNotebook(Window *parent);
 
     SplitContainer *addPage(bool select = false);
+    void ensureWhispersTab();
     SplitContainer *getOrAddSelectedPage();
 
     SplitContainer *getSelectedPage();

@@ -19,6 +19,7 @@
 #include "widgets/dialogs/ColorPickerDialog.hpp"
 #include "widgets/dialogs/SettingsDialog.hpp"
 #include "widgets/helper/TabAvatars.hpp"
+#include "widgets/helper/RoundAvatar.hpp"
 #include "widgets/Notebook.hpp"
 #include "widgets/splits/DraggedSplit.hpp"
 #include "widgets/splits/Split.hpp"
@@ -37,6 +38,7 @@
 #include <QLineEdit>
 #include <QMimeData>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 
 #include <algorithm>
@@ -184,6 +186,19 @@ NotebookTab::NotebookTab(Notebook *notebook)
 
     this->positionChangedAnimation_.setEasingCurve(
         QEasingCurve(QEasingCurve::InCubic));
+    this->selectionAnimation_.setDuration(150);
+    this->selectionAnimation_.setEasingCurve(QEasingCurve::InOutSine);
+    this->selectionAnimation_.setStartValue(0.0);
+    this->selectionAnimation_.setEndValue(1.0);
+    QObject::connect(&this->selectionAnimation_, &QVariantAnimation::valueChanged,
+                     this, [this] {
+                         if (this->showsAvatar() && getSettings()->tabAvatarStyle.getEnum() ==
+                                                        TabAvatarStyle::AvatarOnly)
+                         {
+                             this->tabSizeChanged();
+                         }
+                         this->update();
+                     });
 
     getSettings()->showTabCloseButton.connect(
         [this] {
@@ -231,16 +246,19 @@ NotebookTab::NotebookTab(Notebook *notebook)
 
     // XXX: this doesn't update after changing hotkeys
 
-    this->menu_.addAction(uiText("Close Tab"),
+    auto *closeTabAction = this->menu_.addAction(uiText("Close Tab"),
                           getApp()->getHotkeys()->getDisplaySequence(
                               HotkeyCategory::Window, "removeTab"),
                           [this]() {
                               this->notebook_->removePage(this->page);
                           });
+    QObject::connect(&this->menu_, &QMenu::aboutToShow, this,
+                     [this, closeTabAction] {
+                         closeTabAction->setVisible(
+                             this->notebook_->canClosePage(this->page));
+                     });
 
-    this->closeMultipleTabsMenu_ = new QMenu("Close Multiple Tabs", this);
-
-    this->menu_.addMenu(this->closeMultipleTabsMenu_);
+    this->closeMultipleTabsMenu_ = this->menu_.addMenu(uiText("Close Multiple Tabs"));
     getSettings()->tabDirection.connect(
         [this](int val) {
             this->recreateCloseMultipleTabsMenu(
@@ -259,9 +277,14 @@ NotebookTab::NotebookTab(Notebook *notebook)
             }
         });
 
-    this->menu_.addAction(uiText("Duplicate Tab"), [this]() {
+    auto *duplicateTabAction = this->menu_.addAction(uiText("Duplicate Tab"), [this]() {
         this->notebook_->duplicatePage(this->page);
     });
+    QObject::connect(&this->menu_, &QMenu::aboutToShow, this,
+                     [this, duplicateTabAction] {
+                         duplicateTabAction->setVisible(
+                             this->notebook_->canClosePage(this->page));
+                     });
 
     this->highlightNewMessagesAction_ =
         new QAction(uiText("Mark Tab as Unread on New Messages"), &this->menu_);
@@ -362,13 +385,13 @@ void NotebookTab::recreateCloseMultipleTabsMenu(
     {
         case Top:
         case Bottom:
-            beforeSelectedName = "Left";
-            afterSelectedName = "Right";
+            beforeSelectedName = uiText("Left");
+            afterSelectedName = uiText("Right");
             break;
         case Left:
         case Right:
-            beforeSelectedName = "Top";
-            afterSelectedName = "Bottom";
+            beforeSelectedName = uiText("Top");
+            afterSelectedName = uiText("Bottom");
             break;
     }
 
@@ -556,7 +579,7 @@ void NotebookTab::growWidth(int width)
 
 int NotebookTab::normalTabWidthForHeight(int height) const
 {
-    float scale = this->scale();
+    float scale = this->notebook_->tabScale();
     int width = 0;
 
     auto metrics =
@@ -565,6 +588,11 @@ int NotebookTab::normalTabWidthForHeight(int height) const
     if (this->avatarOnly())
     {
         return height;
+    }
+    if (!this->notebook_->canClosePage(this->page) ||
+        this->getTitle() == QStringLiteral("/whispers"))
+    {
+        return height + (this->hasXButton() ? int(10 * scale) : 0);
     }
 
     // room for the avatar and the gap after it
@@ -596,6 +624,10 @@ int NotebookTab::normalTabWidthForHeight(int height) const
                            static_cast<int>(150 * scale) + avatar);
     }
 
+    if (this->showsAvatar() && getSettings()->tabAvatarStyle.getEnum() == TabAvatarStyle::AvatarOnly)
+    {
+        return height + qRound((width - height) * this->selectionAnimation_.currentValue().toReal());
+    }
     return width;
 }
 
@@ -607,11 +639,13 @@ void NotebookTab::refreshAndCommitSize(bool notify)
 
 void NotebookTab::refreshSize()
 {
-    float scale = this->scale();
+    float scale = this->notebook_->tabScale();
     auto height = static_cast<int>(NOTEBOOK_TAB_HEIGHT * scale);
     int width = this->normalTabWidthForHeight(height);
     this->computedMinimumSize = {width, height};
-    this->setToolTip(this->showsAvatar() ? this->getTitle() : QString());
+    const bool whispers = !this->notebook_->canClosePage(this->page) ||
+                          this->getTitle() == QStringLiteral("/whispers");
+    this->setAccessibleName(whispers ? uiText("Whispers") : this->getTitle());
 }
 
 void NotebookTab::commitSize(bool notify)
@@ -752,14 +786,14 @@ bool NotebookTab::showsAvatar() const
 
 bool NotebookTab::avatarOnly() const
 {
-    return !this->selected_ && this->showsAvatar() &&
+    return this->selectionAnimation_.currentValue().toReal() == 0.0 && this->showsAvatar() &&
            getSettings()->tabAvatarStyle.getEnum() ==
                TabAvatarStyle::AvatarOnly;
 }
 
 int NotebookTab::avatarDiameter() const
 {
-    return static_cast<int>(18 * this->scale());
+    return static_cast<int>(18 * this->notebook_->tabScale());
 }
 
 void NotebookTab::paintAvatar(QPainter &painter, QRect rect,
@@ -769,8 +803,7 @@ void NotebookTab::paintAvatar(QPainter &painter, QRect rect,
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
 
-    auto pixels =
-        static_cast<int>(std::lround(rect.width() * this->devicePixelRatio()));
+    const int pixels = avatarPixelSize(rect.width(), this->devicePixelRatioF());
     auto avatar = TabAvatars::instance().circle(this->avatarLogin_, pixels);
     if (!avatar.isNull())
     {
@@ -794,7 +827,7 @@ void NotebookTab::paintAvatar(QPainter &painter, QRect rect,
     {
         auto ring = this->isLive_ ? this->theme->tabs.liveIndicator
                                   : this->theme->tabs.rerunIndicator;
-        auto width = 1.5 * this->scale();
+        auto width = 1.5 * this->notebook_->tabScale();
         painter.setPen(QPen(ring, width));
         painter.setBrush(Qt::NoBrush);
         painter.drawEllipse(QRectF(rect).adjusted(-width / 2, -width / 2,
@@ -938,6 +971,21 @@ void NotebookTab::copyHighlightStateAndSourcesFrom(const NotebookTab *sourceTab)
 
 void NotebookTab::setSelected(bool value)
 {
+    if (this->selected_ != value)
+    {
+        this->selectionAnimation_.setDirection(value ? QAbstractAnimation::Forward
+                                                     : QAbstractAnimation::Backward);
+        if (!this->isVisible())
+        {
+            this->selectionAnimation_.stop();
+            this->selectionAnimation_.setCurrentTime(
+                value ? this->selectionAnimation_.duration() : 0);
+        }
+        else if (this->selectionAnimation_.state() != QAbstractAnimation::Running)
+        {
+            this->selectionAnimation_.start();
+        }
+    }
     this->selected_ = value;
 
     // in "Avatar only" the selected tab also shows its name
@@ -1198,7 +1246,7 @@ void NotebookTab::paintEvent(QPaintEvent *)
 {
     auto *app = getApp();
     QPainter painter(this);
-    float scale = this->scale();
+    float scale = this->notebook_->tabScale();
 
     painter.setFont(app->getFonts()->getFont(FontStyle::UiTabs, scale));
     auto metrics = app->getFonts()->getFontMetrics(FontStyle::UiTabs, scale);
@@ -1268,6 +1316,7 @@ void NotebookTab::paintEvent(QPaintEvent *)
                                       vertical ? -1.5 * scale : -3 * scale);
     const qreal radius = 7 * scale;
 
+    const qreal selection = this->selectionAnimation_.currentValue().toReal();
     QColor fill;
     if (this->hasCustomTabColor())
     {
@@ -1282,14 +1331,12 @@ void NotebookTab::paintEvent(QPaintEvent *)
             fill = fill.darker(110);
         }
     }
-    else if (this->selected_)
+    else if (selection > 0.0 || this->mouseOver_)
     {
-        fill = mix(windowBackground, this->theme->accent,
-                   windowFocused ? 0.17 : 0.11);
-    }
-    else if (this->mouseOver_)
-    {
-        fill = mix(windowBackground, colors.text, 0.08);
+        const auto base = this->mouseOver_ ? mix(windowBackground, colors.text, 0.08)
+                                           : windowBackground;
+        fill = mix(base, mix(windowBackground, this->theme->accent,
+                             windowFocused ? 0.17 : 0.11), selection);
     }
     if (fill.isValid())
     {
@@ -1338,6 +1385,14 @@ void NotebookTab::paintEvent(QPaintEvent *)
                              ? pill.top() + 1 * scale
                              : pill.bottom() - thickness + 1 * scale,
                          length, thickness);
+        }
+        if (this->selected_)
+        {
+            // Grow the underline around its centre without moving the tab.
+            const qreal inset = (vertical ? bar.height() : bar.width()) *
+                                (1.0 - selection) * 0.25;
+            bar = vertical ? bar.adjusted(0, inset, 0, -inset)
+                           : bar.adjusted(inset, 0, -inset, 0);
         }
         painter.drawRoundedRect(bar, thickness / 2, thickness / 2);
     }
@@ -1421,7 +1476,35 @@ void NotebookTab::paintEvent(QPaintEvent *)
         painter.setPen(colors.text);
     }
 
-    if (!this->avatarOnly())
+    const bool whispers = !this->notebook_->canClosePage(this->page) ||
+                          this->getTitle() == QStringLiteral("/whispers");
+    const bool titleClipped =
+        metrics.horizontalAdvance(this->getTitle()) > textRect.width();
+    const bool titleHidden = this->avatarOnly() || titleClipped;
+    const auto tooltip = whispers ? uiText("Whispers")
+                                  : (titleHidden ? this->getTitle() : QString());
+    if (this->toolTip() != tooltip)
+    {
+        this->setToolTip(tooltip);
+    }
+
+    if (whispers)
+    {
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(colors.text, 1.4 * scale, Qt::SolidLine,
+                            Qt::RoundCap, Qt::RoundJoin));
+        const QPointF center = textRect.center();
+        const QRectF envelope(center.x() - 8 * scale,
+                              center.y() - 5 * scale,
+                              16 * scale, 11 * scale);
+        painter.drawRoundedRect(envelope, 2 * scale, 2 * scale);
+        painter.drawLine(envelope.topLeft() + QPointF(1.5 * scale, 1.5 * scale),
+                         QPointF(center.x(), center.y() + 1.5 * scale));
+        painter.drawLine(QPointF(center.x(), center.y() + 1.5 * scale),
+                         envelope.topRight() + QPointF(-1.5 * scale, 1.5 * scale));
+    }
+    else if (!this->avatarOnly())
     {
         int width = metrics.horizontalAdvance(this->getTitle());
         Qt::Alignment alignment = width > textRect.width()
@@ -1430,7 +1513,14 @@ void NotebookTab::paintEvent(QPaintEvent *)
 
         QTextOption option(alignment);
         option.setWrapMode(QTextOption::NoWrap);
+        painter.save();
+        if (this->showsAvatar() && getSettings()->tabAvatarStyle.getEnum() == TabAvatarStyle::AvatarOnly)
+        {
+            painter.setOpacity(selection);
+            painter.setClipRect(textRect, Qt::IntersectClip);
+        }
         painter.drawText(textRect, this->getTitle(), option);
+        painter.restore();
     }
 
     // draw close x
@@ -1464,7 +1554,8 @@ void NotebookTab::paintEvent(QPaintEvent *)
 
 bool NotebookTab::hasXButton() const
 {
-    return getSettings()->showTabCloseButton &&
+    return this->notebook_->canClosePage(this->page) &&
+           getSettings()->showTabCloseButton &&
            this->notebook_->getAllowUserTabManagement();
 }
 
@@ -1491,21 +1582,26 @@ void NotebookTab::mousePressEvent(QMouseEvent *event)
         switch (event->button())
         {
             case Qt::RightButton: {
+                const int index = this->notebook_->indexOf(this->page);
+                bool canCloseBefore = false;
+                bool canCloseAfter = false;
+                for (int i = 0; i < this->notebook_->getPageCount(); ++i)
+                {
+                    auto *page = dynamic_cast<SplitContainer *>(
+                        this->notebook_->getPageAt(i));
+                    if (page && page->getTab() && page->getTab()->isVisible() &&
+                        this->notebook_->canClosePage(page))
+                    {
+                        canCloseBefore |= i < index;
+                        canCloseAfter |= i > index;
+                    }
+                }
+                this->closeTabsBeforeSelectedAction_->setVisible(canCloseBefore);
+                this->closeTabsAfterSelectedAction_->setVisible(canCloseAfter);
+                this->closeMultipleTabsMenu_->menuAction()->setVisible(
+                    canCloseBefore || canCloseAfter);
                 this->menu_.popup(event->globalPosition().toPoint() +
                                   QPoint(0, 8));
-
-                const int visibleTabCount =
-                    this->notebook_->getVisibleTabCount();
-                const int selectedTabIndex =
-                    this->notebook_->visibleIndexOf(this->page);
-
-                this->closeMultipleTabsMenu_->setEnabled(visibleTabCount > 1);
-
-                this->closeTabsBeforeSelectedAction_->setEnabled(
-                    selectedTabIndex > 0);
-                this->closeTabsAfterSelectedAction_->setEnabled(
-                    selectedTabIndex != -1 &&
-                    selectedTabIndex < (visibleTabCount - 1));
             }
             break;
             default:;
@@ -1518,6 +1614,10 @@ void NotebookTab::mouseReleaseEvent(QMouseEvent *event)
     this->mouseDown_ = false;
 
     auto removeThisPage = [this] {
+        if (!this->notebook_->canClosePage(this->page))
+        {
+            return;
+        }
         auto reply = QMessageBox::question(
             this, uiText("Remove this tab"),
             uiText("Are you sure that you want to remove this tab?"),
@@ -1688,7 +1788,7 @@ QRect NotebookTab::getXRect() const
     }
 
     QRect rect = this->rect();
-    float s = this->scale();
+    float s = this->notebook_->tabScale();
     int size = static_cast<int>(16 * s);
 
     int centerAdjustment = this->tabLocation_ == NotebookTabLocation::Top

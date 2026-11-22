@@ -189,11 +189,11 @@ void TrayController::ensureTrayIcon()
 
     this->trayIcon_ =
         new QSystemTrayIcon(QIcon(QStringLiteral(":/icon.ico")), this);
-    this->trayIcon_->setToolTip(uiText(QStringLiteral("Leafyrino")));
+    this->trayIcon_->setToolTip(uiText(QStringLiteral("Chatterino Noctis")));
 
     this->menu_ = new QMenu;
     this->openAction_ =
-        this->menu_->addAction(uiText(QStringLiteral("Open Leafyrino")));
+        this->menu_->addAction(uiText(QStringLiteral("Open Chatterino Noctis")));
     QObject::connect(this->openAction_, &QAction::triggered, this, [this] {
         this->restoreFromTray();
     });
@@ -234,7 +234,7 @@ void TrayController::ensureTrayIcon()
 
     this->menu_->addSeparator();
     this->quitAction_ =
-        this->menu_->addAction(uiText(QStringLiteral("Quit Leafyrino")));
+        this->menu_->addAction(uiText(QStringLiteral("Quit Chatterino Noctis")));
     QObject::connect(this->quitAction_, &QAction::triggered, qApp, [] {
         QApplication::exit(0);
     });
@@ -283,7 +283,7 @@ void TrayController::refreshMenu()
         return;
     }
 
-    this->openLastPingAction_->setEnabled(!this->recentPings_.empty());
+    this->openLastPingAction_->setVisible(!this->recentPings_.empty());
     this->rebuildRecentPingMenu();
 
     const bool canNotify =
@@ -318,15 +318,7 @@ void TrayController::rebuildRecentPingMenu()
     }
 
     this->recentPingsMenu_->clear();
-    this->recentPingsMenu_->setEnabled(!this->recentPings_.empty());
-
-    if (this->recentPings_.empty())
-    {
-        auto *action = this->recentPingsMenu_->addAction(
-            uiText(QStringLiteral("No recent pings")));
-        action->setEnabled(false);
-        return;
-    }
+    this->recentPingsMenu_->menuAction()->setVisible(!this->recentPings_.empty());
 
     for (int i = 0; i < static_cast<int>(this->recentPings_.size()); ++i)
     {
@@ -343,12 +335,12 @@ void TrayController::showTrayPingNotification(const RecentPing &ping)
 {
     const auto title =
         ping.displayName.isEmpty()
-            ? QStringLiteral("Highlight in #%1").arg(ping.channelName)
-            : QStringLiteral("%1 in #%2")
+            ? QStringLiteral("Highlight in %1").arg(ping.channelName)
+            : QStringLiteral("%1 in %2")
                   .arg(ping.displayName, ping.channelName);
     const auto body = !ping.messageText.isEmpty()
                           ? ping.messageText
-                          : QStringLiteral("You were highlighted in #%1")
+                          : QStringLiteral("You were highlighted in %1")
                                 .arg(ping.channelName);
 
     bool shown = getApp()->getToasts()->sendHighlightNotification(
@@ -370,7 +362,7 @@ bool TrayController::notificationsMuted() const
 
 QString TrayController::formatPingActionText(const RecentPing &ping) const
 {
-    auto text = QStringLiteral("#%1").arg(ping.channelName);
+    auto text = ping.channelName;
     if (!ping.displayName.isEmpty())
     {
         text += QStringLiteral(" - %1").arg(ping.displayName);

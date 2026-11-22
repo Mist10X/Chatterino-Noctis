@@ -45,9 +45,16 @@ public:
     QString toString() const override;
 
     const QString &getUserName() const;
+    /// Verified casing for UI labels. getUserName() remains the login.
+    const QString &getDisplayName() const;
+    bool hasVerifiedDisplayName() const;
+    bool setDisplayName(const QString &userId, const QString &login,
+                        const QString &displayName);
     const QString &getOAuthToken() const;
     const QString &getOAuthClient() const;
     const QString &getUserId() const;
+    bool hasHelixChatWriteScope() const { return this->helixChatWriteScope_; }
+    void setHelixChatWriteScope(bool available) { this->helixChatWriteScope_ = available; }
 
     const QString &getSeventvUserID() const;
 
@@ -98,8 +105,12 @@ public:
 private:
     QString oauthClient_;
     QString oauthToken_;
+    bool helixChatWriteScope_ = false;
     QString userName_;
     QString userId_;
+    QString displayName_;
+    bool displayNameResolved_ = false;
+    bool displayNameLookupPending_ = false;
     const bool isAnon_;
     Atomic<QColor> color_;
 
@@ -118,6 +129,8 @@ private:
     QString seventvUserID_;
 
     void tryLoadBlocks();
+
+    friend class TwitchAccountManager;
 };
 
 }  // namespace chatterino

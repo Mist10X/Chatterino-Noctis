@@ -21,7 +21,7 @@ enum class SettingsTabId {
     None,
     General,
     Moltorino,
-    Leafyrino,
+    Noctis,
     Accounts,
     Moderation,
     About,
@@ -38,6 +38,7 @@ public:
                       const QString &name, QString imageFileName,
                       SettingsTabId id);
 
+    static constexpr int textInset = 50;
     void setSelected(bool selected_);
     SettingsPage *page();
     SettingsPage *createdPage() const;
@@ -51,9 +52,9 @@ Q_SIGNALS:
 private:
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
     struct {
-        QString labelText;
         QIcon icon;
     } ui_;
 

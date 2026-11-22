@@ -8,10 +8,13 @@
 #include "common/UiLanguage.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
+#include "singletons/Fonts.hpp"
 #include "singletons/Paths.hpp"
+#include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "singletons/WindowManager.hpp"
 #include "widgets/dialogs/SettingsDialog.hpp"
+#include "widgets/helper/MenuStyle.hpp"
 
 #include <QApplication>
 #include <QDateTime>
@@ -23,17 +26,26 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLayout>
+#include <QLockFile>
+#include <QMap>
 #include <QMenu>
 #include <QMessageBox>
 #include <QProcess>
 #include <QPushButton>
+#include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSaveFile>
+#include <QTemporaryDir>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace chatterino {
@@ -75,9 +87,8 @@ QList<std::pair<QString, QString>> otherProfiles()
     return out;
 }
 
-/// Parts of settings.json that belong to this copy and are never taken from
-/// another client: logins (main, the second one, the bot badge), the Archive
-/// connection and the cache folder.
+/// Parts of settings.json that belong to this copy and must never be imported
+/// from another profile, including legacy integration and credential fields.
 const QList<QStringList> OWN_SETTINGS{
     {QStringLiteral("accounts")},
     {QStringLiteral("archive")},
@@ -161,24 +172,16 @@ bool importProfile(QWidget *parent, const QString &from, bool ask = true,
     {
         return fail(uiText("The settings in this folder could not be read."));
     }
-    QHash<QString, QByteArray> files;
+    QMap<QString, QByteArray> settings;
     for (const auto &name : IMPORTED_FILES)
     {
         const auto source = QDir(from).filePath(name);
-        if (QFileInfo::exists(source) && !readFile(source, files[name]))
+        if (QFileInfo::exists(source) && !readFile(source, settings[name]))
         {
             return fail(uiText("This file could not be read: %1")
                             .arg(QDir::toNativeSeparators(source)));
         }
     }
-    // its own themes (in the profile next to Settings) come along
-    QHash<QString, QByteArray> themes;
-    const QDir theirThemes(QDir(from).filePath("../Themes"));
-    for (const auto &info : theirThemes.entryInfoList({"*.json"}, QDir::Files))
-    {
-        readFile(info.absoluteFilePath(), themes[info.fileName()]);
-    }
-
     if (ask &&
         QMessageBox::question(
             parent, uiText("Move settings"),
@@ -191,64 +194,114 @@ bool importProfile(QWidget *parent, const QString &from, bool ask = true,
         return false;
     }
 
-    // 2. a backup of the current settings, checked
-    const auto backup = QDir(own).filePath(
-        "before-import-" +
-        QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss"));
-    if (!QDir().mkpath(backup))
+    QLockFile importLock(QDir(own).filePath(".profile-import.lock"));
+    if (!importLock.tryLock())
     {
-        return fail(uiText("The backup folder could not be created, nothing "
-                           "was changed."));
+        return fail(uiText("The settings folder could not be locked for import."));
     }
-    QStringList replaced{QStringLiteral("settings.json")};
-    replaced += IMPORTED_FILES;
-    for (const auto &name : replaced)
+    const QDir ownThemes(getApp()->getPaths().themesDirectory);
+    const QDir theirThemes(QDir(from).filePath("../Themes"));
+    if (theirThemes.exists() && !theirThemes.isReadable())
     {
-        const auto path = QDir(own).filePath(name);
-        if (QFileInfo::exists(path) &&
-            !QFile::copy(path, QDir(backup).filePath(name)))
+        return fail(uiText("This file could not be read: %1")
+                        .arg(QDir::toNativeSeparators(theirThemes.absolutePath())));
+    }
+    QMap<QString, QByteArray> themes;
+    for (const auto &info : theirThemes.entryInfoList({"*.json"}, QDir::Files))
+    {
+        const auto destination = ownThemes.filePath(info.fileName());
+        if (QFileInfo(destination).isFile())
         {
-            return fail(uiText("The backup could not be made, nothing was "
-                               "changed."));
+            continue;
+        }
+        if (!readFile(info.absoluteFilePath(), themes[destination]))
+        {
+            return fail(uiText("This file could not be read: %1")
+                            .arg(QDir::toNativeSeparators(info.absoluteFilePath())));
         }
     }
 
-    // 3. their settings with this copy's own parts
-    QByteArray mineData;
-    readFile(QDir(own).filePath("settings.json"), mineData);
-    const auto mine = QJsonDocument::fromJson(mineData).object();
+    const auto localSettings = QDir(own).filePath("settings.json");
+    QJsonObject mine;
+    if (QFileInfo::exists(localSettings))
+    {
+        QByteArray mineData;
+        const bool read = readFile(localSettings, mineData);
+        const auto document = QJsonDocument::fromJson(mineData);
+        if (!read || !document.isObject())
+        {
+            return fail(uiText("This file could not be read: %1")
+                            .arg(QDir::toNativeSeparators(localSettings)));
+        }
+        mine = document.object();
+    }
     for (const auto &path : OWN_SETTINGS)
     {
         setAtPath(theirs, path, valueAtPath(mine, path));
     }
-    files.insert(QStringLiteral("settings.json"), QJsonDocument(theirs).toJson());
+    settings.insert(QStringLiteral("settings.json"), QJsonDocument(theirs).toJson());
 
-    // 4. replace; on any failure put the backup back
-    for (auto it = files.cbegin(); it != files.cend(); ++it)
+    QTemporaryDir backup(QDir(own).filePath("before-import-" +
+        QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss") + "-XXXXXX"));
+    if (!backup.isValid())
     {
-        if (!writeFile(QDir(own).filePath(it.key()), it.value()))
+        return fail(uiText("The backup folder could not be created, nothing "
+                           "was changed."));
+    }
+    QHash<QString, QString> originals;
+    QStringList names{QStringLiteral("settings.json")};
+    names += IMPORTED_FILES;
+    for (const auto &name : names)
+    {
+        const auto destination = QDir(own).filePath(name);
+        if (QFileInfo::exists(destination))
         {
-            for (const auto &name : replaced)
+            const auto saved = backup.filePath(name);
+            if (!QFile::copy(destination, saved))
             {
-                const auto saved = QDir(backup).filePath(name);
+                return fail(uiText("The backup could not be made, nothing was "
+                                   "changed."));
+            }
+            originals.insert(destination, saved);
+        }
+    }
+    backup.setAutoRemove(false);
+
+    QList<QPair<QString, QByteArray>> planned;
+    for (auto it = settings.cbegin(); it != settings.cend(); ++it)
+    {
+        planned.emplaceBack(QDir(own).filePath(it.key()), it.value());
+    }
+    for (auto it = themes.cbegin(); it != themes.cend(); ++it)
+    {
+        planned.emplaceBack(it.key(), it.value());
+    }
+    QStringList committed;
+    for (const auto &[destination, contents] : planned)
+    {
+        if (!writeFile(destination, contents))
+        {
+            bool restored = true;
+            for (auto it = committed.crbegin(); it != committed.crend(); ++it)
+            {
+                const auto saved = originals.constFind(*it);
                 QByteArray data;
-                if (QFileInfo::exists(saved) && readFile(saved, data))
-                {
-                    writeFile(QDir(own).filePath(name), data);
-                }
+                const bool ok = saved == originals.cend()
+                                    ? QFile::remove(*it)
+                                    : readFile(*saved, data) && writeFile(*it, data);
+                restored = restored && ok;
+            }
+            if (!restored)
+            {
+                return fail(uiText("Settings could only be partially restored. The backup is in %1.")
+                                .arg(QDir::toNativeSeparators(backup.path())));
             }
             return fail(uiText("The settings could not be saved; the previous "
                                "ones were put back."));
         }
+        committed.append(destination);
     }
-    const QDir ownThemes(getApp()->getPaths().themesDirectory);
-    for (auto it = themes.cbegin(); it != themes.cend(); ++it)
-    {
-        if (!it.value().isEmpty() && !ownThemes.exists(it.key()))
-        {
-            writeFile(ownThemes.filePath(it.key()), it.value());
-        }
-    }
+    importLock.unlock();
 
     // Start again (same arguments, e.g. --portable-dir) without saving the
     // settings in memory over the new ones.
@@ -285,43 +338,71 @@ void chooseImport(QWidget *parent, QPushButton *button)
                 importProfile(parent, dir);
             }
         });
+    styleMenu(menu);
     menu->popup(button->mapToGlobal(QPoint(0, button->height())));
 }
 
-QWidget *step(int number, const QString &title, const QString &text,
+QWidget *step(float scale, int number, const QString &title, const QString &text,
               const QList<QPushButton *> &buttons)
 {
+    const auto metric = [scale](int value) {
+        return std::max(1, qRound(value * scale));
+    };
+    auto *fonts = getApp()->getFonts();
     auto *row = new QWidget;
+    row->setObjectName("welcomeStep");
+    row->setAttribute(Qt::WA_StyledBackground);
     auto *layout = new QHBoxLayout(row);
-    layout->setContentsMargins(0, 6, 0, 6);
-    layout->setSpacing(14);
+    layout->setContentsMargins(metric(12), metric(10), metric(12), metric(10));
+    layout->setSpacing(metric(12));
 
     auto *circle = new QLabel(QString::number(number));
     circle->setObjectName("welcomeNumber");
     circle->setAlignment(Qt::AlignCenter);
-    circle->setFixedSize(28, 28);
+    circle->setFont(fonts->getFont(FontStyle::ChatMediumBold, scale));
+    const int circleSize =
+        std::max(metric(26), circle->fontMetrics().height() + metric(6));
+    circle->setFixedSize(circleSize, circleSize);
+    circle->setStyleSheet(
+        QStringLiteral("border-radius: %1px;").arg(circleSize / 2));
     layout->addWidget(circle, 0, Qt::AlignTop);
 
     auto *texts = new QVBoxLayout;
-    texts->setSpacing(3);
+    texts->setSpacing(metric(4));
     auto *heading = new QLabel(title);
     heading->setObjectName("welcomeTitle");
+    heading->setFont(fonts->getFont(FontStyle::ChatMediumBold, scale));
+    heading->setWordWrap(true);
     texts->addWidget(heading);
     auto *body = new QLabel(text);
     body->setObjectName("welcomeText");
+    body->setFont(fonts->getFont(FontStyle::ChatMedium, scale * .94F));
+    body->setTextFormat(Qt::PlainText);
     body->setWordWrap(true);
     texts->addWidget(body);
     layout->addLayout(texts, 1);
 
-    auto *actions = new QVBoxLayout;
-    actions->setSpacing(4);
-    for (auto *button : buttons)
+    if (!buttons.isEmpty())
     {
-        actions->addWidget(button);
+        auto *actions = new QVBoxLayout;
+        actions->setSpacing(metric(5));
+        for (auto *button : buttons)
+        {
+            button->setCursor(Qt::PointingHandCursor);
+            button->setFont(fonts->getFont(FontStyle::ChatMedium, scale * .94F));
+            actions->addWidget(button);
+        }
+        actions->addStretch(1);
+        layout->addLayout(actions);
     }
-    actions->addStretch(1);
-    layout->addLayout(actions);
     return row;
+}
+
+QColor blend(const QColor &base, const QColor &accent, qreal weight)
+{
+    return QColor::fromRgbF(base.redF() * (1 - weight) + accent.redF() * weight,
+                            base.greenF() * (1 - weight) + accent.greenF() * weight,
+                            base.blueF() * (1 - weight) + accent.blueF() * weight);
 }
 
 }  // namespace
@@ -330,36 +411,106 @@ void showWelcomeDialog(QWidget *parent)
 {
     auto *dialog = new QDialog(parent);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName("NoctisWelcomeDialog");
     dialog->setWindowTitle(uiText("Getting started"));
-    dialog->setMinimumWidth(640);
-    const auto accent = getTheme()->accent.name();
+    const auto scale = std::max(1.F, getSettings()->getClampedUiScale());
+    const auto metric = [scale](int value) {
+        return std::max(1, qRound(value * scale));
+    };
+    auto *fonts = getApp()->getFonts();
+    dialog->setFont(fonts->getFont(FontStyle::ChatMedium, scale));
+    const auto *theme = getTheme();
+    const auto background = theme->window.background;
+    const auto surface = theme->splits.input.background;
+    const auto foreground = theme->window.text;
+    const auto accent = theme->accent;
+    const auto border = theme->splits.header.border;
+    const auto muted = blend(background, foreground, .72);
+    const auto hover = blend(surface, accent, .12);
+    const auto selected = blend(surface, accent, .20);
     dialog->setStyleSheet(QStringLiteral(R"(
-QDialog { background: #16161c; }
-QLabel { color: #e6e5ee; font-size: 13px; }
-QLabel#welcomeHeading { font-size: 20px; font-weight: 600; color: #f4f3fa; }
-QLabel#welcomeTitle { font-size: 14px; font-weight: 600; color: #f4f3fa; }
-QLabel#welcomeText { color: #a9a7b6; }
-QLabel#welcomeNumber { background: %1; color: #16161c; border-radius: 14px;
-                       font-weight: 700; }
-QPushButton { background: #25252e; border: 1px solid #363642; border-radius: 6px;
-              padding: 5px 14px; color: #e6e6ee; }
-QPushButton:hover { background: #2f2f3a; }
-QPushButton#welcomeDone { background: %1; border-color: %1; color: #16161c;
-                          font-weight: 600; }
+QDialog#NoctisWelcomeDialog { background: %1; color: %2; }
+QLabel#welcomeHeading, QLabel#welcomeTitle { color: %2; background: transparent; }
+QLabel#welcomeText { color: %3; background: transparent; }
+QWidget#welcomeStep { background: %4; border: 1px solid %5; border-radius: %9px; }
+QLabel#welcomeNumber { background: %8; color: %2; }
+QScrollArea#welcomeSteps { background: transparent; border: 0; }
+QWidget#welcomeStepsContent { background: %1; }
+QDialog#NoctisWelcomeDialog QPushButton {
+    background: %6; color: %2; border: 1px solid %12; border-radius: %9px;
+    padding: %10px %11px;
+}
+QDialog#NoctisWelcomeDialog QPushButton:hover { background: %8; border-color: %7; }
+QDialog#NoctisWelcomeDialog QPushButton:pressed { background: %8; }
+QDialog#NoctisWelcomeDialog QPushButton:focus { border-color: %7; }
+QDialog#NoctisWelcomeDialog QPushButton#welcomeDone {
+    background: %8; border-color: %7; color: %2;
+}
+QDialog#NoctisWelcomeDialog QPushButton#welcomeDone:hover { background: %13; }
 )")
-                              .arg(accent));
+                              .arg(background.name(), foreground.name(), muted.name(),
+                                   surface.name(), border.name(), hover.name(),
+                                   accent.name(), selected.name())
+                              .arg(metric(8)).arg(metric(6)).arg(metric(12))
+                              .arg(blend(surface, foreground, .18).name())
+                              .arg(blend(surface, accent, .30).name()));
 
     auto *layout = new QVBoxLayout(dialog);
-    layout->setContentsMargins(24, 20, 24, 18);
-    layout->setSpacing(4);
+    const int margin = metric(16);
+    layout->setContentsMargins(margin, margin, margin, margin);
+    layout->setSpacing(metric(10));
+    auto *header = new QHBoxLayout;
+    header->setSpacing(metric(12));
+    const auto appIcon = dialog->windowIcon();
+    if (!appIcon.isNull())
+    {
+        auto *icon = new QLabel;
+        const int iconSize = metric(36);
+        icon->setPixmap(appIcon.pixmap(QSize(iconSize, iconSize),
+                                       dialog->devicePixelRatioF()));
+        icon->setAlignment(Qt::AlignCenter);
+        icon->setFixedSize(iconSize, iconSize);
+        header->addWidget(icon, 0, Qt::AlignVCenter);
+    }
+    auto *headerTexts = new QVBoxLayout;
+    headerTexts->setSpacing(metric(4));
     auto *heading = new QLabel(uiText("Welcome to Chatterino Noctis"));
     heading->setObjectName("welcomeHeading");
-    layout->addWidget(heading);
+    auto headingFont = fonts->getFont(FontStyle::ChatLarge, scale);
+    headingFont.setWeight(QFont::DemiBold);
+    heading->setFont(headingFont);
+    heading->setWordWrap(true);
+    headerTexts->addWidget(heading);
     auto *intro = new QLabel(uiText("A few steps to set it up. All of them can "
                                     "be done later from the settings."));
     intro->setObjectName("welcomeText");
-    layout->addWidget(intro);
-    layout->addSpacing(10);
+    intro->setWordWrap(true);
+    headerTexts->addWidget(intro);
+    header->addLayout(headerTexts, 1);
+    layout->addLayout(header);
+
+    auto *scroll = new QScrollArea(dialog);
+    scroll->setObjectName("welcomeSteps");
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->verticalScrollBar()->setStyleSheet(QStringLiteral(R"(
+QScrollBar:vertical { background: %1; width: %2px; margin: 0; }
+QScrollBar::handle:vertical { background: %3; border-radius: %4px; min-height: %5px; }
+QScrollBar::handle:vertical:hover { background: %6; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+)")
+        .arg(background.name()).arg(metric(6))
+        .arg(blend(surface, foreground, .22).name()).arg(metric(3))
+        .arg(metric(20)).arg(blend(surface, accent, .52).name()));
+    auto *steps = new QWidget;
+    steps->setObjectName("welcomeStepsContent");
+    auto *stepsLayout = new QVBoxLayout(steps);
+    stepsLayout->setContentsMargins(0, 0, 0, 0);
+    stepsLayout->setSpacing(metric(7));
+    stepsLayout->setSizeConstraint(QLayout::SetMinimumSize);
+    scroll->setWidget(steps);
+    layout->addWidget(scroll, 1);
 
     auto *window = parent;
     auto settingsButton = [dialog, window](const QString &text,
@@ -385,31 +536,32 @@ QPushButton#welcomeDone { background: %1; border-color: %1; color: #16161c;
                      [dialog, importButton] {
                          chooseImport(dialog, importButton);
                      });
-    layout->addWidget(step(
-        1, uiText("Settings from another Chatterino"),
+    stepsLayout->addWidget(step(
+        scale, 1, uiText("Settings from another Chatterino"),
         uiText("If you used Chatterino, Chatterino7, Leafyrino or Chatterino+: "
                "tabs with channels, highlights, ignores, commands and filters. "
                "Do this first, then log in."),
         {importButton}));
 
-    layout->addWidget(step(
-        2, uiText("Log in to Twitch"),
+    stepsLayout->addWidget(step(
+        scale, 2, uiText("Log in to Twitch"),
         uiText("Without it the chat can only be read. Settings → Accounts → "
                "Add new account."),
         {settingsButton(uiText("Log in"), SettingsDialogPreference::Accounts)}));
-    layout->addWidget(step(
-        3, uiText("Open a channel"),
+    stepsLayout->addWidget(step(
+        scale, 3, uiText("Open a channel"),
         uiText("Click the empty panel or «+» next to the tabs and type the "
                "channel name. Several channels fit in one tab."),
         {}));
-    layout->addWidget(step(
-        4, uiText("Channel points, pins, polls and predictions"),
+    stepsLayout->addWidget(step(
+        scale, 4, uiText("Channel points, pins, polls and predictions"),
         uiText("They need a second login: Settings → Sign-in for extra "
                "features. The code is confirmed on twitch.tv/activate."),
         {settingsButton(uiText("Set up"),
                         SettingsDialogPreference::Moltorino)}));
-    layout->addSpacing(8);
+    stepsLayout->addStretch(1);
     auto *footer = new QHBoxLayout;
+    footer->setSpacing(metric(8));
     auto *hint = new QLabel(uiText("The settings are sorted by topic; the "
                                    "search at the top finds any of them."));
     hint->setObjectName("welcomeText");
@@ -419,15 +571,37 @@ QPushButton#welcomeDone { background: %1; border-color: %1; color: #16161c;
         QDir(QCoreApplication::applicationDirPath()).filePath("Руководство.html");
     if (QFileInfo::exists(guide))
     {
-        footer->addWidget(linkButton(uiText("Guide"),
-                                     QUrl::fromLocalFile(guide).toString()));
+        auto *guideButton = linkButton(uiText("Guide"),
+                                       QUrl::fromLocalFile(guide).toString());
+        guideButton->setCursor(Qt::PointingHandCursor);
+        footer->addWidget(guideButton);
     }
     auto *done = new QPushButton(uiText("Start"));
     done->setObjectName("welcomeDone");
+    done->setCursor(Qt::PointingHandCursor);
+    done->setFont(fonts->getFont(FontStyle::ChatMediumBold, scale));
     QObject::connect(done, &QPushButton::clicked, dialog, &QDialog::accept);
     footer->addWidget(done);
     layout->addLayout(footer);
 
+    // Fit the onboarding content on the current display, with a scrolling
+    // middle section for a large chat font or a small screen.
+    const auto available = dialog->screen()->availableGeometry().size();
+    const int width =
+        std::min(metric(580), std::max(1, available.width() - metric(32)));
+    dialog->setMinimumWidth(std::min(metric(440), width));
+    dialog->ensurePolished();
+    const int contentWidth = std::max(1, width - 2 * margin);
+    const auto naturalHeight = [contentWidth](QLayout *area) {
+        const auto measured = area->heightForWidth(contentWidth);
+        return measured >= 0 ? measured : area->sizeHint().height();
+    };
+    const int height = 2 * margin + naturalHeight(header) +
+                       naturalHeight(stepsLayout) + naturalHeight(footer) +
+                       2 * layout->spacing();
+    dialog->resize(width,
+                   std::min(std::max(height, layout->minimumSize().height()),
+                            std::max(1, available.height() - metric(48))));
     dialog->show();
     dialog->raise();
     dialog->activateWindow();

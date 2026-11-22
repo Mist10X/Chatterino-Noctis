@@ -1,7 +1,7 @@
 #include "widgets/helper/KickAccountSwitchWidget.hpp"
 
 #include "Application.hpp"
-#include "common/Common.hpp"
+#include "common/UiLanguage.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "providers/kick/KickAccount.hpp"
 #include "singletons/Settings.hpp"
@@ -11,6 +11,8 @@ namespace chatterino {
 KickAccountSwitchWidget::KickAccountSwitchWidget(QWidget *parent)
     : QListWidget(parent)
 {
+    this->setObjectName("KickAccountList");
+    this->setMouseTracking(true);
     this->managedConnections_.managedConnect(
         getApp()->getAccounts()->kick.userListUpdated, [this]() {
             QSignalBlocker b(this);
@@ -28,16 +30,8 @@ KickAccountSwitchWidget::KickAccountSwitchWidget(QWidget *parent)
             return;
         }
 
-        QString newUsername = this->currentItem()->text();
-        if (newUsername.compare(ANONYMOUS_USERNAME_LABEL,
-                                Qt::CaseInsensitive) == 0)
-        {
-            getApp()->getAccounts()->kick.currentUsername = "";
-        }
-        else
-        {
-            getApp()->getAccounts()->kick.currentUsername = newUsername;
-        }
+        getApp()->getAccounts()->kick.currentUsername =
+            this->currentItem()->data(Qt::UserRole).toString();
 
         std::ignore = getSettings()->requestSave();
     });
@@ -63,7 +57,7 @@ void KickAccountSwitchWidget::refresh()
     QString currentUsername = currentUser->username();
     for (int i = 0; i < this->count(); ++i)
     {
-        QString itemText = this->item(i)->text();
+        const auto itemText = this->item(i)->data(Qt::UserRole).toString();
 
         if (itemText.compare(currentUsername, Qt::CaseInsensitive) == 0)
         {
@@ -77,11 +71,13 @@ void KickAccountSwitchWidget::refreshItems()
 {
     this->clear();
 
-    this->addItem(ANONYMOUS_USERNAME_LABEL);
+    auto *anonymous = new QListWidgetItem(uiText("Anonymous"), this);
+    anonymous->setData(Qt::UserRole, QString{});
 
     for (const auto &userName : getApp()->getAccounts()->kick.usernames())
     {
-        this->addItem(userName);
+        auto *item = new QListWidgetItem(userName, this);
+        item->setData(Qt::UserRole, userName);
     }
 }
 

@@ -15,6 +15,9 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
+#include <QTemporaryDir>
+#include <QFile>
+#include <QImage>
 
 #include <utility>
 #include <vector>
@@ -26,6 +29,28 @@ constexpr bool UPDATE_SNAPSHOTS = false;
 }  // namespace
 
 namespace chatterino::imageuploader::detail {
+
+TEST(ImageUploaderFiles, skipsNonImagesInMixedSelections)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const auto photo = dir.filePath("photo.png");
+    QImage image(4, 4, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    ASSERT_TRUE(image.save(photo));
+    const auto note = dir.filePath("note.png");
+    QFile file(note);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("plain text");
+    file.close();
+
+    QMimeData selection;
+    selection.setUrls({QUrl::fromLocalFile(note), QUrl::fromLocalFile(photo)});
+    const auto [images, skipped] = ImageUploader{}.getImages(&selection);
+    ASSERT_EQ(images.size(), 1U);
+    EXPECT_EQ(images.front().filePath, photo);
+    EXPECT_TRUE(skipped.contains("note.png"));
+}
 
 TEST(ImageUploaderDetail_GetJsonValue, object)
 {
@@ -75,6 +100,12 @@ TEST(ImageUploaderDetail_GetJsonValue, object)
     {
         ASSERT_EQ(getJSONValue(jv, pattern), exp) << pattern;
     }
+}
+
+TEST(ImageUploaderDetail_GetLink, returnedBracesAreLiteral)
+{
+    NetworkResult result{QNetworkReply::NoError, 200, R"({"link":"{link}"})"};
+    EXPECT_EQ(getLinkFromResponse(result, "prefix-{link}"), "prefix-{link}");
 }
 
 TEST(ImageUploaderDetail_GetJsonValue, array)

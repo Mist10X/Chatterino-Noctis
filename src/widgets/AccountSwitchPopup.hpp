@@ -8,10 +8,13 @@
 
 #include <QWidget>
 
+class QPushButton;
+
 namespace chatterino {
 
 class AccountSwitchWidget;
 class KickAccountSwitchWidget;
+class MicroNotebook;
 
 class AccountSwitchPopup : public BaseWindow
 {
@@ -26,8 +29,12 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
     void themeChangedEvent() override;
+    void scaleChangedEvent(float scale) override;
 
 private:
+    void fitContents();
+    QPushButton *manageAccountsButton_ = nullptr;
+    MicroNotebook *notebook_ = nullptr;
     struct {
         AccountSwitchWidget *accountSwitchWidget = nullptr;
         KickAccountSwitchWidget *kickAccountSwitcher = nullptr;

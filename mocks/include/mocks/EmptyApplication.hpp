@@ -7,15 +7,23 @@
 #include "singletons/Updates.hpp"
 
 #include <QTemporaryDir>
+#include <QDir>
+#include <QFileInfo>
+
+#include <stdexcept>
 
 namespace chatterino::mock {
 
 class EmptyApplication : public IApplication
 {
 public:
-    EmptyApplication() = default;
+    EmptyApplication()
+    {
+        this->paths_.settingsDirectory = this->settingsDir.path();
+    }
 
-    explicit EmptyApplication(const QString &settingsData)
+    explicit EmptyApplication(const QString &settingsData,
+                              const QString &customThemeFile = {})
     {
         QFile settingsFile(this->settingsDir.filePath("settings.json"));
         if (settingsFile.open(QIODevice::WriteOnly | QIODevice::Text))
@@ -25,6 +33,12 @@ public:
             settingsFile.close();
         }
         this->paths_.settingsDirectory = this->settingsDir.path();
+        if (!customThemeFile.isEmpty() &&
+            !QFile::copy(customThemeFile, QDir(this->paths_.themesDirectory)
+                .filePath(QFileInfo(customThemeFile).fileName())))
+        {
+            throw std::runtime_error("Could not install the isolated preview theme");
+        }
     }
 
     ~EmptyApplication() override = default;
@@ -399,7 +413,15 @@ public:
     }
 
     QTemporaryDir settingsDir;
-    Args args_;
+    Args args_ = [this] {
+        if (!this->settingsDir.isValid())
+        {
+            throw std::runtime_error("Could not create a temporary test profile");
+        }
+        Args args;
+        args.portableDirectory = this->settingsDir.path();
+        return args;
+    }();
     Modes modes_{args_};
     Paths paths_ = {args_, modes_};
 };

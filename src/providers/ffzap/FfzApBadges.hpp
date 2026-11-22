@@ -21,7 +21,7 @@ using EmotePtr = std::shared_ptr<const Emote>;
 class FfzApBadges final
 {
 public:
-    FfzApBadges();
+    void initialize();
 
     struct Badge {
         EmotePtr emote;

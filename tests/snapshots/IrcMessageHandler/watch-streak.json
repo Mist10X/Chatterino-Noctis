@@ -18,7 +18,7 @@
                     "trailingSpace": true,
                     "type": "TextElement",
                     "words": [
-                        "#pajlada"
+                        "pajlada"
                     ]
                 },
                 {
@@ -184,7 +184,7 @@
                     "flags": "Username",
                     "link": {
                         "type": "UserInfo",
-                        "value": "IMrLazyI"
+                        "value": "imrlazyi"
                     },
                     "style": "ChatMediumBold",
                     "tooltip": "",

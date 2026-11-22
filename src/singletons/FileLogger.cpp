@@ -114,9 +114,15 @@ FileLogger &FileLogger::instance()
 void FileLogger::log(QtMsgType type, const QMessageLogContext &context,
                      const QString &msg)
 {
-    assert(this->logFile != nullptr);
-
     std::scoped_lock lk(this->logLock);
+    if (!this->logFile)
+    {
+        if (this->originalHandler)
+        {
+            this->originalHandler(type, context, msg);
+        }
+        return;
+    }
 
     auto formatted = qFormatLogMessage(type, context, msg);
 

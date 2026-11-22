@@ -97,6 +97,7 @@ private:
     Selection selection_;
     Selection doubleClickSelection_;
     bool isLeftMouseDown_{false};
+    bool rightPressReceived_{false};
     bool isDoubleClick_{false};
     QPointF lastLeftPressPosition_;
     QPointF lastDoubleClickPosition_;

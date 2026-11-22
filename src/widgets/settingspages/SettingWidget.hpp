@@ -111,6 +111,7 @@ public:
 
 private:
     void registerWidget(GeneralPageView &view);
+    void layoutDropdown(QWidget *caption, QComboBox *combo);
 
     QWidget *label = nullptr;
     QWidget *actionWidget = nullptr;

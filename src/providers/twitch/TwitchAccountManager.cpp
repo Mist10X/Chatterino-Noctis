@@ -54,11 +54,14 @@ QString missingScopes(const QJsonArray &scopesArray)
 
 void checkMissingScopes(const std::shared_ptr<TwitchAccount> &account)
 {
+    if (getApp()->isTest())
+        return;
     NetworkRequest(u"https://id.twitch.tv/oauth2/validate"_s,
                    NetworkRequestType::Get)
         .header("Authorization", u"OAuth " % account->getOAuthToken())
         .timeout(20000)
-        .onSuccess([account](const auto &res) {
+        .onSuccess([account, token = account->getOAuthToken(),
+                    client = account->getOAuthClient()](const auto &res) {
             auto *app = tryGetApp();
             if (!app)
             {
@@ -66,6 +69,20 @@ void checkMissingScopes(const std::shared_ptr<TwitchAccount> &account)
             }
 
             const auto json = res.parseJson();
+            // A scope check for an older login must not authorize a new login.
+            if (account->getOAuthToken() != token ||
+                account->getOAuthClient() != client ||
+                json["user_id"_L1].toString() != account->getUserId())
+            {
+                return;
+            }
+            const auto scopes = json["scopes"_L1].toArray();
+            bool canSendChat = false;
+            for (const auto &scope : scopes)
+            {
+                canSendChat |= scope.toString() == QStringLiteral("user:write:chat");
+            }
+            account->setHelixChatWriteScope(canSendChat);
 
             const auto login = json["login"_L1].toString();
             if (!login.isEmpty() &&
@@ -76,6 +93,8 @@ void checkMissingScopes(const std::shared_ptr<TwitchAccount> &account)
                     "/accounts/uid" + account->getUserId().toStdString();
                 pajlada::Settings::Setting<QString>::set(basePath + "/username",
                                                          login);
+                pajlada::Settings::Setting<QString>::set(
+                    basePath + "/displayName", QString{});
                 auto &manager = app->getAccounts()->twitch;
                 auto currentUsername = manager.getCurrent()->getUserName();
                 if (currentUsername.compare(manager.currentUsername.getValue(),
@@ -200,12 +219,87 @@ TwitchAccountManager::TwitchAccountManager()
         if (!currentUser->isAnon())
         {
             checkMissingScopes(currentUser);
+            this->refreshDisplayNames();
         }
     });
 
     std::ignore = this->accounts.itemRemoved.connect([this](const auto &acc) {
         this->removeUser(acc.item.get());
     });
+}
+
+void TwitchAccountManager::refreshDisplayName(
+    const std::shared_ptr<TwitchAccount> &account)
+{
+    if (getApp()->isTest() || account->getUserId().isEmpty() ||
+        account->displayNameResolved_ || account->displayNameLookupPending_)
+    {
+        return;
+    }
+
+    account->displayNameLookupPending_ = true;
+    const auto userId = account->getUserId();
+    const auto login = account->getUserName();
+    const auto finish = [weak = std::weak_ptr(account), userId,
+                         login](const HelixUser *profile) {
+        const auto account = weak.lock();
+        if (!account || account->getUserId() != userId ||
+            account->getUserName().compare(login, Qt::CaseInsensitive) != 0)
+        {
+            return;
+        }
+
+        account->displayNameLookupPending_ = false;
+        auto *app = tryGetApp();
+        if (!app || !profile || profile->id != userId ||
+            profile->login.compare(login, Qt::CaseInsensitive) != 0)
+        {
+            return;
+        }
+
+        auto &manager = app->getAccounts()->twitch;
+        // The account can have been removed or replaced while the request
+        // was in flight. In that case its settings must not be recreated.
+        if (manager.findUserByUsername(login) != account)
+        {
+            return;
+        }
+
+        account->displayNameResolved_ = true;
+        if (account->setDisplayName(profile->id, profile->login,
+                                    profile->displayName))
+        {
+            const auto basePath = "/accounts/uid" + userId.toStdString();
+            pajlada::Settings::Setting<QString>::set(basePath + "/displayName",
+                                                     account->displayName_);
+            getSettings()->requestSave();
+            if (manager.getCurrent() == account)
+            {
+                manager.currentUserDisplayNameChanged.invoke();
+            }
+            manager.userListUpdated.invoke();
+        }
+    };
+    getHelix()->getUserById(userId,
+                           [finish](const HelixUser &user) { finish(&user); },
+                           [finish] { finish(nullptr); });
+}
+
+void TwitchAccountManager::refreshDisplayNames()
+{
+    // The selected account's usual Helix authentication is sufficient for
+    // public profile names. Never change the selected account to load them.
+    if (!this->isLoggedIn() || getApp()->isTest())
+    {
+        return;
+    }
+    for (const auto &name : this->getUsernames())
+    {
+        if (auto account = this->findUserByUsername(name))
+        {
+            this->refreshDisplayName(account);
+        }
+    }
 }
 
 std::shared_ptr<TwitchAccount> TwitchAccountManager::getCurrent()
@@ -276,6 +370,8 @@ void TwitchAccountManager::reloadUsers()
             "/accounts/" + uid + "/clientID");
         auto oauthToken = pajlada::Settings::Setting<QString>::get(
             "/accounts/" + uid + "/oauthToken");
+        auto displayName = pajlada::Settings::Setting<QString>::get(
+            "/accounts/" + uid + "/displayName");
 
         if (username.isEmpty() || userID.isEmpty() || clientID.isEmpty() ||
             oauthToken.isEmpty())
@@ -287,6 +383,7 @@ void TwitchAccountManager::reloadUsers()
         userData.userID = userID.trimmed();
         userData.clientID = clientID.trimmed();
         userData.oauthToken = oauthToken.trimmed();
+        userData.displayName = displayName.trimmed();
 
         switch (this->addUser(userData))
         {
@@ -416,6 +513,8 @@ TwitchAccountManager::AddUserResponse TwitchAccountManager::addUser(
     auto newUser =
         std::make_shared<TwitchAccount>(userData.username, userData.oauthToken,
                                         userData.clientID, userData.userID);
+    newUser->setDisplayName(userData.userID, userData.username,
+                            userData.displayName);
 
     this->accounts.insert(newUser);
 

@@ -1,4 +1,3 @@
-English extra 277 Russian existing 119 Changed ['src/widgets/dialogs/UserInfoPopup.cpp', 'src/widgets/helper/ArchiveActions.cpp', 'src/widgets/helper/ArchiveUserCard.cpp', 'src/widgets/helper/CornerBanners.cpp', 'src/widgets/settingspages/GeneralPage.cpp']
 0	1 second (instant)
 1	10 seconds
 2	10th channel
@@ -60,8 +59,7 @@ English extra 277 Russian existing 119 Changed ['src/widgets/dialogs/UserInfoPop
 58	Bottom right
 59	BottomLeft
 60	BottomRight
-61	Case-
-sensitive
+61	Case-\nsensitive
 62	Case-sensitive
 63	Category:
 64	Centrifugo
@@ -80,8 +78,7 @@ sensitive
 77	Copy
 78	Create a new split
 79	Create a new tab
-80	Custom
-sound
+80	Custom\nsound
 81	Debug: Add cheer test message
 82	Debug: Add emote test message
 83	Debug: Add misc test message
@@ -98,16 +95,14 @@ sound
 94	Down
 95	Edit Hotkey
 96	Emote type:
-97	Enable
-regex
+97	Enable\nregex
 98	Enable regex
 99	Enabled
 100	Entire Tab
 101	Facebook
 102	Filter
 103	Firefox
-104	Flash
-taskbar
+104	Flash\ntaskbar
 105	Focus neighbouring split
 106	Focus search box
 107	Focused Split
@@ -166,8 +161,7 @@ taskbar
 160	Paste
 161	Pattern
 162	Pick filters
-163	Play
-sound
+163	Play\nsound
 164	Popup Windows
 165	Pressing this keybinding will invoke the hotkey
 166	Previous
@@ -217,20 +211,16 @@ sound
 210	Should the channel live notification be enabled, disabled or toggled
 211	Should the moderation mode be enabled, disabled or toggled
 212	Should the tabs be enabled, disabled, toggled, or live-only.
-213	Show In
-Mentions
-214	Show In
-Message Menu
+213	Show In\nMentions
+214	Show In\nMessage Menu
 215	Show debug popup
-216	Show in
-Mentions
+216	Show in\nMentions
 217	ShowOnShift
 218	Small (80%)
 219	Smaller
 220	Smaller (70%)
 221	Solid
-222	Something went wrong, you should never
-see this message :)
+222	Something went wrong, you should never\nsee this message :)
 223	Source
 224	Source of text:
 225	Split
@@ -263,9 +253,7 @@ see this message :)
 252	Usercard: execute moderation action
 253	Users
 254	Valid
-255	Warning: using keybindings without modifiers can lead to not being
-able to use the key for the normal purpose.
-Press the submit button again to do it anyway.
+255	Warning: using keybindings without modifiers can lead to not being\nable to use the key for the normal purpose.\nPress the submit button again to do it anyway.
 256	What should be included in the new popup
 257	Which direction do you want to see more messages
 258	Which direction to look for a split to focus?

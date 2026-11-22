@@ -20,7 +20,7 @@ public:
     using NetworkError = QNetworkReply::NetworkError;
 
     NetworkResult(NetworkError error, const QVariant &httpStatusCode,
-                  QByteArray data, QByteArray etag = {});
+                  QByteArray data, QByteArray etag = {}, QString cachedFile = {});
 
     QJsonObject parseJson() const;
 
@@ -43,10 +43,12 @@ public:
     }
 
     QString formatError() const;
+    const QString &cachedFile() const { return this->cachedFile_; }
 
 private:
     QByteArray data_;
     QByteArray etag_;
+    QString cachedFile_;
 
     NetworkError error_;
     std::optional<int> status_;

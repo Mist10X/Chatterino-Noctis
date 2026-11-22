@@ -119,7 +119,8 @@ void strip(QStringView &source)
     while (!source.isEmpty())
     {
         auto c = source.first();
-        if (c == u'<' || c == u'*' || c == u'_' || c == u'~' || c == u'(')
+        if (c == u'<' || c == u'*' || c == u'_' || c == u'~' || c == u'(' ||
+            c == u'«' || c == u'“' || c == u'"')
         {
             source = source.mid(1);
             continue;
@@ -131,7 +132,8 @@ void strip(QStringView &source)
     {
         auto c = source.last();
         if (c == u'>' || c == u'?' || c == u'!' || c == u'.' || c == u',' ||
-            c == u':' || c == u'*' || c == u'~' || c == u')')
+            c == u':' || c == u'*' || c == u'~' || c == u')' || c == u'»' ||
+            c == u'”' || c == u'"' || c == u'…')
         {
             source.chop(1);
             continue;

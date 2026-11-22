@@ -213,6 +213,7 @@ public:
     void setChannel(const ChannelPtr &underlyingChannel);
 
     void setFilters(const QList<QUuid> &ids);
+    void setWhisperPeer(const QString &peer);
     QList<QUuid> getFilterIds() const;
     FilterSetPtr getFilterSet() const;
 
@@ -468,6 +469,7 @@ private:
     bool showScrollBar_ = false;
 
     FilterSetPtr channelFilters_;
+    QString whisperPeer_;
 
     // Returns true if message should be included
     bool shouldIncludeMessage(const MessagePtr &message) const;

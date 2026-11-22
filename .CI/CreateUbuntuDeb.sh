@@ -16,7 +16,7 @@ packaging_dir="package"
 ubuntu_release="$(lsb_release -rs)"
 
 # The final path where we'll save the .deb package
-deb_path="Chatterino-ubuntu-${ubuntu_release}-x86_64.deb"
+deb_path="Chatterino-Noctis-ubuntu-${ubuntu_release}-x86_64.deb"
 
 # Refactor opportunity:
 case "$ubuntu_release" in
@@ -41,20 +41,20 @@ esac
 echo "Building Ubuntu .deb file on '$ubuntu_release'"
 echo "Dependencies: $dependencies"
 
-if [ -f ./bin/Leafyrino ] && [ -x ./bin/Leafyrino ]; then
-    app_executable="Leafyrino"
+if [ -f ./bin/chatterino-noctis ] && [ -x ./bin/chatterino-noctis ]; then
+    app_executable="chatterino-noctis"
 elif [ -f ./bin/chatterino ] && [ -x ./bin/chatterino ]; then
     app_executable="chatterino"
 else
-    echo "ERROR: No Leafyrino or chatterino binary file found. This script must be run in the build folder, and the app must be built first."
+    echo "ERROR: No chatterino-noctis or chatterino binary file found. This script must be run in the build folder, and the app must be built first."
     exit 1
 fi
 
-chatterino_version=$(git describe --tags 2>/dev/null) || true
-if [ "$(echo "$chatterino_version" | cut -c1-1)" = 'v' ]; then
-    chatterino_version="$(echo "$chatterino_version" | cut -c2-)"
-else
-    chatterino_version="0.0.0-dev"
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+chatterino_version="$(sed -n 's/^#define MIST1X_VERSION "\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' "$script_dir/../src/common/Mist1XVersion.hpp")"
+if [ -z "$chatterino_version" ]; then
+    echo "ERROR: Expected a three-part Noctis version in Mist1XVersion.hpp"
+    exit 1
 fi
 
 # Make sure no old remnants of a previous packaging remains
@@ -64,15 +64,15 @@ mkdir -p "$packaging_dir/DEBIAN"
 
 echo "Making control file"
 cat >> "$packaging_dir/DEBIAN/control" << EOF
-Package: chatterino
+Package: chatterino-noctis
 Version: $chatterino_version
 Architecture: amd64
-Maintainer: Leafyzito <https://github.com/leafyzito>
+Maintainer: Mist1X <Mist10X@users.noreply.github.com>
 Depends: $dependencies
 Section: net
 Priority: optional
-Homepage: https://github.com/leafyzito/leafyrino
-Description: Leafyrino - chat client for Twitch (built for $ubuntu_release)
+Homepage: https://github.com/Mist10X/chatterino-noctis
+Description: Chatterino Noctis - chat client for Twitch (built for $ubuntu_release)
 EOF
 cat "$packaging_dir/DEBIAN/control"
 breakline

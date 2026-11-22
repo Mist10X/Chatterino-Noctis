@@ -4,11 +4,28 @@
 // predictions, for looking at them (no network, no Twitch).
 
 #include "OwnTimeoutChecks.hpp"
+#include "common/UiLanguage.hpp"
+#include "messages/Message.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
+#include "singletons/Settings.hpp"
 #include "widgets/dialogs/PredictionDialog.hpp"
 #include "widgets/splits/Split.hpp"
 
 #include <QDateTime>
+#include <QLocale>
+
+namespace chatterino {
+
+class PredictionDialogTestAccess
+{
+public:
+    static void showBetError(PredictionDialog &dialog, const QString &error)
+    {
+        dialog.showBetError(error);
+    }
+};
+
+}  // namespace chatterino
 
 namespace predictiondemo {
 
@@ -87,6 +104,7 @@ inline int runPredictionDemo(chatterino::Split &split,
         {"active2-bet", 2, "ACTIVE", true},
         {"active4", 4, "ACTIVE", false},
         {"locked", 2, "LOCKED", true},
+        {"locked-viewer", 2, "LOCKED", false},
         {"resolved", 2, "RESOLVED", true},
         {"resolved-won", 2, "RESOLVED-WON", true},
         {"resolved4", 4, "RESOLVED", true},
@@ -130,18 +148,67 @@ inline int runPredictionDemo(chatterino::Split &split,
         std::fprintf(stderr, "prediction check: %s %s\n", ok ? "ok" : "FAIL",
                      name);
     };
-    auto lastText = [&] {
+    // Deliver the actual failed-bet callback into the production dialog,
+    // without attempting a bet on Twitch or altering the dialog's sizing.
+    auto unavailable = samplePrediction(2, QStringLiteral("ACTIVE"), false);
+    channel->setActivePrediction(unavailable);
+    auto *unavailableDialog = new PredictionDialog(channel.get(), &split);
+    unavailableDialog->show();
+    pump(200);
+    auto *notice = unavailableDialog->findChild<QLabel *>("PredictionBetError");
+    auto *subtitle = unavailableDialog->findChild<QLabel *>("PredictionHeaderSubtitle");
+    const auto beforeErrorMessages = channel->getMessageSnapshot().size();
+    const auto heightWithoutNotice = unavailableDialog->height();
+    check("no prediction error panel before a failed bet", notice && notice->isHidden());
+    PredictionDialogTestAccess::showBetError(*unavailableDialog,
+                                              QStringLiteral("REGION_LOCKED"));
+    pump(200);
+    check("region denial is a localized notice in the dialog, never a chat row",
+          notice && notice->isVisible() &&
+              notice->text() == uiText("Predictions are unavailable in your region.") &&
+              channel->getMessageSnapshot().size() == beforeErrorMessages);
+    check("prediction notice follows UI font and Noctis card styling",
+          notice && subtitle && notice->font() == subtitle->font() &&
+              notice->styleSheet().contains("border-radius:") &&
+              notice->styleSheet().contains("padding:"));
+    check("prediction notice spans the card and has room for wrapped text",
+          notice && notice->width() >= unavailableDialog->width() * 0.8 &&
+              notice->height() >= notice->heightForWidth(notice->width()) - 1 &&
+              unavailableDialog->height() > heightWithoutNotice);
+    unavailableDialog->grab().save(screenshotBase + "-dialog-region-locked.png", "PNG");
+    const auto heightWithNotice = unavailableDialog->height();
+    PredictionDialogTestAccess::showBetError(*unavailableDialog,
+                                              QStringLiteral("REGION_LOCKED"));
+    pump(100);
+    check("repeat prediction error does not create another notice or grow the dialog",
+          unavailableDialog->height() == heightWithNotice &&
+              unavailableDialog->findChildren<QLabel *>("PredictionBetError").size() == 1);
+    unavailable.status = QStringLiteral("LOCKED");
+    unavailableDialog->setPrediction(unavailable);
+    pump(150);
+    check("prediction notice is cleared after betting closes", notice && notice->isHidden());
+    unavailableDialog->close();
+    delete unavailableDialog;
+    pump(50);
+
+    const auto oldSystemMessages =
+        getSettings()->showPredictionSystemMessages.getValue();
+    getSettings()->showPredictionSystemMessages.setValue(true);
+    auto lastResultMatches = [&](Message::ChannelNotice kind,
+                                 const QString &text) {
         const auto snapshot = channel->getMessageSnapshot();
-        return snapshot.size() > 0
-                   ? snapshot[snapshot.size() - 1]->messageText
-                   : QString();
+        return snapshot.size() > 0 && snapshot.back()->channelNotice == kind &&
+               snapshot.back()->clone()->channelNotice == kind &&
+               snapshot.back()->messageText == text &&
+               snapshot.back()->searchText == text &&
+               snapshot.back()->flags.has(MessageFlag::System);
     };
     auto userEvent = [&](const QString &type, const QString &eventId,
-                         const QJsonObject &result) {
+                         const QJsonObject &result, int stake = 2500) {
         QJsonObject bet{{"event_id", eventId},
                         {"outcome_id", "o0"},
                         {"channel_id", "1"},
-                        {"points", 2500}};
+                        {"points", stake}};
         if (!result.isEmpty())
         {
             bet.insert("result", result);
@@ -160,27 +227,44 @@ inline int runPredictionDemo(chatterino::Split &split,
               (*channel->accessPrediction())->selfOutcomeId == "o0");
     userEvent(QStringLiteral("prediction-result"), open.id,
               QJsonObject{{"type", "WIN"}, {"points_won", 3337}});
-    const auto won = lastText();
-    std::fprintf(stderr, "won message: %s\n", qPrintable(won));
-    check("a won bet says how much came back",
-          won.contains(QStringLiteral("3,337")) ||
-              won.contains(QStringLiteral("3 337")) ||
-              won.contains(QStringLiteral("3337")));
+    const QLocale locale(activeUiLanguage());
+    check("a won bet shows its own marker, localized payout and profit",
+          lastResultMatches(Message::ChannelNotice::PredictionWon,
+                            uiText("Prediction won · Payout: %1 (+%2)")
+                                .arg(locale.toString(3337), locale.toString(837))));
+    const auto countAfterWin = channel->getMessageSnapshot().size();
     userEvent(QStringLiteral("prediction-result"), open.id,
               QJsonObject{{"type", "WIN"}, {"points_won", 3337}});
-    check("the result is said once", lastText() == won &&
-                                         channel->getMessageSnapshot().size() >= 1);
+    check("the result is said once",
+          channel->getMessageSnapshot().size() == countAfterWin);
 
     auto second = samplePrediction(2, QStringLiteral("LOCKED"), false);
     second.id = QStringLiteral("second");
     channel->setActivePrediction(second);
     userEvent(QStringLiteral("prediction-result"), second.id,
               QJsonObject{{"type", "LOSE"}, {"points_won", QJsonValue()}});
-    const auto lost = lastText();
-    std::fprintf(stderr, "lost message: %s\n", qPrintable(lost));
-    check("a lost bet says so",
-          lost != won && (lost.contains(QStringLiteral("2,500")) ||
-                          lost.contains(QStringLiteral("2 500"))));
+    check("a lost bet shows its own marker and localized stake",
+          lastResultMatches(Message::ChannelNotice::PredictionLost,
+                            uiText("Prediction lost · Channel points: −%1")
+                                .arg(locale.toString(2500))));
+
+    second.id = QStringLiteral("refund-before-cancel");
+    channel->setActivePrediction(second);
+    userEvent("prediction-result", second.id, QJsonObject{{"type", "REFUND"}});
+    const QString refundMessage =
+        uiText("Prediction refunded · Channel points: +%1").arg(locale.toString(2500));
+    check("confirmed refund while the prediction is open",
+          lastResultMatches(Message::ChannelNotice::PredictionRefund, refundMessage));
+    channel->setActivePrediction(std::nullopt);
+    const auto countAfterRefund = channel->getMessageSnapshot().size();
+    userEvent("prediction-result", second.id, QJsonObject{{"type", "REFUND"}});
+    userEvent("prediction-result", "unknown-stake", QJsonObject{{"type", "REFUND"}}, 0);
+    check("late duplicate and unknown stake do not add another refund",
+          channel->getMessageSnapshot().size() == countAfterRefund);
+    userEvent("prediction-result", "refund-after-cancel", QJsonObject{{"type", "REFUND"}});
+    check("refund delivered after the public prediction is gone",
+          channel->getMessageSnapshot().size() == countAfterRefund + 1 &&
+              lastResultMatches(Message::ChannelNotice::PredictionRefund, refundMessage));
 
     // computed from the pool when Twitch's own result has not come
     auto pool = samplePrediction(2, QStringLiteral("RESOLVED"), true);
@@ -196,8 +280,95 @@ inline int runPredictionDemo(chatterino::Split &split,
                samplePrediction(2, QStringLiteral("RESOLVED"), false))
                .has_value());
 
+    // Public event rows, independent of the betting dialog's current state.
+    // Verify the marker is attached at the source of actual event messages
+    // and survives copies without changing the existing system message text.
+    const QJsonObject moderator{{"display_name", "moderator_demo"}};
+    const QJsonObject predictionEvent{
+        {"id", "voting-notice-prediction"},
+        {"title", "Will the demo pass?"},
+        {"created_by", moderator},
+        {"locked_by", moderator},
+        {"ended_by", moderator},
+        {"winning_outcome_id", "yes"},
+        {"outcomes", QJsonArray{QJsonObject{{"id", "yes"}, {"title", "Yes"}},
+                                 QJsonObject{{"id", "no"}, {"title", "No"}}}},
+    };
+    const QJsonObject pollEvent{
+        {"id", "voting-notice-poll"},
+        {"title", "Choose a demo"},
+        {"created_by", moderator},
+        {"ended_by", moderator},
+        {"choices", QJsonArray{
+            QJsonObject{{"id", "alpha"}, {"title", "Alpha"},
+                        {"votes", QJsonObject{{"total", 10}}}},
+            QJsonObject{{"id", "beta"}, {"title", "Beta"},
+                        {"votes", QJsonObject{{"total", 2}}}}}},
+    };
+    auto predictionNotice = [&](const QString &type, const QString &status,
+                                const char *name) {
+        auto event = predictionEvent;
+        event.insert("status", status);
+        auto before = channel->getMessageSnapshot().size();
+        const QJsonObject payload{{"type", type},
+                                  {"data", QJsonObject{{"event", event}}}};
+        channel->handlePredictionUpdate(payload);
+        auto messages = channel->getMessageSnapshot();
+        check(name, messages.size() == before + 1 &&
+                        messages.back()->channelNotice ==
+                            Message::ChannelNotice::Prediction &&
+                        messages.back()->messageText.contains("moderator_demo") &&
+                        messages.back()->clone()->channelNotice ==
+                            Message::ChannelNotice::Prediction &&
+                        messages.back()->flags.has(MessageFlag::System));
+        channel->handlePredictionUpdate(payload);
+        check("duplicate prediction event produces no extra notice",
+              channel->getMessageSnapshot().size() == messages.size());
+    };
+    auto pollNotice = [&](const QString &type, const QString &status,
+                          const char *name) {
+        auto event = pollEvent;
+        event.insert("status", status);
+        auto before = channel->getMessageSnapshot().size();
+        const QJsonObject payload{{"type", type},
+                                  {"data", QJsonObject{{"poll", event}}}};
+        channel->handlePollUpdate(payload);
+        auto messages = channel->getMessageSnapshot();
+        check(name, messages.size() == before + 1 &&
+                        messages.back()->channelNotice ==
+                            Message::ChannelNotice::Poll &&
+                        messages.back()->messageText.contains("moderator_demo") &&
+                        messages.back()->clone()->channelNotice ==
+                            Message::ChannelNotice::Poll &&
+                        messages.back()->flags.has(MessageFlag::System));
+        channel->handlePollUpdate(payload);
+        check("duplicate poll event produces no extra notice",
+              channel->getMessageSnapshot().size() == messages.size());
+    };
+    predictionNotice("event-created", "ACTIVE", "styled prediction creation");
+    predictionNotice("event-locked", "LOCKED", "styled prediction locking");
+    predictionNotice("event-resolved", "RESOLVED", "styled prediction resolution");
+    predictionNotice("event-canceled", "CANCELED", "styled prediction cancellation");
+    pollNotice("POLL_CREATE", "ACTIVE", "styled poll creation");
+    pollNotice("POLL_END", "COMPLETED", "styled poll completion");
+    pollNotice("POLL_END", "TERMINATED", "styled poll termination");
+    pollNotice("POLL_END", "ARCHIVED", "styled poll archival");
+    getSettings()->showPredictionSystemMessages.setValue(false);
+    const auto countWhenDisabled = channel->getMessageSnapshot().size();
+    userEvent("prediction-result", "disabled", QJsonObject{{"type", "REFUND"}});
+    channel->handlePredictionUpdate(QJsonObject{
+        {"type", "event-created"},
+        {"data", QJsonObject{{"event", predictionEvent}}}});
+    channel->handlePollUpdate(QJsonObject{
+        {"type", "POLL_CREATE"}, {"data", QJsonObject{{"poll", pollEvent}}}});
+    check("voting notices obey existing system messages setting",
+          channel->getMessageSnapshot().size() == countWhenDisabled);
+    getSettings()->showPredictionSystemMessages.setValue(oldSystemMessages);
+
     channel->setActivePrediction(std::nullopt);
+    channel->setActivePoll(std::nullopt);
     pump(100);
+    split.grab().save(screenshotBase + "-voting-notices.png", "PNG");
     return failed;
 }
 

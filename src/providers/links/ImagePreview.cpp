@@ -5,39 +5,32 @@
 #include "providers/links/ImagePreview.hpp"
 
 #include "Application.hpp"
-#include "common/Env.hpp"
-#include "common/network/NetworkRequest.hpp"
-#include "common/network/NetworkResult.hpp"
+#include "providers/links/LinkInfo.hpp"
+#include "providers/links/LinkResolver.hpp"
 #include "messages/Image.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/WindowManager.hpp"
 
 #include <QCoreApplication>
-#include <QHash>
+#include <QCache>
 #include <QHostAddress>
-#include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
 #include <QTimer>
 #include <QUrl>
 
+#include <algorithm>
+
 namespace chatterino::imagepreview {
 
 namespace {
 
-constexpr int REQUEST_TIMEOUT_MS = 8000;
-constexpr qsizetype MAX_CACHED = 300;
-
-// Only used from the GUI thread.
-QHash<QString, ImagePtr> &cache()
+// Only locally prepared upload thumbnails need an extra cache. The resolver
+// already caches remote metadata; each message retains its own result.
+QCache<QString, ImagePtr> &uploads()
 {
-    static QHash<QString, ImagePtr> value;
-    return value;
-}
-
-QSet<QString> &asked()
-{
-    static QSet<QString> value;
+    // Units of one MiB, with a minimum cost of one per thumbnail.
+    static QCache<QString, ImagePtr> value(32);
     return value;
 }
 
@@ -155,16 +148,20 @@ bool isImageLink(const QString &url, const QStringList &sites)
             // (or an album there, kappalol.fun/group/<id>). The sites' own
             // pages (eblo.id/videos, kappa.lol/uploaders) only have a logo.
             static const QRegularExpression postId(
-                QStringLiteral("^[A-Za-z0-9_-]{4,16}$"));
-            static const QRegularExpression notAWord(
-                QStringLiteral("[A-Z0-9]"));
-            const auto &id = parts.size() == 2 &&
-                                     parts.first() == QStringLiteral("group")
-                                 ? parts.last()
-                                 : parts.first();
-            return (parts.size() == 1 || &id == &parts.last()) &&
-                   postId.match(id).hasMatch() &&
-                   notAWord.match(id).hasMatch();
+                QStringLiteral("^[A-Za-z0-9_-]{4,64}$"));
+            static const QSet<QString> sitePages{
+                "delete", "uploaders", "upload", "videos", "board", "about",
+                "profile", "group", "text", "login", "register", "settings",
+                "terms", "privacy", "albums", "images", "contact", "help",
+                "api", "docs", "account", "dashboard", "random", "rules",
+            };
+            if (parts.size() == 1)
+            {
+                return postId.match(parts.front()).hasMatch() &&
+                       !sitePages.contains(parts.front().toLower());
+            }
+            return parts.size() == 2 && parts.front() == QStringLiteral("group") &&
+                   postId.match(parts.back()).hasMatch();
         }
     }
     return false;
@@ -172,87 +169,86 @@ bool isImageLink(const QString &url, const QStringList &sites)
 
 bool isImageLink(const QString &url)
 {
-    return isImageLink(url, sites(getSettings()->imagePreviewSites));
+    return uploads().contains(key(url)) ||
+           isImageLink(url, sites(getSettings()->imagePreviewSites));
 }
 
 QString key(const QString &url)
 {
     const auto parsed = parse(url);
-    auto path = parsed.path();
+    auto path = parsed.path(QUrl::FullyEncoded);
     while (path.endsWith('/'))
     {
         path.chop(1);
     }
-    auto result = bareHost(parsed) + path;
+    auto result = bareHost(parsed);
+    const int port = parsed.port();
+    if (port != -1 && port != (parsed.scheme() == QStringLiteral("http") ? 80 : 443))
+    {
+        result += u':' + QString::number(port);
+    }
+    result += path;
     if (parsed.hasQuery())
     {
-        result += u'?' + parsed.query();
+        result += u'?' + parsed.query(QUrl::FullyEncoded);
     }
     return result;
 }
 
-ImagePtr get(const QString &url)
+ImagePtr cachedUpload(const QString &url)
 {
-    const auto k = key(url);
+    const auto *uploaded = uploads().object(key(url));
+    return uploaded ? *uploaded : nullptr;
+}
+
+ImagePtr getOrRequest(LinkInfo &info)
+{
+    const auto k = key(info.originalUrl());
     if (deleted().contains(k))
     {
         return nullptr;
     }
-    return cache().value(k);
-}
-
-void request(const QString &url)
-{
-    const auto k = key(url);
-    if (asked().contains(k) || deleted().contains(k) || tryGetApp() == nullptr)
+    if (auto *uploaded = uploads().object(k))
     {
-        return;
+        return *uploaded;
     }
-    asked().insert(k);
-
-    // Only the public link goes to the resolver; it hands back a link to a
-    // small copy on its own server.
-    NetworkRequest(Env::get().linkResolverUrl.arg(
-                       QString::fromUtf8(QUrl::toPercentEncoding(url, {}, "/:"))))
-        .timeout(REQUEST_TIMEOUT_MS)
-        .onSuccess([k](const NetworkResult &result) {
-            const auto root = result.parseJson();
-            if (root.value("status").toInt() != 200)
-            {
-                return;
-            }
-            const QUrl thumbnail(root.value("thumbnail").toString());
-            if (thumbnail.scheme() != QStringLiteral("https") ||
-                !isPublicHost(thumbnail.host().toLower()))
-            {
-                return;
-            }
-            if (cache().size() >= MAX_CACHED)
-            {
-                cache().clear();  // rare; the pictures are simply loaded again
-                asked().clear();
-                asked().insert(k);
-            }
-            cache().insert(k, Image::fromUrl({thumbnail.toString()}));
-            scheduleRelayout();
-        })
-        .execute();
+    if (info.canResolve() && tryGetApp())
+    {
+        LinkResolver::resolveThumbnail(&info);
+    }
+    auto thumbnail = info.thumbnail();
+    return thumbnail && thumbnail->url().string.startsWith(
+                            QStringLiteral("https://"), Qt::CaseInsensitive)
+               ? thumbnail
+               : nullptr;
 }
 
 void forget(const QString &url)
 {
     const auto k = key(url);
     deleted().insert(k);
-    cache().remove(k);
+    uploads().remove(k);
     scheduleRelayout();
 }
 
-void insertForTesting(const QString &url, ImagePtr thumbnail)
+bool wasDeleted(const QString &url)
+{
+    return !deleted().isEmpty() && deleted().contains(key(url));
+}
+
+void rememberUpload(const QString &url, ImagePtr thumbnail)
 {
     const auto k = key(url);
-    asked().insert(k);
-    deleted().remove(k);
-    cache().insert(k, std::move(thumbnail));
+    if (!thumbnail)
+    {
+        return;
+    }
+    deleted().remove(k);  // A host may reuse a URL for a new successful upload.
+    const auto bytes = qint64(thumbnail->width()) * thumbnail->height() * 4;
+    constexpr qint64 mib = 1024 * 1024;
+    const auto cost = std::max<qint64>(1, (bytes + mib - 1) / mib);
+    uploads().insert(k, new ImagePtr(std::move(thumbnail)), cost);
+    scheduleRelayout();
 }
 
 }  // namespace chatterino::imagepreview

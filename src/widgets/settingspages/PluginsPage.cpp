@@ -49,7 +49,7 @@ PluginsPage::PluginsPage()
         auto groupLayout = group.setLayoutType<QFormLayout>();
         auto *scaryLabel = new QLabel(
             uiText("Plugins can expand functionality of "
-            "Chatterino. They can be made in Lua. This functionality is "
+            "Chatterino Noctis. They can be made in Lua. This functionality is "
             "still in public alpha stage. Use ONLY the plugins you trust. "
             "The permission system is best effort, always "
             "assume plugins can bypass permissions and can execute "
@@ -70,7 +70,7 @@ PluginsPage::PluginsPage()
                        uiText(". Each one is a new directory."));
         description->setOpenExternalLinks(true);
         description->setWordWrap(true);
-        description->setStyleSheet("color: #bbb");
+        description->setObjectName("description");
         groupLayout->addRow(description);
 
         auto *box = this->createCheckBox(uiText("Enable plugins"),
@@ -84,7 +84,7 @@ PluginsPage::PluginsPage()
             box->setEnabled(false);
             auto *disabledLabel = new QLabel(this);
             disabledLabel->setText(uiText("Plugins will not be fully loaded because "
-                                   "Chatterino is in safe mode. You can still "
+                                   "Chatterino Noctis is in safe mode. You can still "
                                    "enable and disable them."));
             groupLayout->addRow(disabledLabel);
         }
@@ -160,13 +160,14 @@ void PluginsPage::rebuildContent()
                                                 errors,
                                             this->dataFrame_);
             warningLabel->setTextFormat(Qt::RichText);
-            warningLabel->setStyleSheet("color: #f00");
+            warningLabel->setObjectName("settingsError");
+            warningLabel->setWordWrap(true);
             pluginEntry->addRow(warningLabel);
         }
 
         auto *description = new QLabel(meta.description, this->dataFrame_);
         description->setWordWrap(true);
-        description->setStyleSheet("color: #bbb");
+        description->setObjectName("description");
         pluginEntry->addRow(description);
 
         QString authorsTxt;
@@ -202,7 +203,7 @@ void PluginsPage::rebuildContent()
                     uiText("There was an error while loading this plugin: ") +
                         validPlugin->error(),
                     this->dataFrame_);
-                errorLabel->setStyleSheet("color: #f00");
+                errorLabel->setObjectName("settingsError");
                 errorLabel->setWordWrap(true);
                 pluginEntry->addRow(errorLabel);
             }

@@ -11,6 +11,7 @@
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
 #include "messages/ImageSet.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -42,7 +43,7 @@ const QString DANKCHAT_FILTERED_TYPE = u"DankChat Top Supporter"_s;
 
 }  // namespace
 
-DankChatBadges::DankChatBadges()
+void DankChatBadges::initialize()
 {
     QTimer::singleShot(3500, [this] {
         this->load();
@@ -134,6 +135,7 @@ void DankChatBadges::load()
                 std::unique_lock lock(this->mutex_);
                 this->badgeMap_ = std::move(map);
             }
+            notifyGlobalChatBadgesChanged();
 
             qCDebug(chatterinoApp)
                 << "[DankChat] Loaded badges for" << count << "users";

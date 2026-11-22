@@ -10,6 +10,7 @@
 #include "common/LinkParser.hpp"
 #include "common/Literals.hpp"
 #include "common/QLogging.hpp"
+#include "common/UiLanguage.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "controllers/emotes/EmoteController.hpp"
 #include "controllers/highlights/HighlightController.hpp"
@@ -333,6 +334,20 @@ void appendRepeatedMessageCounter(MessageBuilder &builder, Channel *channel,
         ->setTrailingSpace(false);
 }
 
+TextElement *appendLiveUpdateEmoteName(MessageBuilder &builder,
+                                       const QString &name, const EmotePtr &emote,
+                                       QString &messageText)
+{
+    if (!emote)
+    {
+        return builder.emplaceSystemTextAndUpdate(name, messageText);
+    }
+    messageText.append(name);
+    messageText.append(' ');
+    return builder.emplace<EmoteLinkElement>(emote, MessageElementFlag::Text,
+                                              MessageColor::System);
+}
+
 void appendLiveUpdateAddRemoveElements(
     MessageBuilder &builder, const QString &platform,
     const std::vector<LiveUpdateEmote> &emotes, bool isAdd, bool isFirstWord,
@@ -370,10 +385,8 @@ void appendLiveUpdateAddRemoveElements(
             builder.emplaceSystemTextAndUpdate(sep, messageText);
         }
 
-        messageText.append(emotes[i].name);
-        messageText.append(' ');
-        auto *el = builder.emplace<EmoteLinkElement>(
-            emotes[i].emote, MessageElementFlag::Text, MessageColor::System);
+        auto *el = appendLiveUpdateEmoteName(builder, emotes[i].name,
+                                              emotes[i].emote, messageText);
         if (i == emotes.size() - 1)
         {
             el->setTrailingSpace(false);
@@ -381,25 +394,6 @@ void appendLiveUpdateAddRemoveElements(
     }
 
     builder.emplaceSystemTextAndUpdate(".", messageText);
-}
-
-void appendLinkedLiveUpdateEmoteName(MessageBuilder &builder,
-                                     const QString &name, const EmotePtr &emote,
-                                     QString &messageText)
-{
-    if (emote)
-    {
-        messageText.append(name);
-        messageText.append(' ');
-        builder
-            .emplace<EmoteLinkElement>(emote, MessageElementFlag::Text,
-                                       MessageColor::System)
-            ->setTrailingSpace(false);
-        return;
-    }
-
-    auto *el = builder.emplaceSystemTextAndUpdate(name, messageText);
-    el->setTrailingSpace(false);
 }
 
 /**
@@ -955,6 +949,46 @@ MessagePtr makeSystemMessage(const QString &text, const QTime &time)
     return MessageBuilder(systemMessage, text, time).release();
 }
 
+MessagePtr makeRaidMessage(const QString &text)
+{
+    MessageBuilder builder(systemMessage, text);
+    builder->flags.set(MessageFlag::Raid);
+    return builder.release();
+}
+
+MessagePtr tryMakeAutoModHeldNotice(const QString &reason, const QString &code,
+                                    const QTime &time)
+{
+    if (code != u"automod_held" && code != u"msg_automod_held" &&
+        reason.compare(u"Your message has been held for review by AutoMod.",
+                       Qt::CaseInsensitive) != 0 &&
+        reason.compare(u"Hey! Your message is being checked by mods and has not been sent.",
+                       Qt::CaseInsensitive) != 0)
+    {
+        return nullptr;
+    }
+
+    const auto text = uiText("Your message has been held for review by AutoMod.");
+    MessageBuilder builder;
+    builder.emplace<TimestampElement>(time);
+    builder.emplace<TextElement>(text, MessageElementFlag::Text,
+                                 MessageColor::Text, FontStyle::ChatMediumBold);
+    builder->flags.set(MessageFlag::System, MessageFlag::DoNotTriggerNotification);
+    builder->channelNotice = Message::ChannelNotice::AutoModHeld;
+    builder->messageText = text;
+    builder->searchText = text;
+    return builder.release();
+}
+
+MessagePtr makeChatSendDropMessage(const QString &reason, const QString &code)
+{
+    if (auto held = tryMakeAutoModHeldNotice(reason, code))
+    {
+        return held;
+    }
+    return makeSystemMessage(uiText(reason));
+}
+
 MessageBuilder::MessageBuilder()
     : message_(std::make_shared<Message>())
 {
@@ -1342,9 +1376,11 @@ MessageBuilder::MessageBuilder(LiveUpdatesUpdateEmoteMessageTag /*unused*/,
                                      messageText);
     this->emplaceSystemTextAndUpdate(QString(" %1 emote ").arg(platform),
                                      messageText);
-    appendLinkedLiveUpdateEmoteName(*this, oldEmoteName, emote, messageText);
+    appendLiveUpdateEmoteName(*this, oldEmoteName, emote, messageText)
+        ->setTrailingSpace(false);
     this->emplaceSystemTextAndUpdate(" to ", messageText);
-    appendLinkedLiveUpdateEmoteName(*this, emoteName, emote, messageText);
+    appendLiveUpdateEmoteName(*this, emoteName, emote, messageText)
+        ->setTrailingSpace(false);
     this->emplaceSystemTextAndUpdate(".", messageText);
 
     QString finalText;
@@ -1486,6 +1522,12 @@ void MessageBuilder::append(std::unique_ptr<MessageElement> element)
 void MessageBuilder::addLink(const linkparser::Parsed &parsedLink,
                              QStringView source, const QString &textOverride)
 {
+    this->addLink(parsedLink, source, textOverride, true);
+}
+
+void MessageBuilder::addLink(const linkparser::Parsed &parsedLink,
+                             QStringView source, const QString &textOverride, bool withPreviews)
+{
     QString lowercaseLinkString;
     QString origLink = parsedLink.link.toString();
     QString fullUrl;
@@ -1527,6 +1569,9 @@ void MessageBuilder::addLink(const linkparser::Parsed &parsedLink,
         this->emplace<TextElement>(parsedLink.suffix(source).toString(),
                                    MessageElementFlag::Text, this->textColor_);
     }
+
+    if (!withPreviews)
+        return;
 
     // Titles in chat and unshortening need the page info up front;
     // otherwise previews load on hover.
@@ -1739,6 +1784,7 @@ MessagePtr MessageBuilder::makeLiveMessage(const HelixMinimalUser &channel,
                                            MessageFlags extraFlags)
 {
     MessageBuilder builder;
+    builder->channelNotice = Message::ChannelNotice::StreamLive;
 
     const auto channelName =
         channel.formatted(getSettings()->usernameDisplayMode.getEnum());
@@ -1747,24 +1793,13 @@ MessagePtr MessageBuilder::makeLiveMessage(const HelixMinimalUser &channel,
                                     MessageColor::Text, MessageColor::Text,
                                     MessageElementFlag::Username);
 
-    QString text;
-    if (getSettings()->showTitleInLiveMessage)
-    {
-        text = QString("%1 is live: %2").arg(channelName, title);
-        builder.emplace<TextElement>("is live:", MessageElementFlag::Text,
-                                     MessageColor::Text);
-        builder.emplace<TextElement>(title, MessageElementFlag::Text,
-                                     MessageColor::Text);
-    }
-    else
-    {
-        text = QString("%1 is live!").arg(channelName);
-        builder.emplace<TextElement>("is live!", MessageElementFlag::Text,
-                                     MessageColor::Text);
-    }
-
-    builder.message().messageText = text;
-    builder.message().searchText = text;
+    const auto status = getSettings()->showTitleInLiveMessage && !title.isEmpty()
+                            ? uiText("is live: %1").arg(title)
+                            : uiText("is live!");
+    builder.emplace<TextElement>(status, MessageElementFlag::Text,
+                                 MessageColor::Text);
+    builder.message().messageText = channelName % u' ' % status;
+    builder.message().searchText = builder.message().messageText;
     builder.message().id = channel.id;
 
     if (!extraFlags.isEmpty())
@@ -1779,6 +1814,7 @@ MessagePtr MessageBuilder::makeOfflineSystemMessage(
     const HelixMinimalUser &channel)
 {
     MessageBuilder builder;
+    builder->channelNotice = Message::ChannelNotice::StreamOffline;
     const auto channelName =
         channel.formatted(getSettings()->usernameDisplayMode.getEnum());
     builder.emplace<TimestampElement>();
@@ -1787,11 +1823,11 @@ MessagePtr MessageBuilder::makeOfflineSystemMessage(
     builder.emplace<MentionElement>(channelName, channel.login,
                                     MessageColor::System, MessageColor::System,
                                     MessageElementFlag::Username);
-    builder.emplace<TextElement>("is now offline.", MessageElementFlag::Text,
+    const auto status = uiText("is now offline.");
+    builder.emplace<TextElement>(status, MessageElementFlag::Text,
                                  MessageColor::System);
-    auto text = QString("%1 is now offline.").arg(channelName);
-    builder.message().messageText = text;
-    builder.message().searchText = text;
+    builder.message().messageText = channelName % u' ' % status;
+    builder.message().searchText = builder.message().messageText;
     builder.message().id = channel.id;
 
     return builder.release();
@@ -2246,22 +2282,7 @@ std::pair<MessagePtrMut, HighlightAlert> MessageBuilder::makeIrcMessage(
 
         builder.appendTwitchBadges(tags, twitchChannel);
 
-        builder.appendChatterinoBadges(userID);
-        builder.appendFfzBadges(twitchChannel, userID);
-        builder.appendFfzApBadges(userID);
-        builder.appendBttvBadges(userID);
-        builder.appendMoltorinoBadges(userID);
-        builder.appendSeventvBadges(userID);
-        builder.appendDankChatBadges(userID);
-        builder.appendChatsenBadges(userID);
-        builder.appendBluzyrinoBadges(userID);
-        builder.appendJilChatBadges(userID);
-        builder.appendBadgeHQBadges(userID);
-        builder.appendLimerinoBadges(userID);
-        builder.appendHomiesBadges(userID);
-        builder.appendFolhinhaBadges(userID);
-        // the build's own badge comes last, after all the others
-        builder.appendMist1XBadge(userID);
+        builder.appendGlobalBadges(userID, twitchChannel);
 
         builder.appendUsername(tags, args);
 
@@ -2765,6 +2786,36 @@ void MessageBuilder::appendOrEmplaceTextWithUser(
     }
 }
 
+QString MessageBuilder::formatSubscriptionNotice(Communi::TagsRef tags,
+                                                   const QString &login, bool renewal,
+                                                   const QString &fallback)
+{
+    if (activeUiLanguage() != "ru")
+        return fallback;
+    QString name = tags.getOrEmpty("display-name");
+    if (name.isEmpty())
+        name = login;
+    const auto plan = tags.getOrEmpty("msg-param-sub-plan");
+    const int tier = plan.toInt() / 1000;
+    QString text;
+    if (plan == "Prime")
+        text = uiText(renewal ? "%1 renewed a Prime subscription" : "%1 subscribed with Prime").arg(name);
+    else if (tier >= 1 && tier <= 3)
+        text = uiText(renewal ? "%1 renewed a Tier %2 subscription" : "%1 subscribed at Tier %2").arg(name, QString::number(tier));
+    else
+        text = uiText(renewal ? "%1 renewed a subscription" : "%1 subscribed").arg(name);
+    const int cumulative = tags.getOrEmpty("msg-param-cumulative-months").toInt();
+    const int advance = tags.getOrEmpty("msg-param-multimonth-duration").toInt();
+    const int streak = tags.getOrEmpty("msg-param-streak-months").toInt();
+    if (advance > 1 && tags.getOrEmpty("msg-param-multimonth-tenure") == "0")
+        text += " · " + uiText("%1 months in advance").arg(advance);
+    if (cumulative > 0)
+        text += " · " + uiText("Total: %1 months").arg(cumulative);
+    if (streak > 0 && tags.getOrEmpty("msg-param-should-share-streak") == "1")
+        text += " · " + uiText("Streak: %1 months").arg(streak);
+    return text;
+}
+
 void MessageBuilder::parseMessageTags(Communi::TagsRef tags,
                                       TwitchChannel *channel, bool hasContent)
 {
@@ -2826,6 +2877,9 @@ void MessageBuilder::parseMessageTags(Communi::TagsRef tags,
                     }
 
                     messageText = parseTagString(messageText);
+
+                    messageText = formatSubscriptionNotice(tags, this->message_->loginName,
+                                                           messageType == "resub", messageText);
 
                     auto timestampFlags = hasContent ? MessageElementFlags{
                             MessageElementFlag::HeaderTimestamp,
@@ -2947,13 +3001,34 @@ void MessageBuilder::parseMessageTags(Communi::TagsRef tags,
                     this->message().serverReceivedTime.time(), timestampFlags)
                 ->exhaustiveFlags = true;
 
-            const auto messageText =
+            auto messageText =
                 parseTagString(tags.getOrEmpty("system-msg"));
 
             auto displayName = tags.getOrEmpty("display-name");
             if (displayName.isEmpty())
             {
                 displayName = this->message_->loginName;
+            }
+            if (tags.getOrEmpty("msg-param-category") == u"watch-streak")
+            {
+                bool validCount = false;
+                const auto count = tags.getOrEmpty("msg-param-value").toInt(&validCount);
+                if (activeUiLanguage() == u"ru" && validCount && count > 0 &&
+                    !displayName.isEmpty())
+                {
+                    const auto tail = count % 10;
+                    const bool teen = count % 100 >= 11 && count % 100 <= 14;
+                    const auto source = !teen && tail == 1
+                                            ? "%1 · Watch streak: %2 stream in a row"
+                                            : (!teen && tail >= 2 && tail <= 4
+                                                   ? "%1 · Watch streak: %2 streams in a row (few)"
+                                                   : "%1 · Watch streak: %2 streams in a row");
+                    messageText = uiText(source).arg(displayName, QString::number(count));
+                }
+                if (!hasContent)
+                {
+                    this->message_->channelNotice = Message::ChannelNotice::WatchStreak;
+                }
             }
             const auto userID = tags.getOrEmpty("user-id");
             this->appendOrEmplaceTextWithUser(
@@ -2976,6 +3051,10 @@ void MessageBuilder::parseMessageTags(Communi::TagsRef tags,
                 // Message doesn't contain any user input, flag it as a system message
                 this->message().flags.set(MessageFlag::System);
             }
+        }
+        else if (messageType == "raid")
+        {
+            this->message().flags.set(MessageFlag::Raid);
         }
         else if (messageType == "modiversary")
         {
@@ -3210,7 +3289,7 @@ HighlightAlert MessageBuilder::parseHighlights(Communi::TagsRef tags,
 
 void MessageBuilder::appendChannelName(const Channel *channel)
 {
-    QString channelName("#" + channel->getName());
+    const QString channelName = channel->getName();
     Link link(Link::JumpToChannel, channel->getName());
 
     this->emplace<TextElement>(channelName, MessageElementFlag::ChannelName,
@@ -3723,10 +3802,11 @@ void MessageBuilder::makeWhisperCard(Message &message, const QString &title,
     message.flags.set(MessageFlag::Whisper);
 }
 
-void MessageBuilder::appendGlobalBadges(const QString &userID)
+void MessageBuilder::appendGlobalBadges(const QString &userID,
+                                         TwitchChannel *channel)
 {
     this->appendChatterinoBadges(userID);
-    this->appendFfzBadges(nullptr, userID);
+    this->appendFfzBadges(channel, userID);
     this->appendFfzApBadges(userID);
     this->appendBttvBadges(userID);
     this->appendMoltorinoBadges(userID);
@@ -3740,6 +3820,259 @@ void MessageBuilder::appendGlobalBadges(const QString &userID)
     this->appendHomiesBadges(userID);
     this->appendFolhinhaBadges(userID);
     this->appendMist1XBadge(userID);
+}
+
+namespace {
+
+bool sameBadgeImage(const ImagePtr &left, const ImagePtr &right)
+{
+    if (left == right)
+    {
+        return true;
+    }
+    return left && right && !left->url().string.isEmpty() &&
+           left->url() == right->url() &&
+           left->scale() == right->scale();
+}
+
+bool sameBadgeAppearance(const BadgeElement &left, const BadgeElement &right)
+{
+    const auto leftEmote = left.getEmote();
+    const auto rightEmote = right.getEmote();
+    if (left.type() != right.type() || left.getFlags() != right.getFlags() ||
+        left.getTooltip() != right.getTooltip() ||
+        leftEmote->name != rightEmote->name ||
+        leftEmote->homePage != rightEmote->homePage)
+    {
+        return false;
+    }
+    const auto &lhs = leftEmote->images;
+    const auto &rhs = rightEmote->images;
+    if (!(sameBadgeImage(lhs.getImage1(), rhs.getImage1()) &&
+          sameBadgeImage(lhs.getImage2(), rhs.getImage2()) &&
+          sameBadgeImage(lhs.getImage3(), rhs.getImage3()) &&
+          sameBadgeImage(lhs.getImage4(), rhs.getImage4())))
+    {
+        return false;
+    }
+    // FFZ badges can have a custom background with the same image.
+    return left.type() != FfzBadgeElement::TYPE ||
+           left.toJson().value("color") == right.toJson().value("color");
+}
+
+bool isNativeBadge(const BadgeElement &badge)
+{
+    return badge.twitchBadgeSlug().has_value() ||
+           badge.getFlags().hasAny(MessageElementFlag::BadgeSharedChannel,
+                                   MessageElementFlag::BadgeGlobalAuthority,
+                                   MessageElementFlag::BadgeChannelAuthority,
+                                   MessageElementFlag::BadgeSubscription,
+                                   MessageElementFlag::BadgePredictions,
+                                   MessageElementFlag::BadgeVanity);
+}
+
+}  // namespace
+
+MessagePtr MessageBuilder::refreshHistoryBadges(const Message &message,
+                                                TwitchChannel *channel,
+                                                const MessagePtr &externalBadges)
+{
+    if (channel == nullptr || message.userID.isEmpty() ||
+        message.platform != MessagePlatform::AnyOrTwitch ||
+        !message.flags.has(MessageFlag::RecentMessage) ||
+        message.flags.hasAny(MessageFlag::Whisper, MessageFlag::System))
+    {
+        return {};
+    }
+
+    const auto username = std::ranges::find_if(message.elements, [](const auto &element) {
+        return element->getFlags().has(MessageElementFlag::Username) &&
+               !element->getFlags().has(MessageElementFlag::RepliedMessage);
+    });
+    if (username == message.elements.end())
+    {
+        return {};
+    }
+
+    // IRC author badges are contiguous immediately before the username.
+    // Leave any separate subscription/reply/reward header untouched.
+    auto start = username;
+    while (start != message.elements.begin() &&
+           dynamic_cast<const BadgeElement *>(std::prev(start)->get()))
+    {
+        --start;
+    }
+
+    std::vector<const BadgeElement *> native;
+    std::vector<const BadgeElement *> external;
+    for (auto it = start; it != username; ++it)
+    {
+        const auto *badge = static_cast<const BadgeElement *>(it->get());
+        (isNativeBadge(*badge) ? native : external).push_back(badge);
+    }
+
+    std::vector<const BadgeElement *> badges;
+    MessageBuilder resolved;
+    if (message.flags.has(MessageFlag::SharedMessage))
+    {
+        // The receiving channel may differ from the source. The original
+        // badge snapshot is safer than another channel's subscription art.
+        badges.insert(badges.end(), native.begin(), native.end());
+    }
+    else
+    {
+        appendBadges(&resolved, message.twitchBadges, message.twitchBadgeInfos,
+                     channel);
+        // Preserve shared-chat source-only badges and special badge elements
+        // that aren't represented in the receiving message's badge tags.
+        for (const auto *badge : native)
+        {
+            const auto presentInTags = std::ranges::any_of(
+                message.twitchBadges, [&](const auto &tag) {
+                    return badge->twitchBadgeSlug() == tag.key_ &&
+                           badge->twitchBadgeVersion() == tag.value_;
+                });
+            if (!presentInTags)
+            {
+                badges.push_back(badge);
+            }
+        }
+        for (const auto &tag : message.twitchBadges)
+        {
+            const auto matchesTag = [&](const BadgeElement *badge) {
+                return badge->twitchBadgeSlug() == tag.key_ &&
+                       badge->twitchBadgeVersion() == tag.value_;
+            };
+            const auto old = std::ranges::find_if(native, matchesTag);
+            const auto fresh = std::ranges::find_if(resolved->elements,
+                                                    [&](const auto &element) {
+                return matchesTag(static_cast<const BadgeElement *>(element.get()));
+            });
+            if (fresh == resolved->elements.end())
+            {
+                if (old != native.end())
+                {
+                    badges.push_back(*old);
+                }
+                continue;
+            }
+            const auto *updated = static_cast<const BadgeElement *>(fresh->get());
+            if (old != native.end() && sameBadgeAppearance(**old, *updated))
+            {
+                badges.push_back(*old);
+            }
+            else
+            {
+                badges.push_back(updated);
+            }
+        }
+    }
+
+    auto names = message.externalBadges;
+    // Merge the currently available external badges in their normal order,
+    // allowing multiple badges from a provider without adding duplicates.
+    // Retain a badge that was already displayed if a provider didn't load.
+    if (externalBadges)
+    {
+        std::vector<bool> matched(external.size(), false);
+        std::vector<const BadgeElement *> orderedExternal;
+        std::vector<const BadgeElement *> previousExternal;
+        for (const auto &element : externalBadges->elements)
+        {
+            const auto *fresh = dynamic_cast<const BadgeElement *>(element.get());
+            if (!fresh)
+            {
+                continue;
+            }
+            const auto sameIdentity = [&](const BadgeElement *old) {
+                return old->getFlags() == fresh->getFlags() &&
+                       old->getEmote()->name == fresh->getEmote()->name;
+            };
+            size_t index = external.size();
+            // Prefer the exact badge when a user owns several with the same
+            // provider title. Otherwise use a matching badge's updated art.
+            for (size_t i = 0; i < external.size(); ++i)
+            {
+                if (!matched[i] && sameIdentity(external[i]))
+                {
+                    if (index == external.size())
+                    {
+                        index = i;
+                    }
+                    if (sameBadgeAppearance(*external[i], *fresh))
+                    {
+                        index = i;
+                        break;
+                    }
+                }
+            }
+            const auto *old = index < external.size() ? external[index] : nullptr;
+            if (old)
+            {
+                matched[index] = true;
+            }
+            previousExternal.push_back(old);
+            orderedExternal.push_back(old && sameBadgeAppearance(*old, *fresh)
+                                          ? old
+                                          : fresh);
+            const auto &name = fresh->getEmote()->name.string;
+            if (!name.isEmpty() && !names.contains(name))
+            {
+                names.append(name);
+            }
+        }
+        for (size_t i = 0; i < external.size(); ++i)
+        {
+            if (matched[i])
+            {
+                continue;
+            }
+            // Keep the original order for previously known badges that are
+            // absent from today's incomplete provider catalogs.
+            auto pos = orderedExternal.end();
+            for (size_t next = i + 1; next < external.size(); ++next)
+            {
+                const auto found = std::ranges::find(previousExternal, external[next]);
+                if (found != previousExternal.end())
+                {
+                    pos = orderedExternal.begin() +
+                          std::distance(previousExternal.begin(), found);
+                    break;
+                }
+            }
+            const auto offset = std::distance(orderedExternal.begin(), pos);
+            orderedExternal.insert(pos, external[i]);
+            previousExternal.insert(previousExternal.begin() + offset, external[i]);
+        }
+        external = std::move(orderedExternal);
+    }
+    badges.insert(badges.end(), external.begin(), external.end());
+
+    if (names == message.externalBadges &&
+        std::ranges::equal(start, username, badges.begin(), badges.end(),
+                          [](const auto &element, const auto *badge) {
+                              return element.get() == badge;
+                          }))
+    {
+        return {};
+    }
+
+    auto corrected = message.clone();
+    corrected->externalBadges = std::move(names);
+    auto first = corrected->elements.begin() +
+                 std::distance(message.elements.begin(), start);
+    auto last = first + std::distance(start, username);
+    first = corrected->elements.erase(first, last);
+    std::vector<std::unique_ptr<MessageElement>> correctedBadges;
+    correctedBadges.reserve(badges.size());
+    for (const auto *badge : badges)
+    {
+        correctedBadges.push_back(badge->clone());
+    }
+    corrected->elements.insert(first,
+                               std::make_move_iterator(correctedBadges.begin()),
+                               std::make_move_iterator(correctedBadges.end()));
+    return corrected;
 }
 
 void MessageBuilder::appendTwitchBadges(Communi::TagsRef tags,

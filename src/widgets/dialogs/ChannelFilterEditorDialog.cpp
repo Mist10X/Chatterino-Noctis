@@ -35,9 +35,8 @@ ChannelFilterEditorDialog::ChannelFilterEditorDialog(QWidget *parent)
     cancelButton->setDefault(false);
 
     auto *helpLabel =
-        new QLabel(uiText(QString("<a href='%1'><span "
-                           "style='color:#99f'>variable help</span></a>"))
-                       .arg("https://wiki.chatterino.com/Filters/#variables"));
+        new QLabel(QStringLiteral("<a href='https://wiki.chatterino.com/Filters/#variables'>%1</a>")
+                       .arg(uiText("Variable reference").toHtmlEscaped()));
     helpLabel->setOpenExternalLinks(true);
 
     buttonBox->addWidget(helpLabel);

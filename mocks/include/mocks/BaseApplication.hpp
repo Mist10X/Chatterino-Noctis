@@ -5,6 +5,17 @@
 #include "mocks/EmptyApplication.hpp"
 #include "mocks/TwitchUsers.hpp"
 #include "providers/bttv/BttvLiveUpdates.hpp"
+#include "providers/badgehq/BadgeHQBadges.hpp"
+#include "providers/bluzyrino/BluzyrinoBadges.hpp"
+#include "providers/chatsen/ChatsenBadges.hpp"
+#include "providers/dankchat/DankChatBadges.hpp"
+#include "providers/ffzap/FfzApBadges.hpp"
+#include "providers/jilchat/JilChatBadges.hpp"
+#include "providers/limerino/LimerinoBadges.hpp"
+#include "providers/moltorino/MoltorinoSupporterBadges.hpp"
+#include "providers/seventv/SeventvPaints.hpp"
+#include "providers/seventv/SeventvPersonalEmotes.hpp"
+#include "providers/twitch/PubSubManager.hpp"
 #include "singletons/Fonts.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
@@ -31,8 +42,9 @@ public:
     {
     }
 
-    BaseApplication(const QString &settingsData, bool runMigrations = false)
-        : EmptyApplication(settingsData)
+    BaseApplication(const QString &settingsData, bool runMigrations = false,
+                    const QString &customThemeFile = {})
+        : EmptyApplication(settingsData, customThemeFile)
         , settings(this->modes_, this->args_, this->settingsDir.path(),
                    {
                        .isTest = true,
@@ -79,6 +91,65 @@ public:
         return nullptr;
     }
 
+    FfzApBadges *getFfzApBadges() override
+    {
+        return &this->ffzApBadges_;
+    }
+
+    DankChatBadges *getDankChatBadges() override
+    {
+        return &this->dankChatBadges_;
+    }
+
+    ChatsenBadges *getChatsenBadges() override
+    {
+        return &this->chatsenBadges_;
+    }
+
+    BluzyrinoBadges *getBluzyrinoBadges() override
+    {
+        return &this->bluzyrinoBadges_;
+    }
+
+    JilChatBadges *getJilChatBadges() override
+    {
+        return &this->jilChatBadges_;
+    }
+
+    BadgeHQBadges *getBadgeHQBadges() override
+    {
+        return &this->badgeHQBadges_;
+    }
+
+    LimerinoBadges *getLimerinoBadges() override
+    {
+        return &this->limerinoBadges_;
+    }
+
+    MoltorinoSupporterBadges *getMoltorinoSupporterBadges() override
+    {
+        return &this->moltorinoSupporterBadges_;
+    }
+
+    SeventvPaints *getSeventvPaints() override
+    {
+        return &this->seventvPaints_;
+    }
+
+    SeventvPersonalEmotes *getSeventvPersonalEmotes() override
+    {
+        return &this->seventvPersonalEmotes_;
+    }
+
+    PubSub *getTwitchPubSub() override
+    {
+        if (!this->pubSub_)
+        {
+            this->pubSub_ = std::make_unique<PubSub>(QStringLiteral("wss://127.0.0.1:9050"));
+        }
+        return this->pubSub_.get();
+    }
+
     Args args;
     Settings settings;
     Updates updates;
@@ -86,6 +157,19 @@ public:
     Theme theme;
     Fonts fonts;
     TwitchUsers twitchUsers;
+
+private:
+    FfzApBadges ffzApBadges_;
+    DankChatBadges dankChatBadges_;
+    ChatsenBadges chatsenBadges_;
+    BluzyrinoBadges bluzyrinoBadges_;
+    JilChatBadges jilChatBadges_;
+    BadgeHQBadges badgeHQBadges_;
+    LimerinoBadges limerinoBadges_;
+    MoltorinoSupporterBadges moltorinoSupporterBadges_;
+    SeventvPaints seventvPaints_;
+    SeventvPersonalEmotes seventvPersonalEmotes_;
+    std::unique_ptr<PubSub> pubSub_;
 };
 
 }  // namespace chatterino::mock

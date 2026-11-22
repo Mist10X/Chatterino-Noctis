@@ -141,7 +141,7 @@ inline const std::map<HotkeyCategory, ActionDefinitionMap> actionNames{
                   {"Subscriber emotes only", {"subscriber"}},
               },
               .argumentsPrompt = "Emote type:",
-              .argumentsPromptHover = "Which emotes should Chatterino reload",
+              .argumentsPromptHover = "Which emotes should Chatterino Noctis reload",
           }},
          {"runCommand",
           ActionDefinition{
@@ -364,7 +364,7 @@ inline const std::map<HotkeyCategory, ActionDefinitionMap> actionNames{
               .argumentsPromptHover =
                   "What should be included in the new popup",
           }},
-         {"quit", ActionDefinition{"Quit Chatterino"}},
+         {"quit", ActionDefinition{"Quit Chatterino Noctis"}},
          {"removeTab", ActionDefinition{"Remove current tab"}},
          {"reopenSplit", ActionDefinition{"Reopen closed split"}},
          {"selectTabHistoryBack",

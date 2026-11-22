@@ -6,6 +6,7 @@
 
 #include <QFrame>
 #include <QPointer>
+#include <QPixmap>
 #include <QString>
 
 #include <functional>
@@ -47,7 +48,7 @@ protected:
 private:
     void setStatus(const QString &title, const QString &detail);
     void deleteImage();
-    void removeLinkFromInput();
+    void removeLinkFromInput(const QString &link);
     void onTextChanged();
     void updateStyle();
     void place();
@@ -58,6 +59,7 @@ private:
     std::function<void(const QString &)> notify_;
 
     QLabel *thumbnail_;
+    QPixmap pendingThumbnail_;
     QLabel *title_;
     QLabel *detail_;
     QPushButton *delete_;

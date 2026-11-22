@@ -51,7 +51,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <optional>
+
+#ifdef USEWINSDK
+#    include <Windows.h>
+#endif
 
 using namespace Qt::Literals;
 
@@ -130,7 +135,7 @@ void WindowManager::showSettingsDialog(QWidget *parent,
 
     if (this->appArgs.dontSaveSettings)
     {
-        QMessageBox::critical(parent, uiText("Leafyrino - Editing Settings Forbidden"),
+        QMessageBox::critical(parent, uiText("Chatterino Noctis - Editing Settings Forbidden"),
                               uiText("Settings cannot be edited when running with\n"
                               "commandline arguments such as '-c'."));
     }
@@ -549,6 +554,53 @@ void WindowManager::scrollToMessage(const MessagePtr &message)
     this->scrollToMessageSignal.invoke(message);
 }
 
+void WindowManager::activateTwitchChannel(const QString &channelName)
+{
+    const auto name = channelName.trimmed();
+    if (name.isEmpty() || name.startsWith('/') || name.startsWith('$') || !this->mainWindow_)
+    {
+        return;
+    }
+
+    auto &notebook = this->mainWindow_->getNotebook();
+    Split *bestSplit = nullptr;
+    SplitContainer *bestPage = nullptr;
+    size_t bestScore = std::numeric_limits<size_t>::max();
+    for (int i = 0; i < notebook.getPageCount(); ++i)
+    {
+        auto *page = dynamic_cast<SplitContainer *>(notebook.getPageAt(i));
+        if (!page)
+        {
+            continue;
+        }
+        const auto splits = page->getSplits();
+        for (auto *split : splits)
+        {
+            const auto channel = split->getChannel();
+            if (!channel->isTwitchChannel() || channel->getName().compare(name, Qt::CaseInsensitive) != 0)
+            {
+                continue;
+            }
+            const auto score = 2 * splits.size() + !split->getFilters().empty();
+            if (score < bestScore)
+            {
+                bestPage = page;
+                bestSplit = split;
+                bestScore = score;
+            }
+        }
+    }
+    if (!bestPage)
+    {
+        bestPage = notebook.addPage(true);
+        bestSplit = bestPage->appendNewSplit(false);
+        bestSplit->setChannel(getApp()->getTwitch()->getOrAddChannel(name));
+    }
+    notebook.select(bestPage);
+    bestPage->setSelected(bestSplit);
+    bestSplit->setFocus();
+}
+
 void WindowManager::openChannelOrMessageFromTray(const QString &channelName,
                                                  const QString &messageId)
 {
@@ -611,7 +663,8 @@ void WindowManager::openChannelOrMessageFromTray(const QString &channelName,
                 {
                     if (window->isMinimized())
                     {
-                        window->showNormal();
+                        window->setWindowState(window->windowState() & ~Qt::WindowMinimized);
+                        window->show();
                     }
                     else
                     {
@@ -673,7 +726,8 @@ void WindowManager::showMainWindow()
 
         if (window->isMinimized())
         {
-            window->showNormal();
+            window->setWindowState(window->windowState() & ~Qt::WindowMinimized);
+            window->show();
         }
         else
         {
@@ -683,7 +737,8 @@ void WindowManager::showMainWindow()
 
     if (this->mainWindow_->isMinimized())
     {
-        this->mainWindow_->showNormal();
+        this->mainWindow_->setWindowState(this->mainWindow_->windowState() & ~Qt::WindowMinimized);
+        this->mainWindow_->show();
     }
     else
     {
@@ -841,6 +896,10 @@ void WindowManager::initialize()
             this->mainWindow_->hide();
         }
     }
+    if (!this->appArgs.isFramelessEmbed)
+    {
+        this->mainWindow_->getNotebook().ensureWhispersTab();
+    }
 }
 
 void WindowManager::save()
@@ -888,13 +947,18 @@ void WindowManager::save()
             case WindowType::Attached:;
         }
 
-        if (window->isMaximized())
-        {
-            windowObj.insert("state", "maximized");
-        }
-        else if (window->isMinimized())
+        if (window->isMinimized())
         {
             windowObj.insert("state", "minimized");
+            windowObj.insert("restoreMaximized", window->windowState().testFlag(Qt::WindowMaximized));
+        }
+        else if (window->isFullScreen())
+        {
+            windowObj.insert("state", "fullscreen");
+        }
+        else if (window->isMaximized())
+        {
+            windowObj.insert("state", "maximized");
         }
 
         // window geometry
@@ -904,6 +968,42 @@ void WindowManager::save()
         windowObj.insert("y", rect.y());
         windowObj.insert("width", rect.width());
         windowObj.insert("height", rect.height());
+
+#ifdef USEWINSDK
+        // With mixed-DPI monitors and our custom non-client frame, Qt's
+        // logical geometry can differ from the actual Windows restore rect.
+        // GetWindowPlacement also distinguishes a minimized maximized window.
+        if (QApplication::platformName() == QStringLiteral("windows") &&
+            window->effectiveWinId() && !window->isFullScreen())
+        {
+            const auto hwnd = reinterpret_cast<HWND>(window->effectiveWinId());
+            WINDOWPLACEMENT native{};
+            native.length = sizeof(native);
+            if (GetWindowPlacement(hwnd, &native))
+            {
+                const auto &r = native.rcNormalPosition;
+                windowObj.insert("nativeNormalGeometry", QJsonObject{
+                    {"x", int(r.left)}, {"y", int(r.top)},
+                    {"width", int(r.right-r.left)}, {"height", int(r.bottom-r.top)}});
+                if (IsIconic(hwnd))
+                {
+                    windowObj.insert("state", "minimized");
+                    windowObj.insert("restoreMaximized", bool(native.flags & WPF_RESTORETOMAXIMIZED));
+                }
+                else if (IsZoomed(hwnd))
+                    windowObj.insert("state", "maximized");
+                else
+                {
+                    windowObj.remove("state");
+                    RECT visible{};
+                    if (GetWindowRect(hwnd, &visible))
+                        windowObj.insert("nativeVisibleGeometry", QJsonObject{
+                            {"x", int(visible.left)}, {"y", int(visible.top)},
+                            {"width", int(visible.right-visible.left)}, {"height", int(visible.bottom-visible.top)}});
+                }
+            }
+        }
+#endif
 
         auto popupID = window->popupID();
         if (popupID)
@@ -1266,13 +1366,15 @@ void WindowManager::applyWindowLayout(const WindowLayout &layout)
                 page->applyFromDescriptor(*tab.rootNode_);
             }
         }
-        window.show();
-
-        // Set window state
+        // Set state before showing; otherwise a minimized or maximized window
+        // briefly opens in normal geometry and startup may override its state.
         switch (windowData.state_)
         {
             case WindowDescriptor::State::Minimized: {
-                window.setWindowState(Qt::WindowMinimized);
+                auto state = Qt::WindowStates(Qt::WindowMinimized);
+                if (windowData.restoreMaximized_)
+                    state |= Qt::WindowMaximized;
+                window.setWindowState(state);
             }
             break;
 
@@ -1281,9 +1383,49 @@ void WindowManager::applyWindowLayout(const WindowLayout &layout)
             }
             break;
 
+            case WindowDescriptor::State::FullScreen:
+                window.setWindowState(Qt::WindowFullScreen);
+                break;
+
             case WindowDescriptor::State::None:
                 break;
         }
+        window.show();
+#ifdef USEWINSDK
+        // Qt has now created the actual native window. Preserve the exact
+        // physical restore rectangle, rather than converting it through a
+        // different screen's scale or custom frame a second time.
+        if (QApplication::platformName() == QStringLiteral("windows") &&
+            windowData.state_ == WindowDescriptor::State::None && windowData.nativeVisibleGeometry_.isValid())
+        {
+            const auto &r = windowData.nativeVisibleGeometry_;
+            RECT nativeRect{r.x(), r.y(), r.x() + r.width(), r.y() + r.height()};
+            if (MonitorFromRect(&nativeRect, MONITOR_DEFAULTTONULL))
+                SetWindowPos(reinterpret_cast<HWND>(window.winId()), nullptr, r.x(), r.y(), r.width(), r.height(), SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        else if (QApplication::platformName() == QStringLiteral("windows") &&
+            windowData.nativeNormalGeometry_.isValid() &&
+            windowData.state_ != WindowDescriptor::State::None && windowData.state_ != WindowDescriptor::State::FullScreen)
+        {
+            const auto &r = windowData.nativeNormalGeometry_;
+            RECT nativeRect{r.x(), r.y(), r.x() + r.width(), r.y() + r.height()};
+            if (MonitorFromRect(&nativeRect, MONITOR_DEFAULTTONULL))
+            {
+                const auto hwnd = reinterpret_cast<HWND>(window.winId());
+                WINDOWPLACEMENT placement{};
+                placement.length = sizeof(placement);
+                if (GetWindowPlacement(hwnd, &placement))
+                {
+                    placement.rcNormalPosition = nativeRect;
+                    placement.flags = windowData.restoreMaximized_ ? WPF_RESTORETOMAXIMIZED : 0;
+                    placement.showCmd = windowData.state_ == WindowDescriptor::State::Minimized
+                        ? SW_SHOWMINNOACTIVE : windowData.state_ == WindowDescriptor::State::Maximized
+                        ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
+                    SetWindowPlacement(hwnd, &placement);
+                }
+            }
+        }
+#endif
     }
 
     // We might've opened a few popups, so make sure the next ID is unused.

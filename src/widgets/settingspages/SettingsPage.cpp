@@ -6,13 +6,23 @@
 #include "common/UiLanguage.hpp"
 
 #include "Application.hpp"
+#include "singletons/Settings.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/FunctionEventFilter.hpp"
 #include "util/RapidJsonSerializeQString.hpp"
 
 #include <QDebug>
 
+#include <algorithm>
+
 namespace chatterino {
+
+float SettingsPage::interfaceScale()
+{
+    // The scale control itself stays usable at both ends of the chat zoom range.
+    return 1.F + (std::clamp(getSettings()->getClampedUiScale(), 1.F, 1.3F) -
+                  1.F) * .5F;
+}
 
 bool filterItemsRec(QObject *object, const QString &query)
 {

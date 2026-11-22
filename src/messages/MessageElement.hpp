@@ -445,6 +445,7 @@ private:
 
     LinkInfo linkInfo_;
     QString titleText_;
+    bool autoTitleRetryScheduled_ = false;
     // these are implicitly shared
     QStringList lowercase_;
     QStringList original_;
@@ -931,6 +932,8 @@ public:
 
 private:
     QString url_;
+    LinkInfo previewInfo_;
+    bool recoveryScheduled_ = false;
 };
 
 class ReplyCurveElement : public MessageElement

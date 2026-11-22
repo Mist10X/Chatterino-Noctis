@@ -141,7 +141,7 @@
             ],
             "externalBadges": [
             ],
-            "flags": "System|EventSub",
+            "flags": "System|EventSub|Raid",
             "frozen": true,
             "id": "",
             "localizedName": "",

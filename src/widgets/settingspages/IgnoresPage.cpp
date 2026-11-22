@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "common/UiLanguage.hpp"
+#include "widgets/settingspages/UiComboBox.hpp"
 #include "widgets/settingspages/IgnoresPage.hpp"
 
 #include "Application.hpp"
@@ -47,7 +48,7 @@ IgnoresPage::IgnoresPage()
 
 void addPhrasesTab(LayoutCreator<QVBoxLayout> layout)
 {
-    layout.emplace<QLabel>(uiText("Ignore messages based certain patterns."));
+    layout.emplace<QLabel>(uiText("Ignore messages based certain patterns."))->setWordWrap(true);
     EditableModelView *view =
         layout
             .emplace<EditableModelView>(
@@ -56,16 +57,8 @@ void addPhrasesTab(LayoutCreator<QVBoxLayout> layout)
             .getElement();
     view->setTitles(
         {uiText("Pattern"), uiText("Regex"), uiText("Case-sensitive"), uiText("Block"), uiText("Replacement")});
-    view->getTableView()->horizontalHeader()->setSectionResizeMode(
-        QHeaderView::Fixed);
-    view->getTableView()->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::Stretch);
+    view->setReadableColumns({0, 4}, true);
     view->addRegexHelpLink();
-
-    QTimer::singleShot(1, [view] {
-        view->getTableView()->resizeColumnsToContents();
-        view->getTableView()->setColumnWidth(0, 200);
-    });
 
     std::ignore = view->addButtonPressed.connect([] {
         getSettings()->ignoredMessages.append(IgnorePhrase{
@@ -89,9 +82,9 @@ void addUsersTab(IgnoresPage &page, LayoutCreator<QVBoxLayout> users,
 
     auto anyways = users.emplace<QHBoxLayout>().withoutMargin();
     {
-        anyways.emplace<QLabel>(uiText("Show messages from blocked users:"));
+        anyways.emplace<QLabel>(uiText("Show messages from blocked users:"))->setWordWrap(true);
 
-        auto *combo = anyways.emplace<QComboBox>().getElement();
+        auto *combo = anyways.emplace<UiComboBox>().getElement();
         combo->addItems({uiText("Never"), uiText("If you are Moderator"),
                          uiText("If you are Broadcaster"), uiText("Placeholder (no content)")});
 

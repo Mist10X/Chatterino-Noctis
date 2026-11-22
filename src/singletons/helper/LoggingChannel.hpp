@@ -32,7 +32,7 @@ public:
     void addMessage(const MessagePtr &message, const QString &streamID);
 
 private:
-    void openLogFile();
+    void openLogFile(const QString &date);
     void openStreamLogFile(const QString &streamID);
 
     const QString channelName;

@@ -31,11 +31,11 @@ if ($isTagged) {
     # This is a release.
     # Make sure, any existing `modes` file is overwritten for the user,
     # for example when updating from nightly to stable.
-    $bundleBaseName = "Leafyrino.Portable";
+    $bundleBaseName = "ChatterinoNoctis.Portable";
 }
 else {
     Write-Output nightly | Out-File Chatterino2/modes -Append -Encoding ASCII;
-    $bundleBaseName = "Leafyrino.Nightly.Portable";
+    $bundleBaseName = "ChatterinoNoctis.Nightly.Portable";
 }
 
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLower()
@@ -59,7 +59,7 @@ New-Item "Chatterino2/updater.1" -ItemType Directory;
 
 Invoke-RestMethod "https://github.com/Nerixyz/c2-portable-updater/releases/download/$($Env:C2_PORTABLE_INSTALLER_VERSION)/c2-portable-updater-$updaterArch-pc-windows-msvc.zip" -OutFile _portable-installer.zip;
 $updaterHash = (Get-FileHash _portable-installer.zip).Hash.ToLower();
-if (-not $updaterHash -eq $expectedUpdaterHash) {
+if ($updaterHash -ne $expectedUpdaterHash) {
     Write-Error "Hash mismatch: expected $expectedUpdaterHash - got: $updaterHash";
     exit 1
 }

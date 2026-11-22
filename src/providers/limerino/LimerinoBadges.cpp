@@ -11,6 +11,7 @@
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
 #include "messages/ImageSet.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/Settings.hpp"
 
 #include <QGuiApplication>
@@ -21,6 +22,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRandomGenerator>
+#include <QSet>
 #include <QSize>
 #include <QUrl>
 
@@ -398,6 +400,8 @@ bool LimerinoBadges::applyPayload(const QByteArray &payload)
     std::unique_lock lock(this->mutex_);
     this->catalog_ = std::move(catalog);
     this->users_ = std::move(assigned);
+    lock.unlock();
+    notifyGlobalChatBadgesChanged();
     return true;
 }
 
@@ -411,6 +415,7 @@ void LimerinoBadges::applyHolders(const QJsonObject &event)
 
     std::unique_lock lock(this->mutex_);
     const auto listed = userValues.toObject();
+    QSet<QString> changedUsers;
     for (auto it = listed.begin(); it != listed.end(); ++it)
     {
         if (!validUserId(it.key()) || !it.value().isArray())
@@ -418,6 +423,13 @@ void LimerinoBadges::applyHolders(const QJsonObject &event)
             continue;
         }
         const auto badge = lookupFirst(this->catalog_, it.value().toArray());
+        const auto existing = this->users_.find(it.key());
+        const auto previous =
+            existing == this->users_.end() ? EmotePtr{} : existing->second;
+        if (previous != badge)
+        {
+            changedUsers.insert(it.key());
+        }
         this->users_.erase(it.key());
         if (badge)
         {
@@ -425,6 +437,11 @@ void LimerinoBadges::applyHolders(const QJsonObject &event)
         }
     }
     this->etag_.clear();
+    lock.unlock();
+    if (!changedUsers.isEmpty())
+    {
+        notifyChatBadgesChangedForUsers(std::move(changedUsers));
+    }
 }
 
 void LimerinoBadges::start()

@@ -26,25 +26,7 @@
             "displayName": "",
             "elements": [
                 {
-                    "emote": {
-                        "homePage": "https://dashboard.twitch.tv/settings/moderation/automod",
-                        "images": {
-                            "1x": ""
-                        },
-                        "name": "",
-                        "tooltip": "AutoMod"
-                    },
-                    "flags": "BadgeChannelAuthority",
-                    "link": {
-                        "type": "None",
-                        "value": ""
-                    },
-                    "tooltip": "AutoMod",
-                    "trailingSpace": true,
-                    "type": "BadgeElement"
-                },
-                {
-                    "color": "#ff0000ff",
+                    "color": "Text",
                     "flags": "Text",
                     "link": {
                         "type": "None",

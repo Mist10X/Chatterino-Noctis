@@ -29,6 +29,7 @@
 #include "util/Twitch.hpp"
 #include "widgets/dialogs/SettingsDialog.hpp"
 #include "widgets/dialogs/UserInfoPopup.hpp"
+#include "widgets/helper/MessageMenu.hpp"
 #include "widgets/splits/Split.hpp"
 #include "widgets/TooltipWidget.hpp"
 
@@ -132,6 +133,7 @@ void MessageView::createMessageLayout()
 
 void MessageView::setMessage(const MessagePtr &message)
 {
+    this->rightPressReceived_ = false;
     this->layoutUsesChatWordFlags_ = false;
     this->clearSelection();
 
@@ -164,6 +166,7 @@ void MessageView::setFullMessage(const MessagePtr &message)
                                message->id == this->message_->id;
     if (!keepSelection)
     {
+        this->rightPressReceived_ = false;
         this->clearSelection();
     }
 
@@ -388,7 +391,7 @@ void MessageView::updateHoverTooltip(QMouseEvent *event)
         }
         else if (auto *linkElement = dynamic_cast<LinkElement *>(element))
         {
-            if (linkElement->linkInfo()->isPending())
+            if (linkElement->linkInfo()->canResolve())
             {
                 getApp()->getLinkResolver()->resolve(linkElement->linkInfo());
             }
@@ -635,6 +638,20 @@ void MessageView::clearSelection()
 
 void MessageView::contextMenuEvent(QContextMenuEvent *event)
 {
+    // Windows can deliver a separate context-menu event after the chat's
+    // right-button release has opened the reply preview beneath the cursor.
+    // Only a press that began in this view may open its mouse context menu.
+    if (event->reason() == QContextMenuEvent::Mouse)
+    {
+        const bool startedHere = this->rightPressReceived_;
+        this->rightPressReceived_ = false;
+        if (!startedHere)
+        {
+            event->accept();
+            return;
+        }
+    }
+
     if (this->messageLayout_ == nullptr)
     {
         BaseWidget::contextMenuEvent(event);
@@ -649,19 +666,7 @@ void MessageView::contextMenuEvent(QContextMenuEvent *event)
         });
     }
 
-    menu.addAction(uiText(QStringLiteral("Copy &message")), [this] {
-        QString copyString;
-        this->messageLayout_->addSelectionText(copyString, 0, UINT32_MAX,
-                                               CopyMode::OnlyTextAndEmotes);
-        crossPlatformCopy(copyString);
-    });
-
-    menu.addAction(uiText(QStringLiteral("Copy &full message")), [this] {
-        QString copyString;
-        this->messageLayout_->addSelectionText(copyString, 0, UINT32_MAX,
-                                               CopyMode::EverythingButReplies);
-        crossPlatformCopy(copyString);
-    });
+    addMessageCopyActions(menu, *this->messageLayout_);
 
     if (!this->selection_.isEmpty() && getSettings()->searchEnabled.getValue())
     {
@@ -672,7 +677,7 @@ void MessageView::contextMenuEvent(QContextMenuEvent *event)
         {
             QString actionText =
                 searchName.isEmpty()
-                    ? QStringLiteral("&Search")
+                    ? uiText("&Search")
                     : uiText(QStringLiteral("&Search with %1")).arg(searchName);
 
             if (getSettings()->searchIncognito && supportsIncognitoLinks())
@@ -697,11 +702,16 @@ void MessageView::contextMenuEvent(QContextMenuEvent *event)
         }
     }
 
-    menu.exec(event->globalPos());
+    if (!menu.isEmpty())
+    {
+        menu.exec(event->globalPos());
+    }
 }
 
 void MessageView::mousePressEvent(QMouseEvent *event)
 {
+    this->rightPressReceived_ = event->button() == Qt::RightButton &&
+                                this->messageLayout_ != nullptr;
     if (this->messageLayout_ == nullptr)
     {
         BaseWidget::mousePressEvent(event);

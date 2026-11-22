@@ -11,6 +11,12 @@
 #include "util/QMagicEnum.hpp"
 
 #include <QCoreApplication>
+#include <QNetworkAccessManager>
+#include <QSemaphore>
+
+#include <array>
+#include <chrono>
+#include <thread>
 
 using namespace chatterino;
 
@@ -255,50 +261,55 @@ TEST(NetworkRequest, FinallyCallbackOnTimeout)
     EXPECT_TRUE(NetworkManager::workerThread->isRunning());
 }
 
-/// Ensure timeouts don't expire early just because their request took a bit longer to actually fire
-///
-/// We need to ensure all requests are "executed" before we start waiting for them
 TEST(NetworkRequest, BatchedTimeouts)
 {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
-    // roughly num network manager worker threads * 2
-    static const auto numRequests = 10;
+    ASSERT_TRUE(NetworkManager::workerThread->isRunning());
+    auto gate = std::make_shared<QSemaphore>();
+    ASSERT_TRUE(QMetaObject::invokeMethod(NetworkManager::accessManager,
+        [gate] { gate->acquire(); }, Qt::QueuedConnection));
 
-    struct RequestState {
+    // Hold the worker queue until the short deadlines have expired. A local
+    // data URL would succeed immediately if the budget started at dispatch
+    // from the worker rather than when execute() queued each request.
+    struct State {
         RequestWaiter waiter;
-        bool errored = false;
+        unsigned successes = 0;
+        unsigned timeouts = 0;
+        unsigned completions = 0;
     };
-
-    EXPECT_TRUE(NetworkManager::workerThread->isRunning());
-
-    std::vector<std::shared_ptr<RequestState>> states;
-
-    for (auto i = 1; i <= numRequests; ++i)
+    std::array<State, 10> states;
+    for (size_t i = 0; i < states.size(); ++i)
     {
-        auto state = std::make_shared<RequestState>();
-
-        auto url = getDelayURL(1);
-
-        NetworkRequest(url)
-            .timeout(1500)
-            .onError([=](const NetworkResult &result) {
-                (void)result;
-                state->errored = true;
+        auto &state = states[i];
+        NetworkRequest(QUrl("data:text/plain,ready"))
+            .timeout(i == states.size() - 1 ? 10000 : 50)
+            .onSuccess([&state](const NetworkResult &result) {
+                EXPECT_EQ(result.getData(), QByteArray("ready"));
+                ++state.successes;
             })
-            .finally([=] {
-                state->waiter.requestDone();
+            .onError([&state](const NetworkResult &result) {
+                EXPECT_EQ(result.error(), QNetworkReply::TimeoutError);
+                EXPECT_EQ(result.status(), std::nullopt);
+                ++state.timeouts;
+            })
+            .finally([&state] {
+                ++state.completions;
+                state.waiter.requestDone();
             })
             .execute();
-
-        states.emplace_back(state);
     }
 
-    for (const auto &state : states)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    gate->release();
+    for (size_t i = 0; i < states.size(); ++i)
     {
-        state->waiter.waitForRequest();
-        EXPECT_FALSE(state->errored);
+        auto &state = states[i];
+        state.waiter.waitForRequest();
+        const bool longDeadline = i == states.size() - 1;
+        EXPECT_EQ(state.successes, longDeadline ? 1U : 0U);
+        EXPECT_EQ(state.timeouts, longDeadline ? 0U : 1U);
+        EXPECT_EQ(state.completions, 1U);
     }
-#endif
 }
 
 TEST(NetworkRequest, HttpGetHeaders)

@@ -26,6 +26,7 @@ class SettingsPage : public QFrame
 
 public:
     SettingsPage();
+    static float interfaceScale();
 
     virtual bool filterElements(const QString &query);
 

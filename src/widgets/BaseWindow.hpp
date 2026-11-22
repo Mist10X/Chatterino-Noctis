@@ -132,6 +132,7 @@ protected:
     void moveEvent(QMoveEvent *) override;
     void closeEvent(QCloseEvent *) override;
     void showEvent(QShowEvent *) override;
+    bool setCustomTitlebarContent(QWidget *content);
 
     void themeChangedEvent() override;
     bool event(QEvent *event) override;

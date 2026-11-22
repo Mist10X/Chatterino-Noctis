@@ -128,7 +128,7 @@ public:
     void replaceMessage(const MessagePtr &message,
                         const MessagePtr &replacement);
     void replaceMessage(size_t index, const MessagePtr &replacement);
-    void replaceMessage(size_t hint, const MessagePtr &message,
+    bool replaceMessage(size_t hint, const MessagePtr &message,
                         const MessagePtr &replacement);
     void disableMessage(const QString &messageID);
 

@@ -11,9 +11,14 @@
 #include "common/network/NetworkResult.hpp"
 #include "common/QLogging.hpp"
 #include "common/UiLanguage.hpp"
+#include "controllers/accounts/AccountController.hpp"
 #include "debug/Benchmark.hpp"
+#include "messages/Message.hpp"
 #include "messages/MessageBuilder.hpp"
+#include "messages/MessageElement.hpp"
 #include "providers/links/ImagePreview.hpp"
+#include "providers/links/LinkInfo.hpp"
+#include "providers/twitch/TwitchAccount.hpp"
 #include "singletons/Paths.hpp"
 #include "singletons/Settings.hpp"
 #include "util/CombinePath.hpp"
@@ -24,7 +29,8 @@
 #include <QHttpMultiPart>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QMimeDatabase>
+#include <QFileInfo>
+#include <QImageReader>
 #include <QMutex>
 #include <QPointer>
 #include <QSaveFile>
@@ -34,6 +40,14 @@
 namespace {
 
 constexpr int UPLOAD_DELAY = 2000;
+constexpr int UPLOAD_TIMEOUT_MS = 120000;
+
+bool validUploadLink(const QString &link)
+{
+    const QUrl url(link, QUrl::StrictMode);
+    return url.isValid() && !url.host().isEmpty() && url.userInfo().isEmpty() &&
+           (url.scheme() == u"https" || url.scheme() == u"http");
+}
 
 std::optional<QByteArray> convertToPng(const QImage &image)
 {
@@ -80,18 +94,21 @@ QString getJSONValue(QJsonValue responseJson, QStringView jsonPattern)
 
 QString getLinkFromResponse(const NetworkResult &response, QString pattern)
 {
-    QRegularExpression regExp("{(.+)}",
-                              QRegularExpression::InvertedGreedinessOption);
-    auto match = regExp.match(pattern);
-
-    auto jsonRoot = response.parseJsonValue();
-    while (match.hasMatch())
+    static const QRegularExpression regExp("{(.+)}",
+        QRegularExpression::InvertedGreedinessOption);
+    const auto jsonRoot = response.parseJsonValue();
+    QString output;
+    qsizetype last = 0;
+    auto matches = regExp.globalMatch(pattern);
+    while (matches.hasNext())
     {
-        pattern.replace(match.captured(0),
-                        getJSONValue(jsonRoot, match.capturedView(1)));
-        match = regExp.match(pattern);
+        const auto match = matches.next();
+        output += QStringView(pattern).sliced(last, match.capturedStart() - last);
+        output += getJSONValue(jsonRoot, match.capturedView(1));
+        last = match.capturedEnd();
     }
-    return pattern;
+    output += QStringView(pattern).sliced(last);
+    return output;
 }
 
 }  // namespace chatterino::imageuploader::detail
@@ -120,16 +137,38 @@ void ImageUploader::loadDeletionLinks()
         return;
     }
     const auto entries = QJsonDocument::fromJson(file.readAll()).array();
+    QHash<QString, QString> deleted;
     for (const auto &value : entries)
     {
         const auto entry = value.toObject();
         const auto link = entry.value("imageLink").toString();
         const auto deletionLink = entry.value("deletionLink").toString();
-        if (!link.isEmpty() && !deletionLink.isEmpty() &&
-            !entry.value("deleted").toBool())
+        if (link.isEmpty())
         {
-            this->deletionLinks_.insert(imagepreview::key(link), deletionLink);
+            continue;
         }
+        const auto key = imagepreview::key(link);
+        if (entry.value("deleted").toBool())
+        {
+            this->deletionLinks_.remove(key);
+            deleted.insert(key, link);
+        }
+        else
+        {
+            deleted.remove(key);
+            if (!deletionLink.isEmpty())
+            {
+                this->deletionLinks_.insert(key, deletionLink);
+            }
+            else
+            {
+                this->deletionLinks_.remove(key);
+            }
+        }
+    }
+    for (const auto &url : deleted)
+    {
+        imagepreview::forget(url);
     }
 }
 
@@ -137,6 +176,40 @@ QString ImageUploader::deletionLinkFor(const QString &imageLink)
 {
     this->loadDeletionLinks();
     return this->deletionLinks_.value(imagepreview::key(imageLink));
+}
+
+QStringList ImageUploader::deletableImages(const Message &message)
+{
+    if (message.platform != MessagePlatform::AnyOrTwitch ||
+        message.loginName.isEmpty() || message.flags.has(MessageFlag::System))
+    {
+        return {};
+    }
+    const auto account =
+        getApp()->getAccounts()->twitch.findUserByUsername(message.loginName);
+    if (!account || account->isAnon() ||
+        (!message.userID.isEmpty() && account->getUserId() != message.userID))
+    {
+        return {};
+    }
+    QStringList urls;
+    QSet<QString> keys;
+    for (const auto &element : message.elements)
+    {
+        auto *link = dynamic_cast<LinkElement *>(element.get());
+        if (!link || link->getFlags().has(MessageElementFlag::RepliedMessage))
+        {
+            continue;
+        }
+        const auto url = link->linkInfo()->originalUrl();
+        const auto key = imagepreview::key(url);
+        if (!keys.contains(key) && !this->deletionLinkFor(url).isEmpty())
+        {
+            keys.insert(key);
+            urls.append(url);
+        }
+    }
+    return urls;
 }
 
 void ImageUploader::markDeleted(const QString &imageLink)
@@ -180,20 +253,40 @@ void ImageUploader::deleteImage(const QString &imageLink,
         return;
     }
     const QUrl url(deletionLink);
+    if (!url.isValid() || url.host().isEmpty() || !url.userInfo().isEmpty() ||
+        (url.scheme() != u"https" && url.scheme() != u"http"))
+    {
+        done(DeleteResult::Failed, uiText("Invalid deletion link"));
+        return;
+    }
     // kappa.lol, segs.lol, ...: the page /delete?KEY asks /api/delete?key=KEY
     const auto key = url.query(QUrl::FullyEncoded);
     if (url.scheme() != QStringLiteral("https") ||
         url.path() != QStringLiteral("/delete") || key.isEmpty() ||
         key.contains('=') || key.contains('&'))
     {
-        QDesktopServices::openUrl(url);
-        done(DeleteResult::OpenedInBrowser, {});
+        if (QDesktopServices::openUrl(url))
+        {
+            done(DeleteResult::OpenedInBrowser, {});
+        }
+        else
+        {
+            done(DeleteResult::Failed, uiText("Could not open the deletion page"));
+        }
         return;
     }
+    const auto imageKey = imagepreview::key(imageLink);
+    if (this->deletionsInFlight_.contains(imageKey))
+    {
+        done(DeleteResult::Failed, uiText("Deletion already in progress"));
+        return;
+    }
+    this->deletionsInFlight_.insert(imageKey);
     QUrl api(url);
     api.setPath(QStringLiteral("/api/delete"));
     api.setQuery(QStringLiteral("key=") + key);
-    auto finish = [this, imageLink, done](const NetworkResult &result) {
+    auto finish = [this, imageKey, imageLink, done](const NetworkResult &result) {
+        this->deletionsInFlight_.remove(imageKey);
         if (result.parseJson().value("success").toBool())
         {
             this->markDeleted(imageLink);
@@ -304,6 +397,7 @@ void ImageUploader::sendImageUploadRequest(RawImageData imageData,
     NetworkRequest(url, NetworkRequestType::Post)
         .headerList(extraHeaders)
         .multiPart(payload)
+        .timeout(UPLOAD_TIMEOUT_MS)
         .onSuccess(
             [textEdit, channel, originalFilePath, this](NetworkResult result) {
                 this->handleSuccessfulUpload(result, originalFilePath, channel,
@@ -362,15 +456,6 @@ void ImageUploader::handleSuccessfulUpload(const NetworkResult &result,
                                            ChannelPtr channel,
                                            QPointer<ResizingTextEdit> textEdit)
 {
-    if (textEdit == nullptr)
-    {
-        while (!this->uploadQueue_.empty())
-        {
-            this->uploadQueue_.pop();
-        }
-        this->uploadMutex_.unlock();
-        return;
-    }
     QString link =
         getSettings()->imageUploaderLink.getValue().isEmpty()
             ? result.getData()
@@ -380,8 +465,47 @@ void ImageUploader::handleSuccessfulUpload(const NetworkResult &result,
             ? ""
             : getLinkFromResponse(result,
                                   getSettings()->imageUploaderDeletionLink);
-    qCDebug(chatterinoImageuploader) << link << deletionLink;
-    textEdit->insertPlainText(link + " ");
+    link = link.trimmed();
+    deletionLink = deletionLink.trimmed();
+    if (!validUploadLink(link))
+    {
+        this->updated.invoke({.kind = ImageUploadUpdate::Kind::Failed,
+                              .textEdit = textEdit.data()});
+        channel->addSystemMessage(uiText("The upload service returned an invalid image link."));
+        this->uploadQueue_ = {};
+        this->uploadMutex_.unlock();
+        return;
+    }
+    if (!validUploadLink(deletionLink))
+    {
+        deletionLink.clear();
+    }
+    this->logToFile(originalFilePath, link, deletionLink, channel);
+    if (textEdit == nullptr)
+    {
+        while (!this->uploadQueue_.empty())
+        {
+            this->uploadQueue_.pop();
+        }
+        this->uploadMutex_.unlock();
+        return;
+    }
+    if (this->pastePosition_.document() == textEdit->document() && !link.isEmpty())
+    {
+        auto &cursor = this->pastePosition_;
+        // Typing at a stationary cursor can extend its selection. Insert at
+        // the saved edge without replacing any of the newly typed caption.
+        cursor.clearSelection();
+        QString insertion = link + ' ';
+        if (cursor.positionInBlock() > 0 &&
+            !cursor.document()->characterAt(cursor.position() - 1).isSpace())
+        {
+            insertion.prepend(' ');
+        }
+        cursor.setKeepPositionOnInsert(false);
+        cursor.insertText(insertion);
+        cursor.setKeepPositionOnInsert(true);
+    }
     // The preview above the input shows the picture, the link and a delete
     // button; the chat gets no "uploaded" message any more.
     this->updated.invoke({
@@ -402,8 +526,6 @@ void ImageUploader::handleSuccessfulUpload(const NetworkResult &result,
             this->uploadQueue_.pop();
         });
     }
-
-    this->logToFile(originalFilePath, link, deletionLink, channel);
 }
 
 std::pair<std::queue<RawImageData>, QString> ImageUploader::getImages(
@@ -420,82 +542,65 @@ std::pair<std::queue<RawImageData>, QString> ImageUploader::getImages(
 
         std::queue<RawImageData> images;
 
-        auto mimeDb = QMimeDatabase();
-
-        for (const QUrl &path : source->urls())
+        QStringList skipped;
+        for (const QUrl &url : source->urls())
         {
-            QString localPath = path.toLocalFile();
-            QMimeType mime = mimeDb.mimeTypeForUrl(path);
-            if (mime.name().startsWith("image") && !mime.inherits("image/gif"))
+            const QString localPath = url.toLocalFile();
+            if (localPath.isEmpty())
             {
-                QImage img = QImage(localPath);
-                if (img.isNull())
-                {
-                    return {{}, "Couldn't load image :("};
-                }
-
-                auto imageData = convertToPng(img);
-                if (!imageData)
-                {
-                    return {
-                        {},
-                        QString("Cannot upload file: %1. Couldn't convert "
-                                "image to png.")
-                            .arg(localPath),
-                    };
-                }
-                images.push({*imageData, "png", localPath, "image/png"});
+                continue;
             }
-            else if (mime.inherits("image/gif"))
+            QFile file(localPath);
+            if (file.open(QIODevice::ReadOnly))
             {
-                QFile file(localPath);
-                bool isOkay = file.open(QIODevice::ReadOnly);
-                if (!isOkay)
+                QImageReader reader(&file);
+                reader.setDecideFormatFromContent(true);
+                const auto format = reader.format().toLower();
+                const auto image = reader.read();
+                if (!image.isNull())
                 {
-                    return {{}, "Failed to open file :("};
+                    if (format == "gif" && file.seek(0))
+                    {
+                        images.push({file.readAll(), "gif", localPath, "image/gif"});
+                        continue;
+                    }
+                    if (auto png = convertToPng(image))
+                    {
+                        images.push({std::move(*png), "png", localPath, "image/png"});
+                        continue;
+                    }
                 }
-
-                images.push({file.readAll(), "gif", localPath, "image/gif"});
-                file.close();
             }
-            else
-            {
-                QFile file(localPath);
-                bool isOkay = file.open(QIODevice::ReadOnly);
-                if (!isOkay)
-                {
-                    return {{}, "Failed to open file :("};
-                }
-                // file.readAll() => might be a bit big but it /should/ work
-                images.push({file.readAll(), mime.preferredSuffix(), localPath,
-                             mime.name()});
-                file.close();
-            }
+            skipped.append(QFileInfo(localPath).fileName());
         }
-
-        return {images, {}};
+        return {std::move(images),
+                skipped.isEmpty() ? QString() :
+                    uiText("Skipped files that could not be read as images: %1")
+                        .arg(skipped.join(QStringLiteral(", ")))};
     };
 
     auto tryUploadDirectly =
         [&]() -> std::pair<std::queue<RawImageData>, QString> {
         std::queue<RawImageData> images;
 
-        if (source->hasFormat("image/png"))
+        for (const auto &mime : {QStringLiteral("image/png"), QStringLiteral("image/jpeg"),
+                                 QStringLiteral("image/gif")})
         {
-            images.push({source->data("image/png"), "png", "", "image/png"});
-            return {images, {}};
-        }
-
-        if (source->hasFormat("image/jpeg"))
-        {
-            images.push({source->data("image/jpeg"), "jpeg", "", "image/jpeg"});
-            return {images, {}};
-        }
-
-        if (source->hasFormat("image/gif"))
-        {
-            images.push({source->data("image/gif"), "gif", "", "image/gif"});
-            return {images, {}};
+            if (!source->hasFormat(mime))
+            {
+                continue;
+            }
+            auto bytes = source->data(mime);
+            QBuffer buffer(&bytes);
+            buffer.open(QIODevice::ReadOnly);
+            QImageReader reader(&buffer);
+            reader.setDecideFormatFromContent(true);
+            const auto format = reader.format().toLower();
+            if (QString::fromLatin1(format) == mime.sliced(6) && !reader.read().isNull())
+            {
+                images.push({std::move(bytes), QString::fromLatin1(format), {}, mime});
+                return {std::move(images), {}};
+            }
         }
 
         auto image = qvariant_cast<QImage>(source->imageData());
@@ -511,9 +616,9 @@ std::pair<std::queue<RawImageData>, QString> ImageUploader::getImages(
 
     const auto [urlImageData, urlError] = tryUploadFromUrls();
 
-    if (!urlImageData.empty())
+    if (!urlImageData.empty() || !urlError.isEmpty())
     {
-        return {urlImageData, {}};
+        return {urlImageData, urlError};
     }
 
     const auto [directImageData, directError] = tryUploadDirectly();
@@ -543,6 +648,12 @@ void ImageUploader::upload(std::queue<RawImageData> images, ChannelPtr channel,
     assert(this->uploadQueue_.empty());
 
     std::swap(this->uploadQueue_, images);
+    this->pastePosition_ = outputTextEdit ? outputTextEdit->textCursor() : QTextCursor{};
+    if (!this->pastePosition_.isNull())
+    {
+        this->pastePosition_.setPosition(this->pastePosition_.selectionStart());
+        this->pastePosition_.setKeepPositionOnInsert(true);
+    }
 
     this->sendImageUploadRequest(this->uploadQueue_.front(), std::move(channel),
                                  std::move(outputTextEdit));

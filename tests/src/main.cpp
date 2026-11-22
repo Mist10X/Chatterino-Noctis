@@ -9,10 +9,13 @@
 #include "singletons/Settings.hpp"
 #include "Test.hpp"
 
+#include <chatterino-test/TestConfig.hpp>
 #include <QApplication>
+#include <QHostAddress>
 #include <QJsonArray>
 #include <QLocale>
 #include <QLoggingCategory>
+#include <QNetworkProxyFactory>
 #include <QtConcurrent>
 #include <QTimer>
 
@@ -22,6 +25,28 @@
 using namespace chatterino;
 
 #define SUPPORT_QT_NETWORK_TESTS
+
+#ifndef CHATTERINO_TEST_USE_PUBLIC_HTTPBIN
+namespace {
+class LocalTestProxyFactory final : public QNetworkProxyFactory
+{
+public:
+    QList<QNetworkProxy> queryProxy(const QNetworkProxyQuery &query) override
+    {
+        const auto host = query.peerHostName();
+        if (host.compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0 ||
+            QHostAddress(host).isLoopback())
+        {
+            return {QNetworkProxy(QNetworkProxy::NoProxy)};
+        }
+        // Keep incidental image, badge and metadata requests on this machine.
+        // A local proxy address also avoids resolving the external hostname.
+        return {QNetworkProxy(QNetworkProxy::HttpProxy,
+                              QStringLiteral("127.0.0.1"), 1)};
+    }
+};
+}  // namespace
+#endif
 
 int main(int argc, char **argv)
 {
@@ -44,6 +69,9 @@ int main(int argc, char **argv)
 
     initResources();
 
+#ifndef CHATTERINO_TEST_USE_PUBLIC_HTTPBIN
+    QNetworkProxyFactory::setApplicationProxyFactory(new LocalTestProxyFactory);
+#endif
     chatterino::NetworkManager::init();
 
     Args args;

@@ -24,6 +24,7 @@
 #include "singletons/Theme.hpp"
 #include "singletons/WindowManager.hpp"
 #include "Test.hpp"
+#include "widgets/helper/ChannelPointsLabel.hpp"
 #include "widgets/helper/ResizingTextEdit.hpp"
 #include "widgets/Notebook.hpp"
 #include "widgets/splits/Split.hpp"
@@ -487,6 +488,7 @@ TEST(ResizingTextEditTest, HeightForWidthUsesRequestedWidth)
 TEST(SplitInputTest, ChannelPointsChromeStaysCompact)
 {
     MockApplication mockApplication;
+    mockApplication.settings.openRewardsWithChannelPointsClick = false;
 
     auto split = std::make_unique<Split>(nullptr);
     TestableSplitInput input(split.get());
@@ -496,6 +498,12 @@ TEST(SplitInputTest, ChannelPointsChromeStaysCompact)
     EXPECT_EQ(input.ui_.channelPointsLabel->toolTip(),
               QString("Channel Points (click to refresh)"));
     EXPECT_FALSE(input.ui_.channelPointsLabel->isVisible());
+#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
+    mockApplication.settings.openRewardsWithChannelPointsClick = true;
+    TestableSplitInput rewardInput(split.get());
+    EXPECT_EQ(rewardInput.ui_.channelPointsLabel->toolTip(),
+              QString("Channel Points (click to open rewards)"));
+#endif
 }
 
 TEST(SplitInputTest, StatusLabelsReserveTextWidth)
@@ -509,7 +517,8 @@ TEST(SplitInputTest, StatusLabelsReserveTextWidth)
     input.setSendWaitStatus("1:23");
     input.updateActionRowCompactness();
 
-    EXPECT_EQ(input.ui_.buttonsRow->indexOf(input.ui_.textEditLength), -1);
+    EXPECT_GE(input.ui_.buttonsRow->indexOf(input.ui_.textEditLength), 0);
+    EXPECT_GE(input.ui_.buttonsRow->indexOf(input.ui_.sendWaitStatus), 0);
     EXPECT_GT(input.ui_.textEditLength->minimumWidth(), 0);
     EXPECT_GT(input.ui_.sendWaitStatus->minimumWidth(), 0);
 

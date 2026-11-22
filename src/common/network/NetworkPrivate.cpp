@@ -66,7 +66,7 @@ void loadCached(std::shared_ptr<NetworkData> &&data)
     if (isAppAboutToQuit())
     {
         qCDebug(chatterinoHTTP)
-            << "Skipping cached network load " << data->request.url()
+            << "Skipping cached network load " << data->diagnosticUrl()
             << "because app is about to quit";
         return;
     }
@@ -75,7 +75,7 @@ void loadCached(std::shared_ptr<NetworkData> &&data)
     if (!app)
     {
         qCDebug(chatterinoHTTP)
-            << "Skipping cached network load " << data->request.url()
+            << "Skipping cached network load " << data->diagnosticUrl()
             << "because app is about to quit";
         return;
     }
@@ -101,10 +101,10 @@ void loadCached(std::shared_ptr<NetworkData> &&data)
     }
 
     qCDebug(chatterinoHTTP).noquote() << data->typeString() << "[CACHED] 200"
-                                      << data->request.url().toString();
+                                      << data->diagnosticUrl();
 
     data->emitSuccess(
-        {NetworkResult::NetworkError::NoError, QVariant(200), bytes});
+        {NetworkResult::NetworkError::NoError, QVariant(200), std::move(bytes), {}, cachedFile.fileName()});
     data->emitFinally();
 }
 
@@ -169,7 +169,7 @@ void NetworkData::emitSuccess(NetworkResult &&result)
 
     runCallback(this->executeConcurrently,
                 [cb = std::move(this->onSuccess), result = std::move(result),
-                 url = this->request.url(), hasCaller = this->hasCaller,
+                 url = this->diagnosticUrl(), hasCaller = this->hasCaller,
                  caller = this->caller]() {
                     if (hasCaller && caller.isNull())
                     {
@@ -179,7 +179,7 @@ void NetworkData::emitSuccess(NetworkResult &&result)
                     if (isAppAboutToQuit())
                     {
                         qCDebug(chatterinoHTTP)
-                            << "Success callback for" << url.toString()
+                            << "Success callback for" << url
                             << "skipped because we're about to quit";
                         return;
                     }
@@ -190,7 +190,7 @@ void NetworkData::emitSuccess(NetworkResult &&result)
                     if (timer.elapsed() > SLOW_HTTP_THRESHOLD)
                     {
                         qCWarning(chatterinoHTTP)
-                            << "Slow HTTP success handler for" << url.toString()
+                            << "Slow HTTP success handler for" << url
                             << timer.elapsed()
                             << "ms (threshold:" << SLOW_HTTP_THRESHOLD << "ms)";
                     }
@@ -206,7 +206,7 @@ void NetworkData::emitError(NetworkResult &&result)
 
     runCallback(this->executeConcurrently,
                 [cb = std::move(this->onError), result = std::move(result),
-                 url = this->request.url(), hasCaller = this->hasCaller,
+                 url = this->diagnosticUrl(), hasCaller = this->hasCaller,
                  caller = this->caller]() {
                     if (hasCaller && caller.isNull())
                     {
@@ -216,7 +216,7 @@ void NetworkData::emitError(NetworkResult &&result)
                     if (isAppAboutToQuit())
                     {
                         qCDebug(chatterinoHTTP)
-                            << "Error callback for" << url.toString()
+                            << "Error callback for" << url
                             << "skipped because we're about to quit";
                         return;
                     }
@@ -234,7 +234,7 @@ void NetworkData::emitFinally()
 
     runCallback(this->executeConcurrently,
                 [cb = std::move(this->finally), hasCaller = this->hasCaller,
-                 url = this->request.url(), caller = this->caller]() {
+                 url = this->diagnosticUrl(), caller = this->caller]() {
                     if (hasCaller && caller.isNull())
                     {
                         return;
@@ -243,7 +243,7 @@ void NetworkData::emitFinally()
                     if (isAppAboutToQuit())
                     {
                         qCDebug(chatterinoHTTP)
-                            << "Finally callback for" << url.toString()
+                            << "Finally callback for" << url
                             << "skipped because we're about to quit";
                         return;
                     }
@@ -260,7 +260,7 @@ QString NetworkData::typeString() const
 void load(std::shared_ptr<NetworkData> &&data)
 {
     data->startDeadline();
-    if (data->cache)
+    if (data->cache && !data->refreshCache)
     {
         std::ignore = QtConcurrent::run([data = std::move(data)]() mutable {
             loadCached(std::move(data));

@@ -280,6 +280,7 @@ enum class HelixGetGlobalBadgesError : std::uint8_t {
 
 enum class HelixSendMessageError : std::uint8_t {
     Unknown,
+    DeliveryUnknown,
 
     MissingText,
     BadRequest,

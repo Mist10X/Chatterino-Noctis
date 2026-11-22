@@ -133,7 +133,7 @@ CommandPage::CommandPage()
 
     QLabel *text = layout.emplace<QLabel>(uiText(HELP_TEXT)).getElement();
     text->setWordWrap(true);
-    text->setStyleSheet("color: #bbb");
+    text->setObjectName("description");
     text->setOpenExternalLinks(true);
 
     auto *duplicateWarning =
@@ -141,7 +141,8 @@ CommandPage::CommandPage()
             .emplace<QLabel>(uiText("Multiple commands with the same trigger found. "
                              "Only one of the commands will work."))
             .getElement();
-    duplicateWarning->setStyleSheet("color: yellow");
+    duplicateWarning->setObjectName("settingsWarning");
+    duplicateWarning->setWordWrap(true);
 
     QObject::connect(this->view->getModel(), &QAbstractItemModel::rowsInserted,
                      this, [this, duplicateWarning]() {

@@ -10,8 +10,11 @@
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
 #include "providers/twitch/ChannelStats.hpp"
+#include "singletons/Fonts.hpp"
+#include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "singletons/helper/GifTimer.hpp"
+#include "widgets/helper/NoctisTooltip.hpp"
 
 #include <QDialog>
 #include <QGridLayout>
@@ -23,10 +26,10 @@
 #include <QPainterPath>
 #include <QPointer>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QTimer>
-#include <QToolTip>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -36,13 +39,17 @@ namespace chatterino {
 
 namespace {
 
-const QColor BACKGROUND("#141419");
-const QColor CARD("#1d1c25");
-const QColor TEXT("#e8e6f0");
-const QColor MUTED("#9a98a8");
-const QColor FAINT("#5f5d6e");
-/// for chatters without a color of their own
-const QColor NO_COLOR("#b9b7c6");
+QColor blend(QColor base, QColor foreground, qreal weight)
+{
+    return QColor::fromRgbF(base.redF() * (1 - weight) + foreground.redF() * weight,
+                            base.greenF() * (1 - weight) + foreground.greenF() * weight,
+                            base.blueF() * (1 - weight) + foreground.blueF() * weight);
+}
+QColor background() { return getTheme()->messages.backgrounds.regular; }
+QColor textColor() { return getTheme()->messages.textColors.regular; }
+QColor cardColor() { return blend(background(), textColor(), 0.04); }
+QColor muted() { return blend(background(), textColor(), 0.69); }
+QColor faint() { return blend(background(), textColor(), 0.48); }
 
 constexpr int ROWS = 10;
 constexpr int EMOTE_SIZE = 26;
@@ -79,7 +86,7 @@ QColor readable(QColor color)
 {
     if (!color.isValid())
     {
-        return NO_COLOR;
+        return muted();
     }
     auto hsl = color.toHsl();
     if (hsl.lightnessF() < 0.62F)
@@ -99,6 +106,12 @@ QLabel *label(const QString &text, const QString &objectName)
 {
     auto *widget = new QLabel(text);
     widget->setObjectName(objectName);
+    const auto scale = getSettings()->getClampedUiScale();
+    const auto style = objectName == "tileValue" ? FontStyle::ChatLarge
+                       : objectName == "channel" || objectName == "section" ? FontStyle::ChatMediumBold
+                       : objectName == "tileCaption" || objectName == "tileNote" || objectName == "live"
+                           ? FontStyle::ChatMediumSmall : FontStyle::ChatMedium;
+    widget->setFont(getApp()->getFonts()->getFont(style, scale));
     return widget;
 }
 
@@ -116,13 +129,17 @@ QWidget *tile(const QString &value, const QString &caption,
 {
     auto *widget = card();
     auto *layout = new QVBoxLayout(widget);
-    layout->setContentsMargins(14, 10, 14, 10);
-    layout->setSpacing(2);
+    layout->setContentsMargins(12, 9, 12, 9);
+    layout->setSpacing(4);
     layout->addWidget(label(value, QStringLiteral("tileValue")));
-    layout->addWidget(label(caption, QStringLiteral("tileCaption")));
+    auto *captionLabel = label(caption, QStringLiteral("tileCaption"));
+    captionLabel->setWordWrap(true);
+    layout->addWidget(captionLabel);
     if (!note.isEmpty())
     {
-        layout->addWidget(label(note, QStringLiteral("tileNote")));
+        auto *noteLabel = label(note, QStringLiteral("tileNote"));
+        noteLabel->setWordWrap(true);
+        layout->addWidget(noteLabel);
     }
     layout->addStretch(1);
     return widget;
@@ -142,6 +159,7 @@ public:
         , share_(share)
         , picture_(std::move(picture))
     {
+        this->setObjectName(QStringLiteral("StreamStatsRankRow"));
         // Animated emotes play like in chat: the frame follows the shared
         // GIF clock, so rebuilding the list does not restart or jolt them.
         if (this->picture_ && this->picture_->animated())
@@ -151,9 +169,9 @@ public:
                     this->update();
                 });
         }
-        this->setFixedHeight(EMOTE_SIZE + 8);
-        this->setToolTip(QStringLiteral("%1 — %2").arg(this->name_,
-                                                         number(count)));
+        this->setFixedHeight(EMOTE_SIZE + 9);
+        this->setAccessibleName(QStringLiteral("%1 — %2").arg(this->name_,
+                                                               number(count)));
     }
 
 protected:
@@ -161,22 +179,24 @@ protected:
     {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
+        painter.setFont(getApp()->getFonts()->getFont(FontStyle::ChatMedium,
+                        getSettings()->getClampedUiScale()));
         const QRectF area = this->rect().adjusted(0, 1, 0, -1);
 
         QPainterPath background;
-        background.addRoundedRect(area, 7, 7);
-        painter.fillPath(background, CARD);
+        background.addRoundedRect(area, 6, 6);
+        painter.fillPath(background, cardColor());
         auto bar = accent();
-        bar.setAlphaF(0.22);
+        bar.setAlphaF(0.47);
         QPainterPath filled;
         filled.addRoundedRect(
-            QRectF(area.left(), area.top(),
-                   std::max(14.0, area.width() * this->share_), area.height()),
-            7, 7);
+            QRectF(area.left() + 9, area.bottom() - 3,
+                   std::max(2.0, (area.width() - 18) * this->share_), 2),
+            1, 1);
         painter.fillPath(filled, bar);
 
         int x = 10;
-        painter.setPen(FAINT);
+        painter.setPen(faint());
         painter.drawText(QRect(x, 0, 22, this->height()), Qt::AlignVCenter,
                          QString::number(this->place_));
         x += 22;
@@ -197,7 +217,7 @@ protected:
             {
                 painter.fillRect(QRect(x, (this->height() - EMOTE_SIZE) / 2,
                                        EMOTE_SIZE, EMOTE_SIZE),
-                                 QColor("#2a2935"));
+                                 blend(cardColor(), textColor(), 0.06));
                 x += EMOTE_SIZE + 8;
             }
         }
@@ -205,16 +225,23 @@ protected:
         const auto countText = number(this->count_);
         const auto countWidth =
             painter.fontMetrics().horizontalAdvance(countText);
-        painter.setPen(MUTED);
+        painter.setPen(muted());
         painter.drawText(QRect(this->width() - countWidth - 10, 0,
                                countWidth, this->height()),
                          Qt::AlignVCenter, countText);
 
-        auto font = painter.font();
-        font.setBold(true);
-        painter.setFont(font);
-        painter.setPen(this->color_.isValid() ? this->color_ : NO_COLOR);
+        painter.setPen(this->color_.isValid() ? this->color_ : muted());
         const auto nameWidth = this->width() - x - countWidth - 22;
+        // Only reveal information which is actually missing from the row.
+        // The visible count needs no second copy in a floating hint.
+        const auto hint = painter.fontMetrics().horizontalAdvance(this->name_) >
+                                  nameWidth
+                              ? this->name_
+                              : QString{};
+        if (hint != this->toolTip())
+        {
+            this->setToolTip(hint);
+        }
         painter.drawText(
             QRect(x, 0, nameWidth, this->height()), Qt::AlignVCenter,
             painter.fontMetrics().elidedText(this->name_, Qt::ElideRight,
@@ -241,9 +268,10 @@ private:
 class ActivityChart : public QWidget
 {
 public:
-    ActivityChart(const QMap<qint64, int> &perMinute, qint64 fromMinute,
+    ActivityChart(const QMap<qint64, int> &perMinute, const QSet<qint64> &incomplete, qint64 fromMinute,
                   qint64 toMinute)
     {
+        this->setObjectName(QStringLiteral("StreamStatsActivityChart"));
         this->setMouseTracking(true);
         this->setMinimumHeight(140);
         const auto span = std::max<qint64>(1, toMinute - fromMinute + 1);
@@ -258,6 +286,13 @@ public:
         this->from_ = fromMinute - fromMinute % this->step_;
         const auto count = (toMinute - this->from_) / this->step_ + 1;
         this->bars_.fill(0, qsizetype(std::max<qint64>(1, count)));
+        this->missing_.fill(false, this->bars_.size());
+        for (auto minute : incomplete)
+        {
+            const auto index = (minute - this->from_) / this->step_;
+            if (minute >= this->from_ && index >= 0 && index < this->missing_.size())
+                this->missing_[index] = true;
+        }
         for (auto it = perMinute.cbegin(); it != perMinute.cend(); ++it)
         {
             const auto index = (it.key() - this->from_) / this->step_;
@@ -282,10 +317,10 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing);
         QPainterPath background;
         background.addRoundedRect(this->rect(), 10, 10);
-        painter.fillPath(background, CARD);
+        painter.fillPath(background, cardColor());
 
         const auto area = this->plot();
-        painter.setPen(FAINT);
+        painter.setPen(faint());
         painter.drawText(QRectF(area.left(), 4, area.width(), 16),
                          Qt::AlignLeft | Qt::AlignVCenter,
                          uiText("up to %1 messages per %2 min")
@@ -294,9 +329,21 @@ protected:
 
         const auto width = area.width() / double(this->bars_.size());
         const auto gap = width > 4 ? 1.5 : 0.5;
+        painter.setPen(QPen(blend(cardColor(), textColor(), 0.08), 1));
+        for (double fraction : {0.33, 0.66})
+            painter.drawLine(QPointF(area.left(), area.bottom() - area.height() * fraction),
+                             QPointF(area.right(), area.bottom() - area.height() * fraction));
         for (qsizetype i = 0; i < this->bars_.size(); ++i)
         {
             const auto value = this->bars_[i];
+            if (this->missing_[i])
+            {
+                // Dashes distinguish unknown/unavailable minutes from a real zero.
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(faint());
+                painter.drawRoundedRect(QRectF(area.left() + i * width + gap / 2,
+                    area.bottom() - 3, std::max(1.0, width - gap), 2), 1, 1);
+            }
             if (value == 0)
             {
                 continue;
@@ -306,7 +353,7 @@ protected:
             auto color = accent();
             if (i != this->hovered_)
             {
-                color.setAlphaF(0.75);
+                color.setAlphaF(0.62);
             }
             QPainterPath bar;
             bar.addRoundedRect(QRectF(area.left() + i * width + gap / 2,
@@ -315,11 +362,11 @@ protected:
                                2, 2);
             painter.fillPath(bar, color);
         }
-        painter.setPen(QColor("#2f2d3a"));
+        painter.setPen(blend(cardColor(), textColor(), 0.12));
         painter.drawLine(area.bottomLeft(), area.bottomRight());
 
         // times under the bars: the start, the middle and the end
-        painter.setPen(MUTED);
+        painter.setPen(muted());
         const auto labelTop = area.bottom() + 4;
         const auto at = [this](qsizetype index) {
             return timeText(QDateTime::fromSecsSinceEpoch(
@@ -344,8 +391,10 @@ protected:
         const auto width = area.width() / double(this->bars_.size());
         const auto index = qsizetype(
             std::floor((event->position().x() - area.left()) / width));
-        const auto hovered =
-            index >= 0 && index < this->bars_.size() ? int(index) : -1;
+        const auto hovered = area.contains(event->position()) &&
+                                     index >= 0 && index < this->bars_.size()
+                                 ? int(index)
+                                 : -1;
         if (hovered != this->hovered_)
         {
             this->hovered_ = hovered;
@@ -353,12 +402,12 @@ protected:
         }
         if (hovered < 0)
         {
-            QToolTip::hideText();
+            noctistooltip::hideText();
             return;
         }
         const auto start =
             QDateTime::fromSecsSinceEpoch((this->from_ + hovered * this->step_) * 60);
-        const auto text =
+        auto text =
             this->step_ == 1
                 ? uiText("%1: %2 messages")
                       .arg(timeText(start), number(this->bars_[hovered]))
@@ -367,17 +416,21 @@ protected:
                            QLocale().toString(start.addSecs(this->step_ * 60),
                                               QStringLiteral("HH:mm")),
                            number(this->bars_[hovered]));
-        QToolTip::showText(event->globalPosition().toPoint(), text, this);
+        if (this->missing_[hovered])
+            text += QStringLiteral("\n") + uiText("Chat history may be incomplete here.");
+        noctistooltip::showText(event->globalPosition().toPoint(), text, this);
     }
 
     void leaveEvent(QEvent *) override
     {
+        noctistooltip::hideText();
         this->hovered_ = -1;
         this->update();
     }
 
 private:
     QList<int> bars_;
+    QList<bool> missing_;
     qint64 from_ = 0;
     int step_ = 1;
     int max_ = 1;
@@ -393,7 +446,7 @@ QList<std::pair<QString, T>> top(const QHash<QString, T> &all, Count count)
     {
         list.append({it.key(), it.value()});
     }
-    std::sort(list.begin(), list.end(), [&](const auto &a, const auto &b) {
+    std::partial_sort(list.begin(), list.begin() + std::min<qsizetype>(ROWS, list.size()), list.end(), [&](const auto &a, const auto &b) {
         const auto left = count(a.second);
         const auto right = count(b.second);
         return left != right ? left > right : a.first < b.first;
@@ -417,14 +470,14 @@ QWidget *section(const QString &title, QWidget *body)
 }
 
 /// Everything the window shows; `waiting` is set when a picture still loads.
-QWidget *build(const QString &channelName, bool &waiting)
+QWidget *build(const QString &channelName, bool anonymous, bool &waiting)
 {
-    const auto data = ChannelStats::get(channelName);
+    const auto data = ChannelStats::get(channelName, anonymous);
     auto *content = new QWidget;
     content->setObjectName(QStringLiteral("content"));
     auto *layout = new QVBoxLayout(content);
-    layout->setContentsMargins(22, 18, 22, 22);
-    layout->setSpacing(16);
+    layout->setContentsMargins(18, 14, 18, 18);
+    layout->setSpacing(12);
 
     // the channel and the stream
     {
@@ -433,7 +486,7 @@ QWidget *build(const QString &channelName, bool &waiting)
         head->addWidget(label(channelName, QStringLiteral("channel")));
         if (data.live)
         {
-            head->addWidget(label(uiText("LIVE"), QStringLiteral("live")));
+            head->addWidget(label(QStringLiteral("●  ") + uiText("LIVE"), QStringLiteral("live")));
         }
         head->addStretch(1);
         layout->addLayout(head);
@@ -447,13 +500,13 @@ QWidget *build(const QString &channelName, bool &waiting)
         else if (data.live)
         {
             line = uiText("The stream started at %1 and has been going for %2")
-                       .arg(timeText(data.since),
-                            durationText(data.since.secsTo(now)));
+                       .arg(timeText(data.streamStarted),
+                            durationText(data.streamStarted.secsTo(now)));
         }
         else if (data.sinceStreamStart)
         {
             line = uiText("The stream that started at %1 has ended")
-                       .arg(timeText(data.since));
+                       .arg(timeText(data.streamStarted));
         }
         else
         {
@@ -461,6 +514,10 @@ QWidget *build(const QString &channelName, bool &waiting)
                           "chat was opened")
                        .arg(timeText(data.since));
         }
+        if (data.streamStarted.isValid() && data.since > data.streamStarted)
+            line += QStringLiteral("\n") + uiText("Statistics start at %1.").arg(timeText(data.since));
+        if (data.countLimitReached)
+            line += QStringLiteral("\n") + uiText("Counting stopped at the limit of 500,000 events.");
         auto *sub = label(line, QStringLiteral("subtitle"));
         sub->setWordWrap(true);
         layout->addWidget(sub);
@@ -480,7 +537,16 @@ QWidget *build(const QString &channelName, bool &waiting)
         boxLayout->setContentsMargins(14, 10, 14, 12);
         boxLayout->setSpacing(8);
         QString text;
-        if (data.history == History::Loading)
+        if (data.history == History::Available)
+        {
+            auto *load = new QPushButton(uiText("Load earlier statistics from public chat logs"), box);
+            QObject::connect(load, &QPushButton::clicked, load, [load, channelName, anonymous] {
+                load->setEnabled(false);
+                ChannelStats::requestHistory(channelName, anonymous);
+            });
+            boxLayout->addWidget(load);
+        }
+        else if (data.history == History::Loading)
         {
             const auto total = std::max<qint64>(
                 1, data.since.secsTo(data.historyUntil));
@@ -506,9 +572,7 @@ QWidget *build(const QString &channelName, bool &waiting)
                        ? uiText("Some of the stream before %1 is missing from "
                                 "the public chat logs, so the numbers may be a "
                                 "little low.")
-                       : uiText("This channel is not in the public chat logs: "
-                                "the numbers start at %1, when the chat was "
-                                "opened.");
+                       : uiText("Public chat history before %1 is unavailable. Showing the messages that could be restored locally.");
             auto *note = label(text.arg(timeText(data.historyUntil)),
                                QStringLiteral("note"));
             note->setWordWrap(true);
@@ -575,9 +639,14 @@ QWidget *build(const QString &channelName, bool &waiting)
                                   : data.perMinute.lastKey();
         layout->addWidget(section(
             uiText("Activity"),
-            new ActivityChart(data.perMinute, std::min(from, data.perMinute.firstKey()),
+            new ActivityChart(data.perMinute, data.incompleteMinutes, std::min(from, data.perMinute.firstKey()),
                               std::max(to, data.perMinute.lastKey()))));
     }
+    auto *restartNote = label(
+        uiText("Statistics may be incomplete after restarting Chatterino Noctis."),
+        QStringLiteral("tileNote"));
+    restartNote->setWordWrap(true);
+    layout->addWidget(restartNote);
 
     // the most active chatters and the most used emotes
     {
@@ -645,37 +714,6 @@ QWidget *build(const QString &channelName, bool &waiting)
         layout->addLayout(columns);
     }
 
-    // first messages in the channel
-    if (!data.newChatters.isEmpty())
-    {
-        QStringList names;
-        for (const auto &login : data.newChatters.mid(0, 60))
-        {
-            const auto chatter = data.chatters.value(login);
-            const auto color = readable(chatter.color);
-            names.append(QStringLiteral("<span style='color:%1'>%2</span>")
-                             .arg(color.name(),
-                                  (chatter.name.isEmpty() ? login
-                                                          : chatter.name)
-                                      .toHtmlEscaped()));
-        }
-        if (data.firstMessages > 60)
-        {
-            names.append(QStringLiteral("…"));
-        }
-        auto *box = card();
-        auto *boxLayout = new QVBoxLayout(box);
-        boxLayout->setContentsMargins(14, 10, 14, 12);
-        auto *list = label(names.join(QStringLiteral(" · ")),
-                           QStringLiteral("names"));
-        list->setTextFormat(Qt::RichText);
-        list->setWordWrap(true);
-        list->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        boxLayout->addWidget(list);
-        layout->addWidget(
-            section(uiText("First messages in the channel"), box));
-    }
-
     layout->addStretch(1);
     return content;
 }
@@ -685,18 +723,12 @@ QString styleSheet()
     return QStringLiteral(
                "QDialog, QScrollArea, QWidget#content { background: %1; }"
                "QLabel { color: %2; background: transparent; }"
-               "QWidget#card { background: %3; border-radius: 10px; }"
-               "QLabel#channel { font-size: 21px; font-weight: 700; }"
-               "QLabel#live { color: white; background: #e5484d; "
-               "border-radius: 4px; padding: 1px 7px; font-size: 11px; "
-               "font-weight: 700; }"
-               "QLabel#subtitle { color: %4; font-size: 13px; }"
-               "QLabel#tileValue { font-size: 22px; font-weight: 700; }"
-               "QLabel#tileCaption { color: %4; font-size: 12px; }"
-               "QLabel#tileNote { color: %5; font-size: 11px; }"
-               "QLabel#section { color: %4; font-size: 12px; font-weight: 700; }"
-               "QLabel#note { color: %4; font-size: 12px; }"
-               "QLabel#names { font-size: 13px; }"
+               "QWidget#card { background: %3; border-radius: 8px; }"
+               "QLabel#live { color: #db777e; background: transparent; "
+               "padding: 1px 5px; }"
+               "QLabel#subtitle, QLabel#tileCaption, QLabel#note { color: %4; }"
+               "QLabel#tileNote { color: %5; }"
+               "QLabel#section { color: %2; }"
                "QProgressBar { background: #2a2935; border: none; "
                "border-radius: 2px; }"
                "QProgressBar::chunk { background: %6; border-radius: 2px; }"
@@ -705,16 +737,16 @@ QString styleSheet()
                "border-radius: 4px; min-height: 30px; margin: 2px; }"
                "QScrollBar::add-line, QScrollBar::sub-line { height: 0; }"
                "QScrollBar::add-page, QScrollBar::sub-page { background: none; }")
-        .arg(BACKGROUND.name(), TEXT.name(), CARD.name(), MUTED.name(),
-             FAINT.name(), accent().name());
+        .arg(background().name(), textColor().name(), cardColor().name(), muted().name(),
+             faint().name(), accent().name());
 }
 
 }  // namespace
 
-void showStreamStatsDialog(QWidget *parent, const QString &channelName)
+void showStreamStatsDialog(QWidget *parent, const QString &channelName, bool anonymous)
 {
     static QHash<QString, QPointer<QDialog>> open;
-    const auto key = channelName.toLower();
+    const auto key = anonymous ? channelName.toLower() + u":anonymous" : channelName.toLower();
     if (auto existing = open.value(key))
     {
         existing->showNormal();
@@ -730,6 +762,8 @@ void showStreamStatsDialog(QWidget *parent, const QString &channelName)
                            channelName);
     dialog->resize(640, 780);
     dialog->setMinimumWidth(520);
+    dialog->setFont(getApp()->getFonts()->getFont(FontStyle::ChatMedium,
+        getSettings()->getClampedUiScale()));
     dialog->setStyleSheet(styleSheet());
 
     auto *layout = new QVBoxLayout(dialog);
@@ -741,12 +775,12 @@ void showStreamStatsDialog(QWidget *parent, const QString &channelName)
     layout->addWidget(scroll);
 
     auto *timer = new QTimer(dialog);
-    const auto refresh = [scroll, channelName, timer] {
+    const auto refresh = [scroll, channelName, anonymous, timer] {
         const auto position = scroll->verticalScrollBar()->value();
         bool waiting = false;
         scroll->setUpdatesEnabled(false);
         delete scroll->takeWidget();
-        scroll->setWidget(build(channelName, waiting));
+        scroll->setWidget(build(channelName, anonymous, waiting));
         scroll->verticalScrollBar()->setValue(position);
         scroll->setUpdatesEnabled(true);
         // sooner while emote pictures load

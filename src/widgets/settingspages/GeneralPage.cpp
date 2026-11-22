@@ -141,7 +141,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
     SettingWidget::dropdown(uiText("Language (requires restart)"), s.uiLanguage,
                             {{uiText("Русский"), QString("ru")},
                              {"English", QString("en")}})
-        ->setTooltip(uiText("Changes the interface language after restarting Leafyrino. "
+        ->setTooltip(uiText("Changes the interface language after restarting Chatterino Noctis. "
                      "Chat messages, usernames, channels, emotes and fonts are unchanged."))
         ->addKeywords({"language", uiText("язык"), uiText("русский"), "English"})
         ->addTo(layout);
@@ -214,7 +214,8 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         },
         [](auto args) {
             return fuzzyToFloat(args.value, 1.f);
-        });
+        },
+        true);
     SettingWidget::checkbox(uiText("Use legacy scaling (requires restart)"),
                             s.useLegacyScaling)
         ->setTooltip(
@@ -227,45 +228,42 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         ->addTo(layout);
     routeSetting(layout, QStringLiteral("Appearance"),
                  QStringLiteral("Tabs"));
-    ComboBox *tabDirectionDropdown =
-        layout.addDropdown<std::underlying_type_t<NotebookTabLocation>>(
-            uiText("Tab layout"), {"Top", "Left", "Right", "Bottom"}, s.tabDirection,
-            [](auto val) {
-                switch (val)
-                {
-                    case NotebookTabLocation::Top:
-                        return "Top";
-                    case NotebookTabLocation::Left:
-                        return "Left";
-                    case NotebookTabLocation::Right:
-                        return "Right";
-                    case NotebookTabLocation::Bottom:
-                        return "Bottom";
-                }
+    layout.addDropdown<std::underlying_type_t<NotebookTabLocation>>(
+        uiText("Tab layout"), {"Top", "Left", "Right", "Bottom"}, s.tabDirection,
+        [](auto val) {
+            switch (val)
+            {
+                case NotebookTabLocation::Top:
+                    return "Top";
+                case NotebookTabLocation::Left:
+                    return "Left";
+                case NotebookTabLocation::Right:
+                    return "Right";
+                case NotebookTabLocation::Bottom:
+                    return "Bottom";
+            }
 
-                return "";
-            },
-            [](auto args) {
-                if (args.value == "Bottom")
-                {
-                    return NotebookTabLocation::Bottom;
-                }
-                else if (args.value == "Left")
-                {
-                    return NotebookTabLocation::Left;
-                }
-                else if (args.value == "Right")
-                {
-                    return NotebookTabLocation::Right;
-                }
-                else
-                {
-                    return NotebookTabLocation::Top;
-                }
-            },
-            false);
-    tabDirectionDropdown->setMinimumWidth(
-        tabDirectionDropdown->minimumSizeHint().width());
+            return "";
+        },
+        [](auto args) {
+            if (args.value == "Bottom")
+            {
+                return NotebookTabLocation::Bottom;
+            }
+            else if (args.value == "Left")
+            {
+                return NotebookTabLocation::Left;
+            }
+            else if (args.value == "Right")
+            {
+                return NotebookTabLocation::Right;
+            }
+            else
+            {
+                return NotebookTabLocation::Top;
+            }
+        },
+        false);
 
     layout.addDropdown<std::underlying_type_t<NotebookTabVisibility>>(
         uiText("Tab visibility"), {"All tabs", "Only live tabs"}, s.tabVisibility,
@@ -342,14 +340,14 @@ void GeneralPage::initLayout(GeneralPageView &layout)
     routeSetting(layout, QStringLiteral("Appearance"),
                  QStringLiteral("Window"));
     SettingWidget::checkbox(uiText("Always on top"), s.windowTopMost)
-        ->setTooltip(uiText("Always keep Leafyrino as the top window."))
+        ->setTooltip(uiText("Always keep Chatterino Noctis as the top window."))
         ->addTo(layout);
 
 #ifdef USEWINSDK
     routeSetting(layout, QStringLiteral("System settings"),
                  QStringLiteral("Startup and tray"));
     SettingWidget::checkbox(uiText("Start with Windows"), s.autorun)
-        ->setTooltip(uiText("Start Leafyrino when your computer starts."))
+        ->setTooltip(uiText("Start Chatterino Noctis when your computer starts."))
         ->addTo(layout);
 #endif
     if (!BaseWindow::supportsCustomWindowFrame())
@@ -417,7 +415,8 @@ void GeneralPage::initLayout(GeneralPageView &layout)
                 return fuzzyToFloat(args.value,
                                     std::numeric_limits<float>::infinity());
             }
-        });
+        },
+        true);
     addKeyboardModifierSetting(layout, "Pause while holding a key",
                                s.pauseChatModifier);
     layout.addDropdown<float>(
@@ -435,7 +434,8 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         },
         [](auto args) {
             return fuzzyToFloat(args.value, 1.f);
-        });
+        },
+        true);
 
     SettingWidget::checkbox(uiText("Smooth scrolling"), s.enableSmoothScrolling)
         ->addTo(layout);
@@ -486,7 +486,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
             return static_cast<MessageOverflow>(args.index);
         },
         false,
-        "Specify how Leafyrino will handle messages that exceed Twitch "
+        "Specify how Chatterino Noctis will handle messages that exceed Twitch "
         "message limits");
     routeSetting(layout, QStringLiteral("Chat"),
                  QStringLiteral("Mouse"));
@@ -505,7 +505,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
             return static_cast<UsernameRightClickBehavior>(args.index);
         },
         false,
-        "Specify how Leafyrino will handle right-clicking a username in "
+        "Specify how Chatterino Noctis will handle right-clicking a username in "
         "chat when not holding the modifier.");
     layout.addDropdown<std::underlying_type_t<UsernameRightClickBehavior>>(
         uiText("Username right-click with modifier behavior"),
@@ -522,7 +522,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
             return static_cast<UsernameRightClickBehavior>(args.index);
         },
         false,
-        "Specify how Leafyrino will handle right-clicking a username in "
+        "Specify how Chatterino Noctis will handle right-clicking a username in "
         "chat when holding down the modifier.");
     layout.addDropdown<std::underlying_type_t<Qt::KeyboardModifier>>(
         uiText("Modifier for alternate right-click action"),
@@ -597,7 +597,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
     SettingWidget::checkbox(uiText("Reduce opacity of message history"),
                             s.fadeMessageHistory)
         ->setTooltip(
-            uiText("Reduce opacity of messages that were posted before Leafyrino "
+            uiText("Reduce opacity of messages that were posted before Chatterino Noctis "
             "was started or while re-connecting."))
         ->addTo(layout);
 
@@ -673,7 +673,8 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         },
         [](auto args) {
             return fuzzyToInt(args.value, 0);
-        });
+        },
+        true);
     routeSetting(layout, QStringLiteral("Chat"),
                  QStringLiteral("Hidden messages"));
     layout.addDropdown<int>(
@@ -700,7 +701,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
                             "switching applications."),
                             s.showLastMessageIndicator)
         ->setTooltip(uiText("Adds an underline below the most recent message "
-                     "sent before you tabbed out of Leafyrino."))
+                     "sent before you tabbed out of Chatterino Noctis."))
         ->addTo(layout);
 
     SettingWidget::dropdown(uiText("Line style"), s.lastMessagePattern)->addTo(layout);
@@ -714,7 +715,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
 
     SettingWidget::checkbox(uiText("Animate"), s.animateEmotes)->addTo(layout);
 
-    SettingWidget::checkbox(uiText("Animate only when Leafyrino is focused"),
+    SettingWidget::checkbox(uiText("Animate only when Chatterino Noctis is focused"),
                             s.animationsWhenFocused)
         ->addTo(layout);
 
@@ -755,7 +756,8 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         },
         [](auto args) {
             return fuzzyToFloat(args.value, 1.f);
-        });
+        },
+        true);
 
     SettingWidget::checkbox(uiText("Remove spaces between emotes"),
                             s.removeSpacesBetweenEmotes)
@@ -811,7 +813,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         ->addTo(layout);
     SettingWidget::checkbox(uiText("Send activity to BetterTTV"), s.sendBTTVActivity)
         ->setTooltip(
-            uiText("When enabled, Leafyrino will signal an activity to BetterTTV "
+            uiText("When enabled, Chatterino Noctis will signal an activity to BetterTTV "
             "when you send a chat message. This is used for badges, "
             " and personal emotes. When disabled, no activity "
             "is sent and others won't see your cosmetics."))
@@ -848,7 +850,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
                      "(badges/paints/personal emotes) will get updated."))
         ->addTo(layout);
     SettingWidget::checkbox(uiText("Send activity to 7TV"), s.sendSevenTVActivity)
-        ->setTooltip(uiText("When enabled, Leafyrino will signal an activity to 7TV "
+        ->setTooltip(uiText("When enabled, Chatterino Noctis will signal an activity to 7TV "
                      "when you send a chat message. This is used for badges, "
                      "paints, and personal emotes. When disabled, no activity "
                      "is sent and others won't see your cosmetics."))
@@ -858,7 +860,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
     routeSetting(layout, QStringLiteral("Streamer Mode"),
                  QStringLiteral("Streamer Mode"));
     layout.addDescription(
-        uiText("Leafyrino can automatically change behavior if it detects that any "
+        uiText("Chatterino Noctis can automatically change behavior if it detects that any "
         "streaming software is running.\nSelect which things you want to "
         "change while streaming"));
 
@@ -990,7 +992,8 @@ void GeneralPage::initLayout(GeneralPageView &layout)
             }
 
             return fuzzyToInt(args.value, 0);
-        });
+        },
+        true);
     layout.addDropdown<int>(
         uiText("Show thumbnails of streams"), {"Off", "Small", "Medium", "Large"},
         s.thumbnailSizeStream,
@@ -1031,7 +1034,8 @@ void GeneralPage::initLayout(GeneralPageView &layout)
             }
 
             return fuzzyToInt(args.value, 0);
-        });
+        },
+        true);
 
     layout.addNavigationSpacing();
     routeSetting(layout, QStringLiteral("System settings"),
@@ -1113,7 +1117,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
     {
         layout.addDescription(
             uiText("Your operating system is not officially supplied with builds. For "
-            "updates, please rebuild Chatterino from sources. Report "
+            "updates, please rebuild Chatterino Noctis from sources. Report "
             "issues <a href='https://chatterino.com/link/issues'>here</a>."));
     }
 
@@ -1146,7 +1150,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
                                 R"("><span style="color: white;">)" +
                                 shortenString(newPath, 50) + "</span></a>";
         cachePathLabel->setText(pathShortened);
-        cachePathLabel->setToolTip(newPath);
+        cachePathLabel->setToolTip(newPath.size() > 50 ? newPath : QString{});
     });
 
     {
@@ -1170,7 +1174,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
             auto reply = QMessageBox::question(
                 layout.window(), uiText("Clear cache"),
                 uiText("Are you sure that you want to clear your cache? Emotes may "
-                "take longer to load next time Chatterino is started."),
+                "take longer to load next time Chatterino Noctis is started."),
                 QMessageBox::Yes | QMessageBox::No);
 
             if (reply == QMessageBox::Yes)
@@ -1205,7 +1209,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
     SettingWidget::checkbox(uiText("Keep sound backend alive (requires restart)"),
                             s.soundMiniaudioKeepEngineAlive)
         ->setTooltip(
-            uiText("This setting makes Chatterino output silence to your sound "
+            uiText("This setting makes Chatterino Noctis output silence to your sound "
             "device, even if no ping is being played. Try this setting if you "
             "have issues with wireless devices not playing the first sound. "
             "Note that this can prevent your monitor or computer from "
@@ -1536,7 +1540,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         [](bool on) {
             getApp()->getCrashHandler()->saveShouldRecover(on);
         })
-        ->setTooltip(uiText("When possible, restart Chatterino if the program crashes"))
+        ->setTooltip(uiText("When possible, restart Chatterino Noctis if the program crashes"))
         ->addTo(layout);
 
     routeSetting(layout, QStringLiteral("User cards"),
@@ -1663,7 +1667,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         ->addTo(layout);
 
     SettingWidget::checkbox(uiText("Color @usernames"), s.colorUsernames)
-        ->setTooltip(uiText("If Chatterino has seen a user, highlight @mention's of "
+        ->setTooltip(uiText("If Chatterino Noctis has seen a user, highlight @mention's of "
                      "them with their Twitch color."))
         ->addTo(layout);
 
@@ -1690,23 +1694,21 @@ void GeneralPage::initLayout(GeneralPageView &layout)
 
     routeSetting(layout, QStringLiteral("Appearance"),
                  QStringLiteral("Usernames"));
-    ComboBox *nameDropdown =
-        layout.addDropdown<std::underlying_type_t<UsernameDisplayMode>>(
-            uiText("Username style"), usernameDisplayModes, s.usernameDisplayMode,
-            [usernameDisplayModes](auto val) {
-                return usernameDisplayModes.at(val - 1);
-            },
-            [](auto args) {
-                return args.index + 1;
-            },
-            false,
-            "Customizes how you see Asian Language names.\nUsing an option "
-            "that includes \"localized\" will display the username in its "
-            "respective Asian language.\ne.g. "
-            "Username and localized: testaccount_420(테스트계정420)\n"
-            "Username: testaccount_420\n"
-            "Localized name: 테스트계정420");
-    nameDropdown->setMinimumWidth(nameDropdown->minimumSizeHint().width());
+    layout.addDropdown<std::underlying_type_t<UsernameDisplayMode>>(
+        uiText("Username style"), usernameDisplayModes, s.usernameDisplayMode,
+        [usernameDisplayModes](auto val) {
+            return usernameDisplayModes.at(val - 1);
+        },
+        [](auto args) {
+            return args.index + 1;
+        },
+        false,
+        "Customizes how you see Asian Language names.\nUsing an option "
+        "that includes \"localized\" will display the username in its "
+        "respective Asian language.\ne.g. "
+        "Username and localized: testaccount_420(테스트계정420)\n"
+        "Username: testaccount_420\n"
+        "Localized name: 테스트계정420");
 
     layout.addDropdown<float>(
         uiText("Username font weight"), {"50", "Default", "75", "100"}, s.boldScale,
@@ -1722,7 +1724,8 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         },
         [](auto args) {
             return fuzzyToFloat(args.value, 63.f);
-        });
+        },
+        true);
 
     routeSetting(layout, QStringLiteral("Links and search"),
                  QStringLiteral("Links"));
@@ -1871,8 +1874,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
     routeSetting(layout, QStringLiteral("Chat input"),
                  QStringLiteral("Sending"));
     SettingWidget::dropdown(uiText("Chat send protocol"), s.chatSendProtocol)
-        ->setTooltip(uiText("'Helix' will use Twitch's Helix API to send messages. "
-                     "'IRC' will use IRC to send messages."))
+        ->setTooltip(uiText("Default prefers Helix if the account has the required permission; otherwise IRC. Helix confirms delivery through Twitch's API. Neither protocol retries a message automatically. IRC preserves client-nonce features."))
         ->addTo(layout);
 
     routeSetting(layout, QStringLiteral("Chat input"),
@@ -1903,7 +1905,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         uiText("Shared chat session status refresh interval"),
         s.sharedChatSessionRefreshInterval,
         {.min = 5, .max = 999, .singleStep = 1, .suffix = "s"})
-        ->setTooltip(uiText("How often Chatterino polls the Twitch API for the "
+        ->setTooltip(uiText("How often Chatterino Noctis polls the Twitch API for the "
                      "shared chat session status."))
         ->addTo(layout);
 
@@ -1918,7 +1920,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
                  QStringLiteral("Connection"));
     SettingWidget::dropdown(uiText("Twitch read connection mode (requires restart)"),
                             s.twitchReadConnectionMode)
-        ->setTooltip(uiText("The read connection is the one where Chatterino joins a "
+        ->setTooltip(uiText("The read connection is the one where Chatterino Noctis joins a "
                      "channel and listens to the messages.\n"
                      "- Authenticated: Join as your logged in user.\n"
                      "- Anonymous: Join as an anonymous user. This causes to "
@@ -1963,7 +1965,7 @@ void GeneralPage::initExtra()
                                         shortenString(newPath, 50) + "</a>";
 
                 cachePath->setText(pathShortened);
-                cachePath->setToolTip(newPath);
+                cachePath->setToolTip(newPath.size() > 50 ? newPath : QString{});
             });
     }
 }

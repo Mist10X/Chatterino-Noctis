@@ -6,6 +6,7 @@
 
 #include "common/QLogging.hpp"
 #include "debug/Benchmark.hpp"
+#include "singletons/Settings.hpp"
 #include "util/QMagicEnum.hpp"
 #include "util/RenameThread.hpp"
 
@@ -17,6 +18,7 @@
 #include <QScopeGuard>
 
 #include <memory>
+#include <algorithm>
 
 namespace {
 
@@ -66,16 +68,17 @@ namespace chatterino {
 
 constexpr const auto NUM_SOUNDS = 4;
 
-MiniaudioBackend::MiniaudioBackend(bool keepEngineAlive_)
+MiniaudioBackend::MiniaudioBackend(Settings &settings)
     : context(std::make_unique<ma_context>())
     , engine(std::make_unique<ma_engine>())
     , workGuard(boost::asio::make_work_guard(this->ioContext))
     , sleepTimer(this->ioContext)
-    , keepEngineAlive(keepEngineAlive_)
+    , keepEngineAlive(settings.soundMiniaudioKeepEngineAlive)
 {
     qCInfo(chatterinoSound) << "Initializing miniaudio sound backend";
 
-    boost::asio::post(this->ioContext, [this] {
+    const float initialVolume = std::clamp(settings.soundVolume.getValue(), 0, 100) / 100.0F;
+    boost::asio::post(this->ioContext, [this, initialVolume] {
         ma_result result{};
 
         auto *logger = new ma_log;
@@ -133,6 +136,8 @@ MiniaudioBackend::MiniaudioBackend(bool keepEngineAlive_)
             this->state = State::Failed;
             return;
         }
+
+        ma_engine_set_volume(this->engine.get(), initialVolume);
 
         if (this->keepEngineAlive)
         {
@@ -200,6 +205,16 @@ MiniaudioBackend::MiniaudioBackend(bool keepEngineAlive_)
         this->state = State::Initialized;
     });
 
+    settings.soundVolume.connect([this](int value) {
+        const float volume = std::clamp(value, 0, 100) / 100.0F;
+        boost::asio::post(this->ioContext, [this, volume] {
+            if (this->state == State::Initialized)
+            {
+                ma_engine_set_volume(this->engine.get(), volume);
+            }
+        });
+    }, this->volumeConnection, false);
+
     this->audioThread = std::make_unique<std::thread>([this] {
         auto guard = qScopeGuard([&] {
             this->stoppedFlag.set();
@@ -212,6 +227,7 @@ MiniaudioBackend::MiniaudioBackend(bool keepEngineAlive_)
 
 MiniaudioBackend::~MiniaudioBackend()
 {
+    this->volumeConnection.clear();
     this->state = State::Stopping;
 
     boost::asio::post(this->ioContext, [this] {

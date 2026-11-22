@@ -56,6 +56,39 @@ const QString &TwitchAccount::getUserName() const
     return this->userName_;
 }
 
+const QString &TwitchAccount::getDisplayName() const
+{
+    return this->displayName_.isEmpty() ? this->userName_ : this->displayName_;
+}
+
+bool TwitchAccount::hasVerifiedDisplayName() const
+{
+    return !this->displayName_.isEmpty();
+}
+
+bool TwitchAccount::setDisplayName(const QString &userId, const QString &login,
+                                   const QString &displayName)
+{
+    if (userId.isEmpty() || userId != this->userId_ ||
+        login.compare(this->userName_, Qt::CaseInsensitive) != 0)
+    {
+        return false;
+    }
+
+    // Localized Twitch nicknames can contain different characters from the
+    // login. These account labels use the case-preserved login spelling.
+    const auto name = displayName.compare(login, Qt::CaseInsensitive) == 0
+                          ? displayName
+                          : QString{};
+    if (this->displayName_ == name)
+    {
+        return false;
+    }
+
+    this->displayName_ = name;
+    return true;
+}
+
 const QString &TwitchAccount::getOAuthClient() const
 {
     return this->oauthClient_;
@@ -89,6 +122,7 @@ bool TwitchAccount::setOAuthClient(const QString &newClientID)
     }
 
     this->oauthClient_ = newClientID;
+    this->helixChatWriteScope_ = false;
 
     return true;
 }
@@ -101,6 +135,7 @@ bool TwitchAccount::setOAuthToken(const QString &newOAuthToken)
     }
 
     this->oauthToken_ = newOAuthToken;
+    this->helixChatWriteScope_ = false;
 
     return true;
 }
@@ -226,6 +261,9 @@ bool TwitchAccount::setUserName(const QString &newUserName)
         return false;
     }
     this->userName_ = newUserName;
+    this->displayName_.clear();
+    this->displayNameResolved_ = false;
+    this->displayNameLookupPending_ = false;
     return true;
 }
 
@@ -342,7 +380,7 @@ const QString &TwitchAccount::getSeventvUserID() const
 
 void TwitchAccount::loadSeventvUserID()
 {
-    if (this->isAnon())
+    if (this->isAnon() || getApp()->isTest())
     {
         return;
     }

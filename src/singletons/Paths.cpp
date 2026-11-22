@@ -15,6 +15,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QStandardPaths>
 
 #include <cassert>
 #include <mutex>
@@ -71,7 +72,8 @@ QString Paths::cacheDirectory() const
         checkedResult = path;
         if (!this->isOwnCacheFolder(path))
         {
-            // Reuse the old external cache in existing profiles.
+            // Existing profiles may still store their cache under the old
+            // folder name. Reuse that cache, while new folders use Noctis.
             const auto legacy =
                 QDir(path).filePath(QStringLiteral("Chatterino by Mist1X cache"));
             const auto renamed =
@@ -120,9 +122,18 @@ QString Paths::cacheFilePath(const QString &fileName) const
 
 void Paths::initAppFilePathHash()
 {
+    auto path = QCoreApplication::applicationFilePath();
+#ifdef Q_OS_WIN
+    // Preserve the browser extension queue identity across the executable rename.
+    if (QFileInfo(path).fileName().compare(QStringLiteral("Chatterino Noctis.exe"),
+                                           Qt::CaseInsensitive) == 0)
+    {
+        path = QFileInfo(path).dir().filePath(QStringLiteral("Leafyrino.exe"));
+    }
+#endif
     this->applicationFilePathHash =
         QCryptographicHash::hash(
-            QCoreApplication::applicationFilePath().toUtf8(),
+            path.toUtf8(),
             QCryptographicHash::Sha224)
             .toBase64()
             .mid(0, 32)
@@ -132,9 +143,8 @@ void Paths::initAppFilePathHash()
 
 void Paths::initRootDirectory(const Args &args, const Modes &modes)
 {
-    // This build is always portable (isolation::FORCE_PORTABLE): the profile
-    // is the folder of the executable or --portable-dir. There is no code
-    // path to %APPDATA%\Chatterino2 or any other shared location.
+    // Installed Linux packages have a read-only program directory. Portable
+    // copies retain their profile beside the executable or in --portable-dir.
     static_assert(isolation::FORCE_PORTABLE);
     assert(modes.isPortable);
     (void)modes;
@@ -148,17 +158,30 @@ void Paths::initRootDirectory(const Args &args, const Modes &modes)
             throw std::runtime_error(
                 "The profile directory \""s +
                 QDir::toNativeSeparators(root).toStdString() +
-                "\" does not exist. Leafyrino will not create or use "
+                "\" does not exist. Chatterino Noctis will not create or use "
                 "another one.");
         }
     }
+#ifdef Q_OS_LINUX
+    else if (qEnvironmentVariableIsSet("APPIMAGE") || root == QStringLiteral("/usr/bin") ||
+             root == QStringLiteral("/usr/local/bin") || root == QStringLiteral("/app/bin") ||
+             root.startsWith(QStringLiteral("/nix/store/")))
+    {
+        const auto dataRoot = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+        if (dataRoot.isEmpty())
+        {
+            throw std::runtime_error("Could not locate a writable user data directory.");
+        }
+        root = QDir(dataRoot).filePath(QStringLiteral("chatterino-noctis"));
+    }
+#endif
 
     const auto reason =
         isolation::rejectProfileRoot(root, isolation::foreignProfileRoots());
     if (!reason.isEmpty())
     {
         throw std::runtime_error(
-            "Leafyrino refused to use this profile directory. "s +
+            "Chatterino Noctis refused to use this profile directory. "s +
             reason.toStdString());
     }
 

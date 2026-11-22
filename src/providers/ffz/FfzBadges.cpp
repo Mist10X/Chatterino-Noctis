@@ -10,6 +10,7 @@
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
 #include "providers/ffz/FfzUtil.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -118,6 +119,8 @@ void FfzBadges::load()
                     }
                 }
             }
+            lock.unlock();
+            notifyGlobalChatBadgesChanged();
         })
         .execute();
 }

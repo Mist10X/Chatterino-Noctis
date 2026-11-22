@@ -40,6 +40,7 @@ class QResizeEvent;
 class QScrollArea;
 class QSplitter;
 class QTabWidget;
+class QTimer;
 class QToolButton;
 class QWidget;
 
@@ -62,9 +63,13 @@ struct IvrSubage;
 struct IvrUserProfile;
 class LabelButton;
 class LiveIndicator;
+class UsercardResizeGrip;
+class UsercardMotionViewport;
+class ChannelAvatarLabel;
 class Paint;
 class PixmapButton;
 class SvgButton;
+class UsercardRolesPage;
 
 /// Synthetic, already-resolved data used by the standalone offline UI preview.
 struct UserInfoPreviewData {
@@ -82,6 +87,8 @@ struct UserInfoPreviewData {
     QPixmap avatar;
     QPixmap banner;
     std::vector<std::shared_ptr<const Emote>> earnedBadges;
+    bool allowPublicHistory = false;
+    bool autoFillHistory = false;
 };
 
 class UserInfoPopup final : public DraggablePopup
@@ -108,6 +115,7 @@ public:
     /// Offline preview only: show the moderation strip as for a moderator.
     void previewModerationStrip();
 
+public:
     static void openUserChannelAction(const QString &userName,
                                       MessagePlatform platform,
                                       const QString &channelName,
@@ -124,6 +132,14 @@ protected:
     void windowDeactivationEvent() override;
     void keyPressEvent(QKeyEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+#ifdef Q_OS_WIN
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
+#endif
+    void showEvent(QShowEvent *event) override;
+    void drawOutline(QPainter &painter) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
@@ -134,6 +150,14 @@ private:
     void updateUserData();
     void updateLatestMessages();
     void updateUsercardMessagesVisibility();
+    void refreshUsercardActivity();
+    void beginBadgeFit(bool expanded, int expandedBadgeHeight);
+    void applyBadgeFit(qreal fraction);
+    void finishBadgeFit(bool expanded);
+    void setBadgeScrollbarSuppressed(bool suppressed);
+    void scheduleExpandedBadgeFit();
+    void ensureExpandedBadgeFit();
+    void fitVerticalProfile();
     void resetUsercardMessageLoader();
     void updateLoadMoreMessagesButton();
     bool canLoadMoreUsercardMessages() const;
@@ -152,7 +176,11 @@ private:
     bool applyCachedNameHistory();
     void updateNameHistoryButton();
     void updateBadgesButton();
-    void openBadgesDialog();
+    void toggleInlineBadges();
+    void updateQuickActions();
+    void updateQuickActionLayout();
+    void updateUsercardCorners();
+    void openWhisperConversation();
     void showNameHistoryMenu();
     void openNameHistoryMenu(const QString &statusText = {});
     void requestNameHistory();
@@ -165,9 +193,10 @@ private:
     void applyIvrUserProfile(const IvrUserProfile &profile);
     void updateLiveIndicatorDisplay();
     void updateResponsiveLayout();
-    /// Header line above messages: "Сообщения в чате #channel",
+    /// Header line above messages/roles: "Сообщения в чате #channel",
     /// page switch and history (one line, like Chatterino+).
     void updateMessagesHeader();
+    void updateMessagesHeadingLayout();
     void setMessagesHeading(const QString &channel);
     void showActionsMenu();
     void loadProfileBanner(const QString &url);
@@ -178,7 +207,9 @@ private:
     void showProfileDetails(QMenu *menu);
     bool canUsePublicHistory() const;
     void resetPublicHistory();
-    void requestPublicHistory();
+    enum class HistoryRequest { Manual, FillViewport };
+    void requestPublicHistory(HistoryRequest reason);
+    void scheduleHistoryViewportFill();
     void applyPublicHistory(const QJsonObject &data);
     void rebuildPublicHistoryView(bool preserveAnchor);
     /// The person's chat colour: the card's own (from Twitch), else the one
@@ -281,16 +312,24 @@ private:
     bool usercardMessagesLazyLoadEnabled_ = false;
     QJsonObject publicHistoryCursor_;
     std::vector<MessagePtr> publicHistoryMessages_;
-    QHash<QString, GqlUsercardMessage> publicHistoryUncolored_;
+    // History rows can omit display name or color. Retain their source by ID
+    // and the colour they were given (Chatterino would pick one by user ID).
+    QHash<QString, GqlUsercardMessage> publicHistoryIncomplete_;
     QString publicHistoryColor_;
-    QString publicHistoryProfileDisplayName_;
+    QString publicHistoryDisplayName_;
     QHash<QString, QString> publicHistoryTimestamps_;
     QString publicHistoryStatus_;
+    bool publicHistoryStarted_ = false;
     bool publicHistoryLoading_ = false;
     bool publicHistoryComplete_ = false;
     /// A partial public page (a mirror answered late or not at all) is asked
     /// once more before going further back, so its range is not skipped.
     bool publicHistoryPartialRetried_ = false;
+    bool publicHistoryPreserveAnchor_ = false;
+    bool offlinePublicHistoryAllowed_ = false;
+    bool offlineHistoryAutoFill_ = false;
+    bool historyViewportFillQueued_ = false;
+    bool historyViewportFillBlocked_ = false;
     bool publicHistoryWindowLimited_ = false;
 
     QString kickUserSlug_;
@@ -329,6 +368,20 @@ private:
     const bool closeAutomatically_;
     const bool offlinePreview_;
 
+    QTimer *activityRefreshTimer_ = nullptr;
+    QTimer *badgeFitTimer_ = nullptr;
+    std::optional<QRect> badgeFitBase_;
+    std::optional<QSize> badgeFitExpectedSize_;
+    int badgeFitTargetHeight_ = 0;
+    int badgeFitBaseProfileHeight_ = 0;
+    int badgeFitTargetProfileHeight_ = 0;
+    bool badgeFitApplying_ = false;
+    bool badgeFitInProgress_ = false;
+    bool badgeFitMoved_ = false;
+    std::optional<QPoint> badgeDragOffset_;
+    bool badgeScrollbarSuppressed_ = false;
+    bool manualProfileSize_ = false;
+
     pajlada::Signals::SignalHolder signalHolder_;
 
     class TimeoutWidget;
@@ -343,12 +396,29 @@ private:
         QWidget *profileFacts = nullptr;
         QLabel *banner = nullptr;
         QWidget *badgeStrip = nullptr;
+        QWidget *quickActions = nullptr;
+        QWidget *activity = nullptr;
+        QLabel *activityCount = nullptr;
+        QLabel *activityLatest = nullptr;
+        UsercardResizeGrip *resizeGrip = nullptr;
+        QToolButton *quickWhisper = nullptr;
+        QToolButton *quickProfile = nullptr;
+        QToolButton *quickCopyId = nullptr;
         QToolButton *actions = nullptr;
         QWidget *actionControls = nullptr;
         QWidget *rightColumn = nullptr;
+        UsercardMotionViewport *rightMotionViewport = nullptr;
+        LabelButton *rolesToggle = nullptr;
+        LabelButton *messagesToggle = nullptr;
         QTabWidget *contentTabs = nullptr;
         QWidget *messagesPage = nullptr;
+        UsercardRolesPage *rolesPage = nullptr;
         QLabel *messagesHeading = nullptr;
+        QWidget *messagesHeader = nullptr;
+        QWidget *headingGroup = nullptr;
+        QWidget *headingActions = nullptr;
+        ChannelAvatarLabel *headingAvatar = nullptr;
+        QLabel *headingChannelName = nullptr;
         LabelButton *historyButton = nullptr;
         PixmapButton *avatarButton = nullptr;
         PixmapButton *localizedNameCopyButton = nullptr;

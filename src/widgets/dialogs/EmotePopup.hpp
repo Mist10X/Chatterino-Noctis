@@ -11,6 +11,8 @@
 #include <pajlada/signals/signal.hpp>
 #include <QLineEdit>
 
+class QLabel;
+
 namespace chatterino {
 
 struct Link;
@@ -20,6 +22,7 @@ class ChannelView;
 class Notebook;
 class TwitchChannel;
 class KickChannel;
+class ChannelAvatarLabel;
 
 class EmotePopup : public BasePopup
 {
@@ -36,8 +39,10 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
     void moveEvent(QMoveEvent *event) override;
     void themeChangedEvent() override;
+    void scaleChangedEvent(float scale) override;
 
 private:
+    friend struct EmotePickerPreviewCheck;
     ChannelView *globalEmotesView_{};
     ChannelView *channelEmotesView_{};
     ChannelView *subEmotesView_{};
@@ -55,6 +60,11 @@ private:
 
     QLineEdit *search_;
     Notebook *notebook_;
+    QLabel *titleChannel_{};
+    QLabel *titlePrefix_{};
+    ChannelAvatarLabel *titleAvatar_{};
+    QWidget *titleRow_{};
+    QWidget *searchRow_{};
 
     std::vector<EmotePtr> favouriteEmotes_;
     std::unordered_map<QString, EmojiPtr> favouriteEmojis_;
@@ -75,6 +85,7 @@ private:
     void updateFavouriteEmotesAndEmojis();
 
     void saveBounds() const;
+    void refreshChrome();
 };
 
 }  // namespace chatterino

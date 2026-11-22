@@ -137,9 +137,23 @@ EmotePtr makeBadge()
 {
     QPixmap icon(QStringLiteral(":/icon.png"));
     auto sized = [&](int side) {
-        return icon.isNull() ? QPixmap()
-                             : icon.scaled(side, side, Qt::KeepAspectRatio,
-                                           Qt::SmoothTransformation);
+        if (icon.isNull())
+        {
+            return QPixmap();
+        }
+        // Keep the standard 18px badge slot, but optically align the rounded
+        // Noctis icon a logical pixel lower alongside the other chat badges.
+        // Apply the same margins to all three image resolutions.
+        const int unit = side / 18;
+        const int artwork = side - 2 * unit;
+        QPixmap result(side, side);
+        result.fill(Qt::transparent);
+        QPainter painter(&result);
+        painter.drawPixmap(unit, 2 * unit,
+                           icon.scaled(artwork, artwork, Qt::KeepAspectRatio,
+                                       Qt::SmoothTransformation));
+        painter.end();
+        return result;
     };
     Emote emote;
     emote.name = EmoteName{QStringLiteral("Chatterino Noctis")};

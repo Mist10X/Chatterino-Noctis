@@ -6,6 +6,7 @@
 
 #include "Application.hpp"
 #include "common/UiLanguage.hpp"
+#include "common/UiScale.hpp"
 #include "singletons/Fonts.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
@@ -56,7 +57,7 @@ public:
 
     float scale() const
     {
-        return std::max(0.5F, getSettings()->getClampedUiScale());
+        return contentUiScale(getSettings()->getClampedUiScale());
     }
 
     QSize sizeHint() const override
@@ -98,12 +99,16 @@ protected:
         painter.setPen(QPen(accent.darker(light ? 110 : 160), 1));
         painter.setBrush(QColor(
             light ? "#f4f0fb" : (this->hovered_ ? "#2a2535" : "#221f2b")));
-        painter.drawRoundedRect(card, 8 * s, 8 * s);
+        QPainterPath body;
+        body.addRoundedRect(card, 8 * s, 8 * s);
+        painter.drawPath(body);
         QPainterPath strip;
         strip.addRoundedRect(
             QRectF(card.left(), card.top(), 4 * s, card.height()), 2 * s,
             2 * s);
-        painter.fillPath(strip, accent);
+        // The accent must follow the real outer silhouette: its smaller
+        // radius alone would extend beyond the card in both left corners.
+        painter.fillPath(body.intersected(strip), accent);
 
         auto *fonts = getApp()->getFonts();
         const qreal pad = 12 * s;
@@ -242,9 +247,7 @@ void initUpdateBanner(QWidget *window, pajlada::Signals::SignalHolder &holder)
             banner->hide();
         }
     };
-    auto &updates = getApp()->getUpdates();
-    holder.managedConnect(updates.statusUpdated, changed);
-    changed(updates.getStatus());
+    holder.managedConnect(getApp()->getUpdates().statusUpdated, changed);
 }
 
 }  // namespace chatterino

@@ -13,7 +13,7 @@
         "Headers": {
             "Authorization": "Client-ID c898c0bb848ca39"
         },
-        "Name": "Chatterino Image Uploader Settings",
+        "Name": "Chatterino Noctis Image Uploader Settings",
         "RequestMethod": "POST",
         "RequestURL": "https://api.imgur.com/3/image",
         "URL": "{data.link}",

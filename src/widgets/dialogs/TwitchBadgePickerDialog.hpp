@@ -10,6 +10,7 @@
 #include "widgets/DraggablePopup.hpp"
 
 #include <QDateTime>
+#include <memory>
 #include <QPointer>
 #include <QString>
 #include <QTimer>
@@ -28,8 +29,10 @@ class QVBoxLayout;
 namespace chatterino {
 
 class MessageView;
+class TooltipWidget;
 class SvgButton;
 class Button;
+class TwitchAccount;
 class TwitchChannel;
 
 struct EventBadge {
@@ -50,12 +53,14 @@ public:
     static void showDialog(TwitchChannel *channel, QWidget *parent = nullptr);
 
 protected:
+    void paintEvent(QPaintEvent *) override;
     void themeChangedEvent() override;
     void scaleChangedEvent(float scale) override;
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
 
 private:
+    friend struct BadgePickerPreviewCheck;
     enum class View {
         GlobalBadges,
         ChannelBadges,
@@ -66,6 +71,7 @@ private:
     void loadBadges(bool force = false);
     void loadEventBadges(bool force = false);
     void switchView(View view);
+    void animateBadgeApplied(const GqlBadge &badge, View view);
     void rebuildContent();
     void rebuildGlobalBadges();
     void rebuildChannelBadges();
@@ -85,11 +91,13 @@ private:
     void applySizeConstraints();
     void updateSearchVisibility();
     void updatePreview();
+    [[nodiscard]] QString resolveSelfDisplayName(const TwitchAccount &user) const;
     [[nodiscard]] MessagePtr buildPreviewMessage() const;
     void applyPreviewDialogWidth(int contentPixelWidth);
     [[nodiscard]] int badgeGridColumns() const;
 
-    TwitchChannel *channel_{};
+    std::shared_ptr<TwitchChannel> channel_;
+    TooltipWidget *badgePreview_{};
 
     QVBoxLayout *mainLayout_{};
     QWidget *headerWidget_{};

@@ -10,12 +10,14 @@
 
 #include <QAbstractItemView>
 #include <QAbstractTableModel>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QModelIndex>
 #include <QPushButton>
 #include <QTableView>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace chatterino {
@@ -122,6 +124,110 @@ void EditableModelView::setTitles(std::initializer_list<QString> titles)
     }
 }
 
+void EditableModelView::setReadableColumns(
+    std::initializer_list<int> textColumns, bool wrapRows)
+{
+    this->textColumns_ = QList<int>(textColumns);
+    auto *header = this->tableView_->horizontalHeader();
+    header->setObjectName("settingsReadableHeader");
+    header->setSectionResizeMode(QHeaderView::Fixed);
+    header->setStretchLastSection(false);
+    this->tableView_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    this->tableView_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    this->tableView_->setWordWrap(wrapRows);
+    if (wrapRows)
+    {
+        this->tableView_->verticalHeader()->setSectionResizeMode(
+            QHeaderView::ResizeToContents);
+    }
+    this->tableView_->installEventFilter(this);
+    this->tableView_->viewport()->installEventFilter(this);
+    header->installEventFilter(this);
+    this->updateColumnLayout();
+}
+
+bool EditableModelView::eventFilter(QObject *object, QEvent *event)
+{
+    const auto type = event->type();
+    if ((object == this->tableView_ || object == this->tableView_->viewport() ||
+         object == this->tableView_->horizontalHeader()) &&
+        (type == QEvent::Resize || type == QEvent::Show ||
+         type == QEvent::FontChange || type == QEvent::StyleChange) &&
+        !this->columnLayoutPending_)
+    {
+        // Wait for Qt to settle the viewport and header after a font/layout change.
+        this->columnLayoutPending_ = true;
+        QTimer::singleShot(0, this, [this] {
+            this->columnLayoutPending_ = false;
+            this->updateColumnLayout();
+        });
+    }
+    return QWidget::eventFilter(object, event);
+}
+
+void EditableModelView::updateColumnLayout()
+{
+    auto *header = this->tableView_->horizontalHeader();
+    const auto metrics = header->fontMetrics();
+    QList<int> widths(header->count(), 0);
+    int totalWidth = 0;
+    int expandingCount = 0;
+    int headerHeight = metrics.height();
+    for (int column = 0; column < header->count(); ++column)
+    {
+        if (header->isSectionHidden(column))
+        {
+            continue;
+        }
+        int width = std::max(44, header->sectionSizeHint(column));
+        const auto lines = this->model_->headerData(column, Qt::Horizontal)
+                               .toString().split('\n');
+        headerHeight = std::max(headerHeight, metrics.height() +
+            (static_cast<int>(lines.size()) - 1) * metrics.lineSpacing());
+        for (const auto &line : lines)
+        {
+            width = std::max(width, metrics.horizontalAdvance(line) + 16);
+        }
+        if (this->textColumns_.contains(column))
+        {
+            // Keep room for a readable phrase/name even when other columns
+            // have long translations. Larger tables scroll horizontally.
+            width = std::max(width, 150);
+            ++expandingCount;
+        }
+        widths[column] = width;
+        totalWidth += width;
+    }
+    header->setMinimumHeight(headerHeight + 8);
+    int extra = std::max(0, this->tableView_->viewport()->width() - totalWidth);
+    bool resized = false;
+    for (int column = 0; column < widths.size(); ++column)
+    {
+        if (widths[column] == 0)
+        {
+            continue;
+        }
+        int width = widths[column];
+        if (this->textColumns_.contains(column) && expandingCount > 0)
+        {
+            const auto share = extra / expandingCount--;
+            width += share;
+            extra -= share;
+        }
+        if (header->sectionSize(column) != width)
+        {
+            header->resizeSection(column, width);
+            resized = true;
+        }
+    }
+    if (resized)
+    {
+        // Refresh the scroll range and wrapped row heights when all sections
+        // have their final widths, including the first time a page is opened.
+        this->tableView_->doItemsLayout();
+    }
+}
+
 QTableView *EditableModelView::getTableView()
 {
     return this->tableView_;
@@ -144,6 +250,7 @@ void EditableModelView::addRegexHelpLink()
                    "https://chatterino.com/help/regex'>"
                    "<span style='color:#99f'>regex info</span></a>"));
     regexHelpLabel->setOpenExternalLinks(true);
+    regexHelpLabel->setWordWrap(true);
     this->addCustomButton(regexHelpLabel);
 }
 

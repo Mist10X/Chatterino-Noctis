@@ -7,6 +7,7 @@
 #include "Application.hpp"
 #include "common/network/NetworkRequest.hpp"
 #include "common/network/NetworkResult.hpp"
+#include "common/network/ServiceHealth.hpp"
 #include "common/QLogging.hpp"
 #include "providers/recentmessages/Impl.hpp"
 #include "util/PostToThread.hpp"
@@ -21,21 +22,14 @@ namespace chatterino::recentmessages {
 
 using namespace recentmessages::detail;
 
-namespace {
-
-/// A failed load is tried once more after a short pause: right after the
-/// start every channel asks at once, and one of them may time out (408).
-constexpr int RETRIES = 1;
-constexpr int RETRY_DELAY_MS = 4000;
-
-void loadAttempt(
+void load(
     const QString &channelName, std::weak_ptr<Channel> channelPtr,
     ResultCallback onLoaded, ErrorCallback onError, const int limit,
     const std::optional<std::chrono::time_point<std::chrono::system_clock>>
         after,
     const std::optional<std::chrono::time_point<std::chrono::system_clock>>
         before,
-    const bool jitter, const int attempt)
+    const bool jitter)
 {
     qCDebug(LOG) << "Loading recent messages for" << channelName;
 
@@ -62,6 +56,7 @@ void loadAttempt(
                 qCDebug(LOG) << "Successfully loaded recent messages for"
                              << shared->getName();
 
+                servicehealth::success(servicehealth::History);
                 auto root = result.parseJson();
                 auto parsedMessages = parseRecentMessages(root);
 
@@ -94,7 +89,7 @@ void loadAttempt(
                         onLoaded(messages);
                     });
             })
-            .onError([=](const NetworkResult &result) {
+            .onError([channelPtr, onError](const NetworkResult &result) {
                 auto shared = channelPtr.lock();
                 if (!shared)
                 {
@@ -102,47 +97,22 @@ void loadAttempt(
                 }
                 assert(!isAppAboutToQuit());
 
-                if (attempt < RETRIES)
-                {
-                    QTimer::singleShot(RETRY_DELAY_MS, [=] {
-                        if (!isAppAboutToQuit() && !channelPtr.expired())
-                        {
-                            loadAttempt(channelName, channelPtr, onLoaded,
-                                        onError, limit, after, before, false,
-                                        attempt + 1);
-                        }
-                    });
-                    return;
-                }
-
                 qCDebug(LOG) << "Failed to load recent messages for"
                              << shared->getName();
 
-                shared->addSystemMessage(
-                    QStringLiteral(
-                        "Message history service unavailable (Error: %1)")
-                        .arg(result.formatError()));
+                servicehealth::failed(servicehealth::History,
+                    constructRecentMessagesUrl(shared->getName(), 1, {}, {}), result);
+                if (!servicehealth::relevant(result))
+                {
+                    shared->addSystemMessage(
+                        QStringLiteral("Message history service unavailable (Error: %1)")
+                            .arg(result.formatError()));
+                }
 
                 onError();
             })
             .execute();
     });
 }
-
-}  // namespace
-
-void load(
-    const QString &channelName, std::weak_ptr<Channel> channelPtr,
-    ResultCallback onLoaded, ErrorCallback onError, const int limit,
-    const std::optional<std::chrono::time_point<std::chrono::system_clock>>
-        after,
-    const std::optional<std::chrono::time_point<std::chrono::system_clock>>
-        before,
-    const bool jitter)
-{
-    loadAttempt(channelName, std::move(channelPtr), std::move(onLoaded),
-                std::move(onError), limit, after, before, jitter, 0);
-}
-
 
 }  // namespace chatterino::recentmessages

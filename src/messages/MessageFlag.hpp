@@ -90,6 +90,8 @@ enum class MessageFlag : std::int64_t {
     /// A system notice for a specific deleted message, not the disabled
     /// original chat message or a channel-wide clear.
     Deletion = (1LL << 51),
+    /// A Twitch raid event shown in chat.
+    Raid = (1LL << 52),
 };
 using MessageFlags = FlagsEnum<MessageFlag>;
 

@@ -8,6 +8,7 @@
 #include "common/Channel.hpp"
 #include "common/Common.hpp"
 #include "providers/irc/IrcConnection2.hpp"
+#include "providers/twitch/IrcWriteRecovery.hpp"
 #include "providers/twitch/TwitchReadConnectionPool.hpp"
 #include "util/CancellationToken.hpp"
 #include "util/RatelimitBucket.hpp"
@@ -194,6 +195,7 @@ protected:
                                            bool anonymous = false);
 
     void privateMessageReceived(Communi::IrcPrivateMessage *message);
+    void observeLiveChatDelivery(Communi::IrcPrivateMessage *message);
     void readConnectionMessageReceived(Communi::IrcMessage *message);
     void writeConnectionMessageReceived(Communi::IrcMessage *message);
 
@@ -221,6 +223,14 @@ private:
 
     bool prepareToSend(const std::shared_ptr<TwitchChannel> &channel);
 
+    void createWriteConnection();
+    void reconnectWriteConnection(bool delayed = false);
+    bool ensureWriteConnection();
+    bool trySendRawMessage(const QString &rawMessage);
+    bool trySendChatMessage(const std::shared_ptr<TwitchChannel> &channel,
+                            const QString &message, const QString &replyId = {});
+    void reportUnconfirmedWrites();
+
     void refreshModeratedChannels();
     void applyModeratedChannelInfo();
 
@@ -231,6 +241,13 @@ private:
     std::mutex channelMutex;
 
     QObjectPtr<IrcConnection> writeConnection_ = nullptr;
+    IrcWriteRecovery writeRecovery_;
+    std::size_t writeAccountEpoch_ = 0;
+    QTimer writeLoginTimeout_;
+    QTimer writeConfirmationWatchdog_;
+    QTimer writeReconnectTimer_;
+    int writeReconnectDelayMs_ = 1000;
+    pajlada::Signals::SignalHolder writeSignalHolder_;
     QObjectPtr<TwitchReadConnectionPool> readConnection_ = nullptr;
     QObjectPtr<IrcConnection> anonymousReadConnection_ = nullptr;
     bool anonymousReadConnectionStarted_ = false;

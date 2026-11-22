@@ -45,8 +45,7 @@
                     "trailingSpace": true,
                     "type": "TextElement",
                     "words": [
-                        "2",
-                        "raiders",
+                        "Raid",
                         "from"
                     ]
                 },
@@ -80,20 +79,21 @@
                     "trailingSpace": true,
                     "type": "TextElement",
                     "words": [
-                        "have",
-                        "joined!"
+                        "·",
+                        "Viewers:",
+                        "2"
                     ]
                 }
             ],
             "externalBadges": [
             ],
-            "flags": "System|DoNotTriggerNotification|UncategorizedNotification",
+            "flags": "System|DoNotTriggerNotification|Raid",
             "frozen": false,
-            "id": "",
+            "id": "7299b7bc-61ce-423c-85ce-8d651b56cce4",
             "localizedName": "",
             "loginName": "",
-            "messageText": "2 raiders from nerixyz have joined!",
-            "searchText": "2 raiders from nerixyz have joined!",
+            "messageText": "Raid from nerixyz · Viewers: 2",
+            "searchText": "Raid from nerixyz · Viewers: 2",
             "serverReceivedTime": "",
             "timeoutUser": "",
             "twitchBadgeInfos": {
@@ -103,5 +103,12 @@
             "userID": "",
             "usernameColor": "#ff000000"
         }
-    ]
+    ],
+    "settings": {
+        "moltorino": {
+            "chat": {
+                "hideRaids": false
+            }
+        }
+    }
 }

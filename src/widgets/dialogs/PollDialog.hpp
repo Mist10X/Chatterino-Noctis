@@ -9,6 +9,7 @@
 #include <QPointer>
 
 #include <optional>
+#include <memory>
 #include <vector>
 
 class QCheckBox;
@@ -68,7 +69,7 @@ private:
     void updateCountdownTimer();
     bool isBroadcasterView() const;
 
-    TwitchChannel *channel_{};
+    std::shared_ptr<TwitchChannel> channel_;
     std::optional<TwitchChannel::PollEvent> currentPoll_;
     QDateTime pollSnapshotAt_;
 

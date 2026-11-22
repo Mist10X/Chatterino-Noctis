@@ -28,7 +28,7 @@
 #include <QResizeEvent>
 #include <QSizeGrip>
 
-const QString TEXT_TITLE("Reply Thread - @%1 in #%2");
+const QString TEXT_TITLE("Reply Thread - @%1 in %2");
 
 namespace chatterino {
 

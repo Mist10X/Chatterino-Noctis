@@ -58,6 +58,8 @@ struct Message {
     /// deleted message); empty when the source did not say.
     QString timeoutUserID;
     QString channelName;
+    // Login of the other participant in a private Twitch conversation.
+    QString whisperPeer;
     QColor usernameColor;
     QDateTime serverReceivedTime;
 
@@ -122,6 +124,22 @@ struct Message {
         UniqueChat,
     };
     RoomMode roomMode = RoomMode::None;
+    /// Semantic event type, independent of the displayed language.
+    enum class ChannelNotice : std::uint8_t {
+        None,
+        Prediction,
+        Poll,
+        Pinned,
+        Unpinned,
+        StreamLive,
+        StreamOffline,
+        PredictionWon,
+        PredictionLost,
+        PredictionRefund,
+        WatchStreak,
+        AutoModHeld,
+    };
+    ChannelNotice channelNotice = ChannelNotice::None;
     /// A quiet event notice, not a highlighted subscription header.
     bool giftNotice = false;
 

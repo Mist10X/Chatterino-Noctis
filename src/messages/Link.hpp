@@ -28,6 +28,7 @@ public:
         ViewThread,
         JumpToMessage,
         AcknowledgeChatWarning,
+        DeleteUploadedImage,
     };
 
     Link();

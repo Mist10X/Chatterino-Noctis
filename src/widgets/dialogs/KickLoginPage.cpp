@@ -441,7 +441,7 @@ void KickLoginPage::refreshState() const
         this->ui.topLabel->setText(
             uiText(u"The Kick API does not provide an OAuth flow for local chat "
             u"clients "
-            "like Chatterino "
+            "like Chatterino Noctis "
             "to authenticate without exposing the client secret or using an "
             "external server that would need to see <i>all</i> tokens of "
             "<i>all</i> users.<br>Because of this, the <b>experimental</b> "
@@ -466,7 +466,7 @@ void KickLoginPage::refreshState() const
             uiText(u"</a>. "
             "This proxy will not save your data.<br>"
             "It is required, because Kick does not provide a suitable OAuth "
-            "flow for local chat clients like Chatterino."));
+            "flow for local chat clients like Chatterino Noctis."));
         this->ui.layout->setRowVisible(rowTopSpacer, false);
         this->ui.layout->setRowVisible(rowClientID, false);
         this->ui.layout->setRowVisible(rowClientSecret, false);

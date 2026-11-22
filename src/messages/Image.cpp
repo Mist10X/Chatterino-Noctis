@@ -417,6 +417,13 @@ namespace chatterino {
 
 Image::~Image()
 {
+    // Static images can outlive QApplication even when the client shutdown
+    // sequence was never entered (for example, in a standalone tool).
+    if (!QCoreApplication::instance())
+    {
+        std::ignore = this->frames_.release();
+        return;
+    }
 #ifndef DISABLE_IMAGE_EXPIRATION_POOL
     ImageExpirationPool::instance().removeImagePtr(this);
 #endif
@@ -503,6 +510,21 @@ ImagePtr Image::fromAutoscaledUrl(const Url &url, uint16_t autoScale)
     return shared;
 }
 
+ImagePtr Image::fromLinkThumbnail(const Url &url)
+{
+    assertInGuiThread();
+    auto image = Image::fromUrl(url);
+    image->retryThumbnailGatewayErrors_ = true;
+    return image;
+}
+
+ImagePtr Image::fromPixmap(const QPixmap &pixmap, qreal scale)
+{
+    auto image = ImagePtr(new Image(scale));
+    image->setPixmap(pixmap);
+    return image;
+}
+
 ImagePtr Image::fromResourcePixmap(const QPixmap &pixmap, qreal scale)
 {
     using key_t = std::pair<const QPixmap *, qreal>;
@@ -524,9 +546,7 @@ ImagePtr Image::fromResourcePixmap(const QPixmap &pixmap, qreal scale)
         cache.erase(it);
     }
 
-    auto newImage = ImagePtr(new Image(scale));
-
-    newImage->setPixmap(pixmap);
+    auto newImage = Image::fromPixmap(pixmap, scale);
 
     cache.insert({{&pixmap, scale}, std::weak_ptr<Image>(newImage)});
 
@@ -717,7 +737,7 @@ QSizeF Image::size() const
     return this->expectedSize_.toSizeF() * this->scale_;
 }
 
-void Image::actuallyLoad()
+void Image::actuallyLoad(bool refreshCache)
 {
     assertInGuiThread();
 
@@ -730,7 +750,7 @@ void Image::actuallyLoad()
             }
         });
     };
-    auto onSuccess = [weak, onFailure](const auto &result) {
+    auto onSuccess = [weak, onFailure](const NetworkResult &result) {
         auto shared = weak.lock();
         if (!shared)
         {
@@ -738,6 +758,21 @@ void Image::actuallyLoad()
         }
 
         assert(!isAppAboutToQuit());
+
+        const auto decodeFailed = [&] {
+            if (result.cachedFile().isEmpty())
+            {
+                onFailure(false);
+                return;
+            }
+            QFile::remove(result.cachedFile());
+            runInGuiThread([weak] {
+                if (auto image = weak.lock())
+                {
+                    image->actuallyLoad(true);
+                }
+            });
+        };
 
         QBuffer buffer;
         buffer.setData(result.getData());
@@ -747,14 +782,14 @@ void Image::actuallyLoad()
         {
             qCDebug(chatterinoImage)
                 << "Error: image cant be read " << shared->url().string;
-            onFailure(false);
+            decodeFailed();
             return;
         }
 
         const auto size = reader.size();
         if (size.isEmpty())
         {
-            onFailure(false);
+            decodeFailed();
             return;
         }
 
@@ -763,7 +798,7 @@ void Image::actuallyLoad()
             qCDebug(chatterinoImage)
                 << "Error: image has less than 1 frame " << shared->url().string
                 << ": " << reader.errorString();
-            onFailure(false);
+            decodeFailed();
             return;
         }
 
@@ -789,14 +824,22 @@ void Image::actuallyLoad()
             return;
         }
 
+        const int expectedFrames = reader.imageCount();
         auto parsed = detail::readFrames(
             reader, shared->url(),
             makeConditionedOptional(needsLimit, limitedSize));
 
-        assignFrames(shared, parsed);
+        if (parsed.isEmpty() || (!result.cachedFile().isEmpty() && parsed.size() != expectedFrames))
+        {
+            decodeFailed();
+            return;
+        }
+        assignFrames(shared, std::move(parsed));
     };
-    auto onError = [onFailure](const auto &result) {
-        onFailure(isTransientImageError(result));
+    auto onError = [onFailure, retryGateway = this->retryThumbnailGatewayErrors_](const auto &result) {
+        const int status = result.status().value_or(0);
+        const bool temporaryGateway = status == 502 || status == 503 || status == 504;
+        onFailure(isTransientImageError(result) || (retryGateway && temporaryGateway));
         return true;
     };
 
@@ -830,7 +873,7 @@ void Image::actuallyLoad()
     {
         NetworkRequest(this->url().string)
             .concurrent()
-            .cache()
+            .cache(refreshCache)
             .timeout(15000)
             .onSuccess(std::move(onSuccess))
             .onError(std::move(onError))

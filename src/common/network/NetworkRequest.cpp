@@ -25,12 +25,6 @@ NetworkRequest::NetworkRequest(const std::string &url,
     this->data->request.setUrl(QUrl(QString::fromStdString(url)));
     this->data->requestType = requestType;
 
-    if (getSettings()->xChatterino7NoHttp2)
-    {
-        this->data->request.setAttribute(QNetworkRequest::Http2AllowedAttribute,
-                                         false);
-    }
-
     this->initializeDefaultValues();
 }
 
@@ -181,9 +175,16 @@ NetworkRequest NetworkRequest::payload(const QByteArray &payload) &&
     return std::move(*this);
 }
 
-NetworkRequest NetworkRequest::cache() &&
+NetworkRequest NetworkRequest::singleUseUpload() &&
+{
+    this->data->singleUseUpload = true;
+    return std::move(*this);
+}
+
+NetworkRequest NetworkRequest::cache(bool refresh) &&
 {
     this->data->cache = true;
+    this->data->refreshCache = refresh;
     return std::move(*this);
 }
 
@@ -204,6 +205,12 @@ void NetworkRequest::execute()
 
 void NetworkRequest::initializeDefaultValues()
 {
+    if (getSettings()->xChatterino7NoHttp2)
+    {
+        this->data->request.setAttribute(QNetworkRequest::Http2AllowedAttribute,
+                                         false);
+    }
+
     const auto userAgent = QStringLiteral("chatterino/%1 (%2)")
                                .arg(Version::instance().version(),
                                     Version::instance().commitHash())

@@ -14,6 +14,7 @@
 #include "controllers/commands/CommandController.hpp"
 #include "controllers/hotkeys/HotkeyController.hpp"
 #include "controllers/notifications/NotificationController.hpp"
+#include "messages/MessageBuilder.hpp"
 #include "providers/kick/KickAccount.hpp"
 #include "providers/kick/KickChannel.hpp"
 #include "providers/twitch/ChannelManagement.hpp"
@@ -54,6 +55,7 @@
 #include "widgets/splits/SplitInput.hpp"
 #include "widgets/splits/SplitMpsOverlay.hpp"
 #include "widgets/splits/SplitOverlay.hpp"
+#include "widgets/splits/WhisperConversationPicker.hpp"
 #include "widgets/Window.hpp"
 
 #include <QApplication>
@@ -64,7 +66,6 @@
 #include <QEvent>
 #include <QJsonArray>
 #include <QLabel>
-#include <QListWidget>
 #include <QMimeData>
 #include <QMovie>
 #include <QPainter>
@@ -121,7 +122,7 @@ void showTutorialVideo(QWidget *parent, const QString &source,
             BaseWindow::BoundsCheckOnShow,
         },
         parent);
-    window->setWindowTitle(uiText("Leafyrino - ") + title);
+    window->setWindowTitle(uiText("Chatterino Noctis - ") + title);
     window->setAttribute(Qt::WA_DeleteOnClose);
     auto *layout = new QVBoxLayout();
     layout->addWidget(new QLabel(description));
@@ -177,6 +178,12 @@ Split::Split(QWidget *parent)
             this->deferredTwitchForcePersonalRefresh_ = true;
             this->scheduleDeferredTwitchRefresh(true);
         }));
+    this->signalHolder_.managedConnect(
+        getApp()->getAccounts()->twitch.currentUserNameChanged,
+        [this] { this->updateInputPlaceholder(); });
+    this->signalHolder_.managedConnect(
+        getApp()->getAccounts()->twitch.currentUserDisplayNameChanged,
+        [this] { this->updateInputPlaceholder(); });
     this->signalHolder_.managedConnect(this->channelChanged, [this] {
         this->updateInputPlaceholder();
     });
@@ -403,7 +410,7 @@ void Split::addShortcuts()
          [](const std::vector<QString> &) -> QString {
              auto *popup = new DebugPopup;
              popup->setAttribute(Qt::WA_DeleteOnClose);
-             popup->setWindowTitle(uiText("Leafyrino - Debug popup"));
+             popup->setWindowTitle(uiText("Chatterino Noctis - Debug popup"));
              popup->show();
              return "";
          }},
@@ -1075,6 +1082,10 @@ void Split::updateInputPlaceholder()
     const bool soloYouTube =
         channel && channel->getType() == Channel::Type::YouTube;
     this->input_->ui_.textEdit->setReadOnly(soloYouTube);
+#if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
+    if (this->input_->applyRewardPromptPlaceholder())
+        return;
+#endif
     if (soloYouTube)
     {
         this->input_->ui_.textEdit->setPlaceholderText(
@@ -1151,9 +1162,7 @@ void Split::updateInputPlaceholder()
     {
         placeholderText =
             uiText(QString("Send message as %1 in %2..."))
-                .arg(
-                    getApp()->getAccounts()->twitch.getCurrent()->getUserName(),
-                    this->getChannel()->getName());
+                .arg(user->getDisplayName(), channel->getDisplayName());
     }
 
     this->input_->ui_.textEdit->setPlaceholderText(placeholderText);
@@ -1676,6 +1685,8 @@ void Split::updateBannerVisibility()
 
 void Split::refreshInputState(const QString &inputText)
 {
+    if (this->whisperConversations_)
+        this->whisperConversations_->setEnabled(inputText.isEmpty());
     if (getSettings()->showEmptyInput)
     {
         // We always show the input regardless of the text, so we can early out here
@@ -2014,6 +2025,13 @@ void Split::wireTwitchBanners(TwitchChannel *tc)
 
 void Split::setChannel(IndirectChannel newChannel)
 {
+    auto *container = dynamic_cast<SplitContainer *>(this->parentWidget());
+    if (container && container->isPermanentWhispersTab() &&
+        this->getChannel()->getType() == Channel::Type::TwitchWhispers &&
+        newChannel.get()->getType() != Channel::Type::TwitchWhispers)
+    {
+        return;
+    }
     // chat statistics count from the moment a channel is open anywhere
     ChannelStats::attach(newChannel.get());
     this->editorAccessProbedChannels_.clear();
@@ -2022,6 +2040,39 @@ void Split::setChannel(IndirectChannel newChannel)
 
     this->channel_ = newChannel;
 
+    this->view_->setWhisperPeer({});
+    const bool whispers =
+        newChannel.get()->getType() == Channel::Type::TwitchWhispers;
+    if (whispers && !this->whisperConversations_)
+    {
+        this->whisperConversations_ =
+            new WhisperConversationPicker(this, [this](const QString &peer) {
+                if (!this->input_->getInputText().isEmpty())
+                    return;
+                this->whisperConversations_->selectPeer(peer);
+                this->view_->setWhisperPeer(peer);
+                this->view_->setChannel(this->getChannel());
+            });
+        this->vbox_->insertWidget(this->vbox_->indexOf(this->header_) + 1,
+                                  this->whisperConversations_);
+        const auto restyle = [this] {
+            this->whisperConversations_->refreshStyle();
+        };
+        this->signalHolder_.managedConnect(this->theme->updated, restyle);
+        this->signalHolder_.managedConnect(getApp()->getFonts()->fontChanged,
+                                           restyle);
+        this->signalHolder_.managedConnect(this->scaleChanged,
+                                           [restyle](float) {
+                                               restyle();
+                                           });
+    }
+    if (this->whisperConversations_)
+    {
+        this->whisperConversations_->reset();
+        this->whisperConversations_->setEnabled(
+            this->input_->getInputText().isEmpty());
+        this->whisperConversations_->setVisible(whispers);
+    }
     this->view_->setChannel(newChannel.get());
     this->channelSignalHolder_.clear();
     this->twitchBannerSignalHolder_.clear();
@@ -2113,9 +2164,11 @@ void Split::setChannel(IndirectChannel newChannel)
                     }
                     if (this->openRaidTarget(channel))
                     {
-                        channel->addSystemMessage(
-                            uiText("You came here with the raid from %1")
-                                .arg(source));
+                        channel->addMessage(
+                            makeRaidMessage(
+                                uiText("You came here with the raid from %1")
+                                    .arg(source)),
+                            MessageContext::Original);
                     }
                 });
             });
@@ -2151,9 +2204,36 @@ void Split::setChannel(IndirectChannel newChannel)
     this->header_->updateChannelText();
     this->header_->updateRoomModes();
 
+    if (whispers)
+    {
+        auto addPeer = [this](const MessagePtr &message) {
+            this->whisperConversations_->addPeer(message->whisperPeer, message->displayName);
+        };
+        for (const auto &message : newChannel.get()->getMessageSnapshot())
+            addPeer(message);
+        this->channelSignalHolder_.managedConnect(
+            newChannel.get()->messageAppended,
+            [addPeer](const MessagePtr &message, std::optional<MessageFlags>) {
+                addPeer(message);
+            });
+        this->channelSignalHolder_.managedConnect(
+            newChannel.get()->messagesAddedAtStart,
+            [addPeer](const std::vector<MessagePtr> &messages) {
+                for (const auto &message : messages)
+                {
+                    addPeer(message);
+                }
+            });
+        this->channelSignalHolder_.managedConnect(
+            newChannel.get()->messagesCleared, [this] {
+                this->whisperConversations_->reset();
+                this->view_->setWhisperPeer({});
+            });
+    }
     this->channelSignalHolder_.managedConnect(
         this->channel_.get()->displayNameChanged, [this] {
             this->header_->updateChannelText();
+            this->updateInputPlaceholder();
             this->actionRequested.invoke(Action::RefreshTab);
         });
 
@@ -2162,6 +2242,27 @@ void Split::setChannel(IndirectChannel newChannel)
 
     // Queue up save because: Split channel changed
     getApp()->getWindows()->queueSave();
+}
+
+QString Split::whisperPeer() const
+{
+    return this->whisperConversations_ ? this->whisperConversations_->peer() : QString{};
+}
+
+bool Split::selectWhisperPeer(const QString &login)
+{
+    if (this->getChannel()->getType() != Channel::Type::TwitchWhispers ||
+        login.isEmpty())
+        return false;
+    const auto peer = login.toLower();
+    if (this->whisperPeer() == peer)
+        return true;
+    if (!this->input_->getInputText().isEmpty())
+        return false;
+    this->whisperConversations_->selectPeer(login);
+    this->view_->setWhisperPeer(peer);
+    this->view_->setChannel(this->getChannel());
+    return true;
 }
 
 void Split::updateChannelConnections()
@@ -2335,6 +2436,16 @@ void Split::insertTextToInput(const QString &text)
 void Split::showChangeChannelPopup(const char *dialogTitle, bool empty,
                                    std::function<void(bool)> callback)
 {
+    auto *container = dynamic_cast<SplitContainer *>(this->parentWidget());
+    if (container && container->isPermanentWhispersTab() &&
+        this->getChannel()->getType() == Channel::Type::TwitchWhispers)
+    {
+        if (callback)
+        {
+            callback(false);
+        }
+        return;
+    }
     if (!this->selectChannelDialog_.isNull())
     {
         this->selectChannelDialog_->raise();
@@ -2511,12 +2622,6 @@ void Split::handleModifiers(Qt::KeyboardModifiers modifiers)
         modifierStatus = modifiers;
         modifierStatusChanged.invoke(modifiers);
     }
-}
-
-void Split::setIsTopRightSplit(bool value)
-{
-    this->isTopRightSplit_ = value;
-    this->header_->setAddButtonVisible(value);
 }
 
 /// Slots
@@ -2857,6 +2962,11 @@ void Split::drag()
     {
         qCWarning(chatterinoWidget) << "Attempted to initiate split drag "
                                        "without a container parent";
+        return;
+    }
+    if (container->isPermanentWhispersTab() &&
+        this->getChannel()->getType() == Channel::Type::TwitchWhispers)
+    {
         return;
     }
 

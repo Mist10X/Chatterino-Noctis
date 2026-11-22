@@ -12,6 +12,7 @@
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
 #include "messages/ImageSet.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/PostToThread.hpp"
 
@@ -127,6 +128,7 @@ void BttvBadges::load()
 
             if (assigned > 0)
             {
+                notifyGlobalChatBadgesChanged();
                 runInGuiThread([] {
                     if (auto *windows = tryGetApp()->getWindows())
                     {

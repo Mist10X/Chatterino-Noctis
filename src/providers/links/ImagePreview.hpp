@@ -12,6 +12,7 @@
 namespace chatterino {
 
 class Image;
+class LinkInfo;
 using ImagePtr = std::shared_ptr<Image>;
 
 /// Pictures under messages with a link to an image (a screenshot on
@@ -32,18 +33,19 @@ bool isImageLink(const QString &url);
 /// of the host) gives the same key.
 QString key(const QString &url);
 
-/// The thumbnail, or nullptr while unknown, loading, unavailable or deleted.
-ImagePtr get(const QString &url);
+/// The higher-resolution local upload, if still cached.
+ImagePtr cachedUpload(const QString &url);
 
-/// Starts loading once per link (cached; GUI thread). The chat is laid out
-/// again when the picture is ready.
-void request(const QString &url);
+/// Return a locally prepared or resolved thumbnail, starting one shared
+/// metadata request on demand. Called from layout on the GUI thread.
+ImagePtr getOrRequest(LinkInfo &info);
 
 /// The picture was deleted from its site: no preview anywhere any more.
 void forget(const QString &url);
+bool wasDeleted(const QString &url);
 
-/// Test hook: put a ready thumbnail into the cache without the network.
-void insertForTesting(const QString &url, ImagePtr thumbnail);
+/// Keep the thumbnail of a newly uploaded picture for its chat preview.
+void rememberUpload(const QString &url, ImagePtr thumbnail);
 
 }  // namespace imagepreview
 

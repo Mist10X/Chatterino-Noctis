@@ -11,6 +11,7 @@
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
 #include "messages/ImageSet.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -59,7 +60,7 @@ int priorityForBadge(const QString &badgeName)
 
 }  // namespace
 
-ChatsenBadges::ChatsenBadges()
+void ChatsenBadges::initialize()
 {
     QTimer::singleShot(3500, [this] {
         this->load();
@@ -168,6 +169,7 @@ void ChatsenBadges::load()
                 std::unique_lock lock(this->mutex_);
                 this->badgeMap_ = std::move(map);
             }
+            notifyGlobalChatBadgesChanged();
 
             qCDebug(chatterinoApp)
                 << "[Chatsen] Loaded badges for" << count << "users";

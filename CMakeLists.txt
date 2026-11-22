@@ -83,6 +83,19 @@ project(chatterino
     HOMEPAGE_URL "https://chatterino.com/"
 )
 
+# Keep the upstream project version for source compatibility. Package
+# metadata is derived from the version that the Noctis update checker uses.
+set(NOCTIS_VERSION_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/src/common/Mist1XVersion.hpp")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NOCTIS_VERSION_HEADER}")
+file(STRINGS "${NOCTIS_VERSION_HEADER}" NOCTIS_VERSION_DEFINITION REGEX "^#define MIST1X_VERSION ")
+if(NOT NOCTIS_VERSION_DEFINITION MATCHES "^#define MIST1X_VERSION \"([0-9]+)[.]([0-9]+)[.]([0-9]+)\"$")
+    message(FATAL_ERROR "Expected a three-part Noctis version in Mist1XVersion.hpp")
+endif()
+set(NOCTIS_VERSION_MAJOR "${CMAKE_MATCH_1}")
+set(NOCTIS_VERSION_MINOR "${CMAKE_MATCH_2}")
+set(NOCTIS_VERSION_PATCH "${CMAKE_MATCH_3}")
+set(NOCTIS_VERSION "${NOCTIS_VERSION_MAJOR}.${NOCTIS_VERSION_MINOR}.${NOCTIS_VERSION_PATCH}")
+
 if(APPLE AND CHATTERINO_SPELLCHECK)
     message(STATUS "Spellcheck is disabled on macOS builds to avoid bundling Hunspell dylibs.")
     set(CHATTERINO_SPELLCHECK OFF CACHE BOOL "Enable spellchecking in Chatterino (requires Hunspell)" FORCE)

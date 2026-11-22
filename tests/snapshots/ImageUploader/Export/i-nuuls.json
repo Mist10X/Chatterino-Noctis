@@ -10,7 +10,7 @@
         "Body": "MultipartFormData",
         "DeletionURL": "",
         "FileFormName": "attachment",
-        "Name": "Chatterino Image Uploader Settings",
+        "Name": "Chatterino Noctis Image Uploader Settings",
         "RequestMethod": "POST",
         "RequestURL": "https://i.nuuls.com/upload",
         "URL": "",

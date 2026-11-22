@@ -20,7 +20,7 @@ using EmotePtr = std::shared_ptr<const Emote>;
 class DankChatBadges final
 {
 public:
-    DankChatBadges();
+    void initialize();
 
     std::optional<EmotePtr> getBadge(const QString &userID) const;
 

@@ -4,7 +4,7 @@
 
 // Standalone regression harness linked against chatterino-lib. No Application,
 // account, profile, external endpoint, Windows proxy write, or GUI is needed.
-// Pass an absolute JSON output path below D:/devtools/ as the only argument.
+// Pass an absolute JSON output path as the only argument.
 
 #include "common/network/NetworkManager.hpp"
 #include "common/network/NetworkPrivate.hpp"
@@ -566,6 +566,10 @@ enum class ResponseMode {
     Trickle,
     Empty,
     HttpError,
+    DropAfterUpload,
+    RedirectAfterUpload,
+    RateLimited,
+    LateResponse,
 };
 
 class OwnedHttpServer final : public QTcpServer
@@ -594,9 +598,49 @@ public:
                                      {
                                          return;
                                      }
+                                     if (request->startsWith("POST "))
+                                     {
+                                         const auto headerEnd = request->indexOf("\r\n\r\n") + 4;
+                                         const auto header = request->left(headerEnd);
+                                         const auto start = header.toLower().indexOf("content-length:");
+                                         if (start < 0)
+                                         {
+                                             return;
+                                         }
+                                         const auto length = header.mid(start + 15).split('\r').first().trimmed().toInt();
+                                         const auto body = request->mid(headerEnd);
+                                         if (body.size() < length)
+                                         {
+                                             return;
+                                         }
+                                         this->postBodies.push_back(body.left(length));
+                                     }
                                      *answered = true;
                                      ++this->requests;
-                                     if (this->mode_ == ResponseMode::Empty)
+                                     if (this->mode_ == ResponseMode::DropAfterUpload)
+                                     {
+                                         client->abort();
+                                     }
+                                     else if (this->mode_ == ResponseMode::RedirectAfterUpload)
+                                     {
+                                         client->write("HTTP/1.1 307 Temporary Redirect\r\n"
+                                                       "Location: /must-not-resend\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                                         client->disconnectFromHost();
+                                     }
+                                     else if (this->mode_ == ResponseMode::RateLimited)
+                                     {
+                                         client->write("HTTP/1.1 429 Too Many Requests\r\n"
+                                                       "Retry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                                         client->disconnectFromHost();
+                                     }
+                                     else if (this->mode_ == ResponseMode::LateResponse)
+                                     {
+                                         QTimer::singleShot(1100, client, [client] {
+                                             client->write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                                             client->disconnectFromHost();
+                                         });
+                                     }
+                                     else if (this->mode_ == ResponseMode::Empty)
                                      {
                                          client->write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n"
                                                        "Connection: close\r\n\r\n");
@@ -633,10 +677,53 @@ public:
     int requests = 0;
     int trickles = 0;
     qint64 received = 0;
+    QList<QByteArray> postBodies;
 
 private:
     ResponseMode mode_;
 };
+
+void singleUsePostTests(const QHostAddress &address)
+{
+    const QByteArray body = R"({"message":"one deliberate test send"})";
+    for (const auto mode : {ResponseMode::Empty, ResponseMode::DropAfterUpload,
+                            ResponseMode::RedirectAfterUpload, ResponseMode::Stall,
+                            ResponseMode::HttpError, ResponseMode::RateLimited,
+                            ResponseMode::LateResponse})
+    {
+        OwnedHttpServer target(mode);
+        if (!target.listen(address, 0))
+        {
+            check("single-use POST local listener", false);
+            continue;
+        }
+        ObservedManager manager;
+        manager.setProxy(QNetworkProxy::NoProxy);
+        auto *previous = NetworkManager::accessManager;
+        NetworkManager::accessManager = &manager;
+        auto data = std::make_shared<NetworkData>();
+        data->request.setUrl(localUrl("http", address, target.serverPort(), "/single-use"));
+        data->requestType = chatterino::NetworkRequestType::Post;
+        data->singleUseUpload = true;
+        data->payload = body;
+        data->timeout = std::chrono::milliseconds(650);
+        int success = 0, errors = 0, finals = 0;
+        data->onSuccess = [&](NetworkResult) { ++success; };
+        data->onError = [&](NetworkResult) { ++errors; };
+        data->finally = [&] { ++finals; };
+        QPointer<NetworkTask> task = new NetworkTask(std::move(data));
+        task->run();
+        const bool finished = spinUntil([&] { return finals != 0; }, 2500);
+        drainEvents(1400);
+        check(QString("single-use POST mode %1: exactly one full body and one completion").arg(int(mode)),
+              finished && finals == 1 && success + errors == 1 &&
+                  target.requests == 1 && target.postBodies == QList<QByteArray>{body} &&
+                  (mode != ResponseMode::Empty || success == 1),
+              {{"requests", target.requests}, {"complete_bodies", target.postBodies.size()},
+               {"success", success}, {"errors", errors}, {"finals", finals}});
+        NetworkManager::accessManager = previous;
+    }
+}
 
 class FixedProxyFactory final : public QNetworkProxyFactory
 {
@@ -985,14 +1072,33 @@ int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
     QLoggingCategory::setFilterRules("*.debug=false\n*.info=false\n");
+    if (argc == 2 && QByteArray(argv[1]).startsWith("--ffz-live-probe"))
+    {
+        const QUrl url(QByteArray(argv[1]) == "--ffz-live-probe-login"
+            ? "https://api.frankerfacez.com/v1/multi_room/bratishkinoff,dianarice,morphe_ya"
+            : "https://api.frankerfacez.com/v1/multi_room/id/99899949,61776347,194407709");
+        std::unique_ptr<QNetworkAccessManager> manager(chatterino::createNetworkAccessManager());
+        const auto proxies = manager->proxyFactory()->queryProxy(QNetworkProxyQuery(url));
+        QJsonArray proxyTypes;
+        for (const auto &proxy : proxies) proxyTypes.append(int(proxy.type()));
+        QElapsedTimer clock;
+        clock.start();
+        auto *reply = manager->get(QNetworkRequest(url));
+        chatterino::setNetworkReplyTimeout(reply, 15000);
+        spinUntil([reply]{return reply->isFinished();}, 16000);
+        const auto data = reply->readAll();
+        const auto parsed = QJsonDocument::fromJson(data).object();
+        const auto report = QJsonDocument(QJsonObject{{"systemConfiguration",QNetworkProxyFactory::usesSystemConfiguration()}, {"proxyTypes",proxyTypes},{"status",reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()},{"error",int(reply->error())},{"bytes",data.size()},{"rooms",parsed.value("rooms").toArray().size()},{"elapsedMs",clock.elapsed()}}).toJson(QJsonDocument::Compact);
+        std::fprintf(stdout, "%s\n", report.constData());
+        return 0;
+    }
     if (argc != 2)
     {
         return 2;
     }
     const auto outputPath = QDir::cleanPath(
         QDir::fromNativeSeparators(QString::fromLocal8Bit(argv[1])));
-    if (!QFileInfo(outputPath).isAbsolute() ||
-        !outputPath.startsWith("D:/devtools/", Qt::CaseInsensitive))
+    if (!QFileInfo(outputPath).isAbsolute())
     {
         return 3;
     }
@@ -1008,6 +1114,7 @@ int main(int argc, char **argv)
         managerConfigurationTests(address);
         persistentManagerTests(address);
         rawReplyDeadlineTests(address);
+        singleUsePostTests(address);
         for (const TaskCase &test : std::vector<TaskCase>{
                  {"500ms pre-send TLS blackhole", ResponseMode::Blackhole, 500},
                  {"5s pre-send TLS blackhole", ResponseMode::Blackhole, 5000},

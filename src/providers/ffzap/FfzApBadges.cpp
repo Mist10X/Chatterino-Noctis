@@ -6,6 +6,7 @@
 #include "common/QLogging.hpp"
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -28,7 +29,7 @@ static const std::unordered_map<QString, QString> FFZAP_HELPERS = {
 
 }  // namespace
 
-FfzApBadges::FfzApBadges()
+void FfzApBadges::initialize()
 {
     QTimer::singleShot(3500, [this] {
         this->load();
@@ -101,6 +102,7 @@ void FfzApBadges::load()
                 std::unique_lock lock(this->mutex_);
                 this->badgeMap_ = std::move(map);
             }
+            notifyGlobalChatBadgesChanged();
 
             qCDebug(chatterinoApp)
                 << "[FFZ:AP] Loaded" << this->badgeMap_.size() << "badges";

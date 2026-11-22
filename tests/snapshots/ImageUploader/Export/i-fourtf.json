@@ -13,7 +13,7 @@
         "Headers": {
             "Authorization": "Basic XXXXXXXXXXXXXXX"
         },
-        "Name": "Chatterino Image Uploader Settings",
+        "Name": "Chatterino Noctis Image Uploader Settings",
         "RequestMethod": "POST",
         "RequestURL": "https://i.yourwebsite.com/upload",
         "URL": "",

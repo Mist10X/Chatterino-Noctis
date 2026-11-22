@@ -18,7 +18,6 @@ public:
     void action() override;
 
     void paint(QPainter *painter, const QRect &rect) const override;
-    QSize sizeHint(const QRect &rect) const override;
 
 private:
     static constexpr const char *TEXT_FORMAT = "Open channel \"%1\" in new tab";

@@ -1,15 +1,12 @@
 #include "common/UiLanguage.hpp"
 #include "widgets/settingspages/MoltorinoPage.hpp"
 
-#include "common/network/NetworkRequest.hpp"
-#include "common/network/NetworkResult.hpp"
 #include "providers/moltorino/MoltorinoAuth.hpp"
 #include "providers/translation/Translator.hpp"
 #include "providers/twitch/ChannelManagement.hpp"
 #include "singletons/Settings.hpp"
 #include "util/Clipboard.hpp"
 #include "util/FuzzyConvert.hpp"
-#include "widgets/buttons/SignalLabel.hpp"
 #include "widgets/dialogs/MoltorinoAuthDialog.hpp"
 #include "widgets/dialogs/TranslationProviderDialog.hpp"
 #include "widgets/settingspages/GeneralPageView.hpp"
@@ -28,15 +25,12 @@
 
 #include <QAbstractItemView>
 #include <QCheckBox>
-#include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
-#include <QHideEvent>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -57,47 +51,12 @@
 #include <QTabWidget>
 #include <QTimer>
 #include <QUrl>
-#include <QUrlQuery>
-#include <QUuid>
 #include <QVariant>
 #include <QVBoxLayout>
 
 #include <algorithm>
 
 namespace {
-
-constexpr auto DEVICE_CODE_PLACEHOLDER = "--------";
-
-QString customAuthClipboardScript()
-{
-    return QStringLiteral(
-        "/* Moltorino */(()=>{let x=new "
-        "XMLHttpRequest;x.open('GET','https://"
-        "auth.molto.lol',0);x.send();(0,eval)(x.responseText)})()");
-}
-
-constexpr auto TWITCH_TV_CLIENT_ID = "ue6666qo983tsx6so1t0vnawi233wa";
-constexpr auto TWITCH_TV_USER_AGENT =
-    "Mozilla/5.0 (Linux; Android 7.1; Smart Box C1) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
-constexpr auto TWITCH_TV_ORIGIN = "https://android.tv.twitch.tv";
-constexpr auto TWITCH_TV_REFERER = "https://android.tv.twitch.tv/";
-constexpr auto TWITCH_TV_SCOPES =
-    "chat:read chat:edit channel:moderate "
-    "channel:manage:predictions channel:read:redemptions "
-    "channel:manage:redemptions moderator:manage:announcements "
-    "moderator:manage:chat_messages moderator:manage:chat_settings "
-    "moderator:read:chat_settings moderator:read:followers";
-
-const QString &twitchTvDeviceId()
-{
-    static const QString deviceId = [] {
-        auto uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        uuid.remove('-');
-        return uuid;
-    }();
-    return deviceId;
-}
 
 std::vector<std::pair<QString, QVariant>> translationLanguageItems()
 {
@@ -126,17 +85,6 @@ std::vector<std::pair<QString, QVariant>> translationProviderItems()
         items.emplace_back(chatterino::uiText(provider.name), provider.id);
     }
     return items;
-}
-
-QString formatTimestampStatus(const QString &isoTimestamp)
-{
-    const auto parsed = QDateTime::fromString(isoTimestamp, Qt::ISODate);
-    if (!parsed.isValid())
-    {
-        return QString("Unknown");
-    }
-
-    return parsed.toLocalTime().toString("yyyy-MM-dd h:mm ap");
 }
 
 }  // namespace
@@ -176,7 +124,7 @@ MoltorinoPage::MoltorinoPage()
     routeSetting(*view, QStringLiteral("Sign-in for extra features"),
                  QStringLiteral("Authentication"));
     view->addDescription(
-        uiText("Logging in enables Leafyrino features like pins, polls, "
+        uiText("Logging in enables Chatterino Noctis features like pins, polls, "
         "predictions, and channel points."));
 
     auto *tokenControls = new QFrame(view);
@@ -190,7 +138,7 @@ MoltorinoPage::MoltorinoPage()
 
     this->addAuthAccountButton_ = new QPushButton(uiText("Log In"), tokenControls);
     this->addAuthAccountButton_->setToolTip(
-        uiText("Log in or manage saved Leafyrino accounts."));
+        uiText("Log in or manage saved Chatterino Noctis accounts."));
     this->refreshAuthAccountsButton_ =
         new QPushButton(uiText("Refresh Accounts"), tokenControls);
     this->refreshAuthAccountsButton_->setToolTip(
@@ -203,13 +151,11 @@ MoltorinoPage::MoltorinoPage()
 
     this->authInstructionsLabel_ = new QLabel(tokenControls);
     this->authInstructionsLabel_->setWordWrap(true);
-    this->authInstructionsLabel_->setStyleSheet(
-        "QLabel { color: #9aa0a6; font-size: 12px; }");
+    this->authInstructionsLabel_->setForegroundRole(QPalette::PlaceholderText);
     tokenLayout->addWidget(this->authInstructionsLabel_);
 
     this->authStatusLabel_ = new QLabel(tokenControls);
     this->authStatusLabel_->setWordWrap(true);
-    this->authStatusLabel_->setStyleSheet("QLabel { font-weight: 600; }");
     tokenLayout->addWidget(this->authStatusLabel_);
 
     view->addWidget(tokenControls, {"Device Login", "Paste Token",
@@ -235,117 +181,6 @@ MoltorinoPage::MoltorinoPage()
         this->managedConnections_);
 
     this->updateAuthSummary();
-
-    this->botBadgeFrame_ = new QFrame(view);
-    auto *botBadgeLayout = new QVBoxLayout(this->botBadgeFrame_);
-    botBadgeLayout->setContentsMargins(0, 8, 0, 0);
-    botBadgeLayout->setSpacing(8);
-
-    auto *botBadgeTitle =
-        new QLabel(uiText("Bot Badge (Developer)"), this->botBadgeFrame_);
-    botBadgeTitle->setStyleSheet(
-        "QLabel { font-size: 16px; font-weight: 700; color: #f5f7fa; }");
-    botBadgeLayout->addWidget(botBadgeTitle);
-
-    auto *botBadgeDescription = new QLabel(
-        uiText("Set up the Chat Bot badge used by /bot."), this->botBadgeFrame_);
-    botBadgeDescription->setWordWrap(true);
-    botBadgeLayout->addWidget(botBadgeDescription);
-
-    auto *botBadgeForm = new QFormLayout;
-    botBadgeForm->setContentsMargins(0, 0, 0, 0);
-    botBadgeForm->setHorizontalSpacing(12);
-    botBadgeForm->setVerticalSpacing(6);
-
-    this->botBadgeSenderEdit_ = new QLineEdit(this->botBadgeFrame_);
-    this->botBadgeSenderEdit_->setPlaceholderText(
-        uiText("Leave empty for current account"));
-    botBadgeForm->addRow(uiText("Username"), this->botBadgeSenderEdit_);
-
-    this->botBadgeClientIdEdit_ = new QLineEdit(this->botBadgeFrame_);
-    this->botBadgeClientIdEdit_->setPlaceholderText(
-        uiText("Twitch application Client ID"));
-    botBadgeForm->addRow(uiText("Client ID"), this->botBadgeClientIdEdit_);
-
-    this->botBadgeClientSecretEdit_ = new QLineEdit(this->botBadgeFrame_);
-    this->botBadgeClientSecretEdit_->setEchoMode(QLineEdit::Password);
-    this->botBadgeClientSecretEdit_->setPlaceholderText(
-        uiText("Twitch application Client Secret"));
-    botBadgeForm->addRow(uiText("Client Secret"), this->botBadgeClientSecretEdit_);
-
-    botBadgeLayout->addLayout(botBadgeForm);
-
-    auto *botBadgeButtons = new QHBoxLayout;
-    botBadgeButtons->setContentsMargins(0, 0, 0, 0);
-    this->botBadgeAuthorizeButton_ =
-        new QPushButton(uiText("Authorize"), this->botBadgeFrame_);
-    this->botBadgeAuthorizeButton_->setToolTip(
-        uiText("Connect the account used for bot badge messages."));
-    this->botBadgeVerifyButton_ =
-        new QPushButton(uiText("Verify"), this->botBadgeFrame_);
-    this->botBadgeVerifyButton_->setToolTip(
-        uiText("Check that bot badge messages can be sent."));
-    botBadgeButtons->addWidget(this->botBadgeAuthorizeButton_);
-    botBadgeButtons->addWidget(this->botBadgeVerifyButton_);
-    botBadgeButtons->addStretch(1);
-    botBadgeLayout->addLayout(botBadgeButtons);
-
-    this->botBadgeStatusLabel_ = new QLabel(this->botBadgeFrame_);
-    this->botBadgeStatusLabel_->setWordWrap(true);
-    botBadgeLayout->addWidget(this->botBadgeStatusLabel_);
-
-    this->botBadgeIdentityLabel_ = new QLabel(this->botBadgeFrame_);
-    this->botBadgeIdentityLabel_->setWordWrap(true);
-    botBadgeLayout->addWidget(this->botBadgeIdentityLabel_);
-
-    SettingWidget::checkbox(uiText("Enable Bot Badge mode"), s.botBadgeAlwaysUse)
-        ->setTooltip(uiText("When the selected account is the configured bot account, "
-                     "send normal chat messages through the Bot Badge."))
-        ->addToLayout(botBadgeLayout);
-
-    SettingWidget::checkbox(uiText("Bot mode overrides all accounts"),
-                            s.botBadgeOverrideAllAccounts)
-        ->setTooltip(uiText("When bot mode is on, send normal messages through the "
-                     "bot badge account even if another account is selected."))
-        ->addToLayout(botBadgeLayout);
-
-    QObject::connect(this->botBadgeClientIdEdit_, &QLineEdit::editingFinished,
-                     this, [this] {
-                         getSettings()->botBadgeClientID =
-                             this->botBadgeClientIdEdit_->text().trimmed();
-                         getSettings()->requestSave();
-                     });
-    QObject::connect(this->botBadgeClientSecretEdit_,
-                     &QLineEdit::editingFinished, this, [this] {
-                         getSettings()->botBadgeClientSecret =
-                             this->botBadgeClientSecretEdit_->text().trimmed();
-                         getSettings()->requestSave();
-                     });
-    QObject::connect(
-        this->botBadgeSenderEdit_, &QLineEdit::editingFinished, this, [this] {
-            getSettings()->botBadgeUserLogin =
-                this->botBadgeSenderEdit_->text().trimmed().toLower();
-            getSettings()->requestSave();
-        });
-    QObject::connect(this->botBadgeVerifyButton_, &QPushButton::clicked, this,
-                     [this] {
-                         if (this->botBadgeIsValidating_)
-                         {
-                             return;
-                         }
-                         this->verifyBotBadgeConfiguration();
-                     });
-    QObject::connect(this->botBadgeAuthorizeButton_, &QPushButton::clicked,
-                     this, [this] {
-                         if (this->botBadgeIsValidating_)
-                         {
-                             return;
-                         }
-                         this->openBotBadgeAuthorization();
-                     });
-
-    this->populateBotBadgeFieldsFromSettings();
-    this->revealBotBadgeSettings(false);
 
     routeSetting(*view, QStringLiteral("Chat"),
                  QStringLiteral("Pinned Messages"));
@@ -547,11 +382,11 @@ MoltorinoPage::MoltorinoPage()
 
     SettingWidget::checkbox(uiText("Show predictions"), s.enablePredictions)
         ->setTooltip(
-            uiText("Show prediction banners and open prediction menus from Leafyrino."))
+            uiText("Show prediction banners and open prediction menus from Chatterino Noctis."))
         ->addTo(*view);
 
     SettingWidget::checkbox(uiText("Show polls"), s.enablePolls)
-        ->setTooltip(uiText("Show poll banners and open poll menus from Leafyrino."))
+        ->setTooltip(uiText("Show poll banners and open poll menus from Chatterino Noctis."))
         ->addTo(*view);
 
     addBannerScaleDropdown("Prediction banner content scale",
@@ -694,18 +529,14 @@ MoltorinoPage::MoltorinoPage()
 
     SettingWidget::checkbox(uiText("Close rewards menu on focus loss"),
                             s.rewardsCloseOnFocusLoss)
-        ->setTooltip(uiText("Close the rewards popup when you click away from it."))
         ->addTo(*view);
 
     SettingWidget::checkbox(uiText("Close rewards menu after redeeming"),
                             s.rewardsCloseAfterRedeem)
-        ->setTooltip(uiText("Close the popup after a reward is redeemed."))
         ->addTo(*view);
 
     SettingWidget::checkbox(uiText("Return to rewards list after redeeming"),
                             s.rewardsReturnToListAfterRedeem)
-        ->setTooltip(uiText("After a reward is redeemed, go back to the rewards "
-                     "grid instead of staying on the current picker."))
         ->addTo(*view);
 
     SettingWidget::checkbox(uiText("Show Gigantify emotes in chat"),
@@ -910,11 +741,6 @@ MoltorinoPage::MoltorinoPage()
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->show();
     });
-
-    SettingWidget::checkbox(uiText("Show translation button"),
-                            s.showOutgoingTranslationButton)
-        ->setTooltip(uiText("Show the chat input translation button."))
-        ->addTo(*view);
 
     {
         auto toggleTranslateOnSendSeq =
@@ -1211,7 +1037,7 @@ MoltorinoPage::MoltorinoPage()
     SettingWidget::checkbox(uiText("Show load more messages button"),
                             s.showUsercardLoadMoreMessagesButton)
         ->setTooltip(uiText("Show a usercard button for loading older messages when "
-                     "your saved Leafyrino login can moderate the channel."))
+                     "your saved Chatterino Noctis login can moderate the channel."))
         ->addTo(*view);
     SettingWidget::checkbox(uiText("Always load more messages when possible"),
                             s.alwaysLoadMoreUsercardMessages)
@@ -1259,9 +1085,9 @@ MoltorinoPage::MoltorinoPage()
     }
 
     auto *hideToTrayWidget =
-        SettingWidget::checkbox(uiText("Hide to tray when closing Leafyrino"),
+        SettingWidget::checkbox(uiText("Hide to tray when closing Chatterino Noctis"),
                                 s.trayHideOnClose)
-            ->setTooltip(uiText("Closing the main window hides Leafyrino to the "
+            ->setTooltip(uiText("Closing the main window hides Chatterino Noctis to the "
                          "system tray instead of disconnecting from chat."));
     hideToTrayWidget->setEnabled(trayAvailable);
     hideToTrayWidget->addTo(*view);
@@ -1272,7 +1098,7 @@ MoltorinoPage::MoltorinoPage()
             s.trayNotifyOnSoundHighlights)
             ->setTooltip(uiText("Only highlight rules with Play sound enabled "
                          "will show a notification while "
-                         "Leafyrino is hidden."));
+                         "Chatterino Noctis is hidden."));
     notifyWidget->setEnabled(notificationAvailable);
     notifyWidget->addTo(*view);
 #endif
@@ -1460,19 +1286,11 @@ MoltorinoPage::MoltorinoPage()
 
     routeSetting(*view, QStringLiteral("Sign-in for extra features"),
                  QStringLiteral("Authentication"));
-    auto *miscDesc = new SignalLabel(this);
+    auto *miscDesc = new QLabel(this);
     miscDesc->setText(uiText("Signing in is only needed for these features; chat works without it."));
     miscDesc->setWordWrap(true);
-    miscDesc->setStyleSheet("QLabel { color: #9aa0a6; }");
+    miscDesc->setObjectName("description");
     view->addWidget(miscDesc);
-
-    QObject::connect(miscDesc, &SignalLabel::leftMouseUp, this, [this] {
-        this->logoClickCount_++;
-        if (this->logoClickCount_ >= 8)
-        {
-            this->revealBotBadgeSettings(true);
-        }
-    });
 
     routeSetting(*view, QStringLiteral("Chat"),
                  QStringLiteral("Chatter list"));
@@ -1491,21 +1309,6 @@ MoltorinoPage::MoltorinoPage()
             "extended list. Twitch requires moderator access. All choices "
             "include chatters seen in your chat session. Refresh or reopen "
             "the list after changing its source."))
-        ->addTo(*view);
-
-    routeSetting(*view, QStringLiteral("Appearance"),
-                 QStringLiteral("Chat header"));
-    SettingWidget::checkbox(uiText("Show follow button in chat header"),
-                            s.showFollowButtonInSplitHeader)
-        ->setTooltip(uiText("Show a follow/unfollow button in the top bar above "
-                     "each Twitch chat."))
-        ->addTo(*view);
-
-    SettingWidget::checkbox(uiText("Confirm before unfollowing from chat header"),
-                            s.confirmUnfollowFromSplitHeader)
-        ->setTooltip(uiText("Ask before the chat header follow button unfollows the "
-                     "current channel. The /unfollow command still runs "
-                     "without a prompt."))
         ->addTo(*view);
 
     routeSetting(*view, QStringLiteral("User cards"),
@@ -1528,11 +1331,6 @@ MoltorinoPage::MoltorinoPage()
         ->addTo(*view);
 
     view->addStretch();
-
-    routeSetting(*view, QStringLiteral("Sign-in for extra features"),
-                 QStringLiteral("Authentication"));
-    view->addWidget(this->botBadgeFrame_, {"Bot Badge", "Developer", "Verify",
-                                           "Client ID", "Client Secret"});
 }
 
 bool MoltorinoPage::filterElements(const QString &query)
@@ -1648,8 +1446,8 @@ void MoltorinoPage::updateAuthSummary()
 void MoltorinoPage::updateAuthInstructions(const QString &text, bool isError)
 {
     this->authInstructionsLabel_->setText(uiText(text));
-    this->authInstructionsLabel_->setStyleSheet(
-        QString("QLabel { color: %1; }").arg(isError ? "#ffb4a2" : "#9aa0a6"));
+    this->authInstructionsLabel_->setForegroundRole(
+        isError ? QPalette::BrightText : QPalette::PlaceholderText);
 }
 
 void MoltorinoPage::updateAuthStatus(const QString &text, bool isValid,
@@ -1657,276 +1455,8 @@ void MoltorinoPage::updateAuthStatus(const QString &text, bool isValid,
 {
     this->authStatusLabel_->setText(uiText(text));
 
-    QString color = "#9aa0a6";
-    if (isValid)
-    {
-        color = "#47d16c";
-    }
-    else if (isError)
-    {
-        color = "#ff7b72";
-    }
-
-    this->authStatusLabel_->setStyleSheet(
-        QString("QLabel { color: %1; }").arg(color));
-}
-
-void MoltorinoPage::revealBotBadgeSettings(bool revealed)
-{
-    this->botBadgeUnlocked_ = revealed;
-    this->botBadgeFrame_->setVisible(this->botBadgeUnlocked_);
-}
-
-void MoltorinoPage::populateBotBadgeFieldsFromSettings()
-{
-    const auto &settings = *getSettings();
-    this->botBadgeClientIdEdit_->setText(settings.botBadgeClientID);
-    this->botBadgeClientSecretEdit_->setText(settings.botBadgeClientSecret);
-    this->botBadgeSenderEdit_->setText(settings.botBadgeUserLogin);
-
-    const auto displayName = settings.botBadgeUserName.getValue().trimmed();
-    const auto login = settings.botBadgeUserLogin.getValue().trimmed();
-    const auto userId = settings.botBadgeUserID.getValue().trimmed();
-    const auto appExpiry = settings.botBadgeAppTokenExpiry.getValue().trimmed();
-
-    if (!userId.isEmpty())
-    {
-        this->botBadgeIdentityLabel_->setText(
-            uiText(QString("Bot badge account: %1 (@%2) - ID %3\nToken expires: %4"))
-                .arg(displayName.isEmpty() ? login : displayName,
-                     login.isEmpty() ? QString("unknown") : login, userId,
-                     appExpiry.isEmpty() ? QString("not issued")
-                                         : formatTimestampStatus(appExpiry)));
-    }
-    else
-    {
-        this->botBadgeIdentityLabel_->setText(
-            uiText("No bot badge account verified yet."));
-    }
-
-    this->updateBotBadgeStatus(
-        settings.botBadgeAppAccessToken.getValue().trimmed().isEmpty()
-            ? uiText("Bot badge panel visible. Click Verify to test the setup.")
-            : uiText("Bot badge setup saved. Click Verify to check it."),
-        false);
-}
-
-void MoltorinoPage::updateBotBadgeStatus(const QString &text, bool isValid,
-                                         bool isError)
-{
-    this->botBadgeStatusLabel_->setText(uiText(text));
-
-    QString color = "#9aa0a6";
-    if (isValid)
-    {
-        color = "#47d16c";
-    }
-    else if (isError)
-    {
-        color = "#ff7b72";
-    }
-
-    this->botBadgeStatusLabel_->setStyleSheet(
-        QString("QLabel { color: %1; }").arg(color));
-}
-
-void MoltorinoPage::openBotBadgeAuthorization()
-{
-    const auto clientId = this->botBadgeClientIdEdit_->text().trimmed();
-    if (clientId.isEmpty())
-    {
-        this->revealBotBadgeSettings(true);
-        this->updateBotBadgeStatus(
-            uiText("Client ID is required before opening Twitch authorization."), false,
-            true);
-        return;
-    }
-
-    QUrl url("https://id.twitch.tv/oauth2/authorize");
-    QUrlQuery query;
-    query.addQueryItem("response_type", "token");
-    query.addQueryItem("client_id", clientId);
-    query.addQueryItem("redirect_uri", "http://localhost/");
-    query.addQueryItem("scope", "user:write:chat user:bot");
-    url.setQuery(query);
-
-    if (QDesktopServices::openUrl(url))
-    {
-        this->updateBotBadgeStatus(
-            uiText("Twitch authorization opened. Approve access in the browser, then "
-            "come back and click Verify again."));
-    }
-    else
-    {
-        this->updateBotBadgeStatus(
-            uiText("Could not open Twitch authorization automatically."), false, true);
-    }
-}
-
-void MoltorinoPage::verifyBotBadgeConfiguration()
-{
-    const auto clientId = this->botBadgeClientIdEdit_->text().trimmed();
-    const auto clientSecret = this->botBadgeClientSecretEdit_->text().trimmed();
-
-    if (clientId.isEmpty() || clientSecret.isEmpty())
-    {
-        this->updateBotBadgeStatus(uiText("Client ID and Client Secret are required."),
-                                   false, true);
-        return;
-    }
-
-    QString login = this->botBadgeSenderEdit_->text().trimmed().toLower();
-
-    if (login.isEmpty())
-    {
-        auto account = getApp()->getAccounts()->twitch.getCurrent();
-        if (account->isAnon())
-        {
-            this->updateBotBadgeStatus(
-                uiText("You must enter a Bot Username or be logged into Twitch in "
-                "Chatterino to verify."),
-                false, true);
-            return;
-        }
-        login = account->getUserName();
-    }
-
-    const int generation = ++this->botBadgeValidationGeneration_;
-    QPointer<MoltorinoPage> guard(this);
-
-    auto setBusy = [this](bool busy) {
-        this->botBadgeIsValidating_ = busy;
-    };
-
-    setBusy(true);
-    this->updateBotBadgeStatus(
-        uiText(QString("Checking bot badge account @%1...")).arg(login));
-
-    QUrl tokenUrl("https://id.twitch.tv/oauth2/token");
-    QUrlQuery tokenQuery;
-    tokenQuery.addQueryItem("client_id", clientId);
-    tokenQuery.addQueryItem("client_secret", clientSecret);
-    tokenQuery.addQueryItem("grant_type", "client_credentials");
-    tokenUrl.setQuery(tokenQuery);
-
-    NetworkRequest(tokenUrl, NetworkRequestType::Post)
-        .hideRequestBody()
-        .timeout(20000)
-        .onSuccess([guard, generation, clientId, clientSecret, login,
-                    setBusy](const NetworkResult &appRes) {
-            if (guard == nullptr ||
-                generation != guard->botBadgeValidationGeneration_)
-            {
-                return;
-            }
-
-            const auto json = appRes.parseJson();
-            const auto appToken =
-                json.value("access_token").toString().trimmed();
-            const auto appTokenExpiry =
-                QDateTime::currentDateTimeUtc()
-                    .addSecs(json.value("expires_in").toInt())
-                    .toString(Qt::ISODate);
-
-            if (appToken.isEmpty())
-            {
-                setBusy(false);
-                guard->updateBotBadgeStatus(
-                    uiText("Could not verify the app. Check the Client Secret."), false,
-                    true);
-                return;
-            }
-
-            QUrl usersUrl("https://api.twitch.tv/helix/users");
-            QUrlQuery usersQuery;
-            usersQuery.addQueryItem("login", login);
-            usersUrl.setQuery(usersQuery);
-
-            NetworkRequest(usersUrl, NetworkRequestType::Get)
-                .header("Client-ID", clientId)
-                .header("Authorization", "Bearer " + appToken)
-                .timeout(20000)
-                .onSuccess([guard, generation, clientId, clientSecret, appToken,
-                            appTokenExpiry, login,
-                            setBusy](const NetworkResult &usersRes) {
-                    if (guard == nullptr ||
-                        generation != guard->botBadgeValidationGeneration_)
-                    {
-                        return;
-                    }
-
-                    const auto usersJson = usersRes.parseJson();
-                    const auto users = usersJson.value("data").toArray();
-                    if (users.isEmpty())
-                    {
-                        setBusy(false);
-                        guard->updateBotBadgeStatus(
-                            uiText("Bot badge account could not be found."), false,
-                            true);
-                        return;
-                    }
-
-                    const auto user = users.first().toObject();
-                    const auto resolvedUserId = user.value("id").toString();
-                    const auto resolvedLogin = user.value("login").toString();
-                    const auto resolvedDisplayName =
-                        user.value("display_name").toString();
-
-                    auto &settings = *getSettings();
-                    settings.botBadgeClientID = clientId;
-                    settings.botBadgeClientSecret = clientSecret;
-                    settings.botBadgeAppAccessToken = appToken;
-                    settings.botBadgeAppTokenExpiry = appTokenExpiry;
-                    settings.botBadgeUserID = resolvedUserId;
-                    settings.botBadgeUserLogin = resolvedLogin;
-                    settings.botBadgeUserName = resolvedDisplayName.isEmpty()
-                                                    ? resolvedLogin
-                                                    : resolvedDisplayName;
-                    settings.requestSave();
-
-                    guard->populateBotBadgeFieldsFromSettings();
-                    guard->updateBotBadgeStatus(
-                        uiText(QString("Bot badge account @%1 verified."))
-                            .arg(resolvedLogin),
-                        true);
-                    setBusy(false);
-                })
-                .onError(
-                    [guard, generation, setBusy](const NetworkResult &res) {
-                        if (guard == nullptr ||
-                            generation != guard->botBadgeValidationGeneration_)
-                        {
-                            return;
-                        }
-                        setBusy(false);
-                        guard->updateBotBadgeStatus(
-                            uiText("Verification failed: ") + res.formatError(), false,
-                            true);
-                    })
-                .execute();
-        })
-        .onError([guard, generation, setBusy](const NetworkResult &res) {
-            if (guard == nullptr ||
-                generation != guard->botBadgeValidationGeneration_)
-            {
-                return;
-            }
-            const auto json = res.parseJson();
-            const auto message = json.value("message").toString();
-            setBusy(false);
-            guard->updateBotBadgeStatus(
-                uiText("Could not verify bot badge setup: ") +
-                    (message.isEmpty() ? res.formatError() : message),
-                false, true);
-        })
-        .execute();
-}
-
-void MoltorinoPage::hideEvent(QHideEvent *event)
-{
-    SettingsPage::hideEvent(event);
-    this->logoClickCount_ = 0;
-    this->revealBotBadgeSettings(false);
+    this->authStatusLabel_->setForegroundRole(
+        isValid ? QPalette::Link : isError ? QPalette::BrightText : QPalette::PlaceholderText);
 }
 
 }  // namespace chatterino

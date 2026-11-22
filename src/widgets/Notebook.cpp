@@ -11,6 +11,8 @@
 #include "controllers/accounts/AccountController.hpp"
 #include "controllers/hotkeys/HotkeyCategory.hpp"
 #include "controllers/hotkeys/HotkeyController.hpp"
+#include "providers/twitch/TwitchIrcServer.hpp"
+#include "singletons/Fonts.hpp"
 #include "singletons/Resources.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/StreamerMode.hpp"
@@ -32,6 +34,8 @@
 #include <QDebug>
 #include <QFile>
 #include <QFormLayout>
+#include <QGraphicsOpacityEffect>
+#include <QPropertyAnimation>
 #include <QLayout>
 #include <QList>
 #include <QStandardPaths>
@@ -118,6 +122,10 @@ Notebook::Notebook(QWidget *parent)
     // width when computing the maximum width occupied per column in vertical
     // tab rendering.
     this->resizeAddButton();
+    this->signalHolder_.managedConnect(getApp()->getFonts()->fontChanged, [this] {
+        this->scaleChangedEvent(this->scale());
+        this->update();
+    });
 }
 
 NotebookTab *Notebook::addPage(QWidget *page, QString title, bool select)
@@ -163,6 +171,10 @@ NotebookTab *Notebook::addPageAt(QWidget *page, int position, QString title,
 
 void Notebook::removePage(QWidget *page)
 {
+    if (!this->canClosePage(page))
+    {
+        return;
+    }
     int removingIndex = this->indexOf(page);
     assert(removingIndex != -1);
 
@@ -210,8 +222,18 @@ void Notebook::removePage(QWidget *page)
     this->afterPageRemoved();
 }
 
+bool Notebook::canClosePage(const QWidget *page) const
+{
+    const auto *container = dynamic_cast<const SplitContainer *>(page);
+    return !container || !container->isPermanentWhispersTab();
+}
+
 void Notebook::duplicatePage(QWidget *page)
 {
+    if (!this->canClosePage(page))
+    {
+        return;
+    }
     auto item = this->findItem(page);
     assert(item.has_value());
     if (!item.has_value())
@@ -327,6 +349,8 @@ void Notebook::select(QWidget *page, bool focusPage, bool recordInHistory)
         return;
     }
 
+    const bool animateSwitch = this->selectedPage_ != nullptr && page != nullptr &&
+                               this->isVisible();
     if (recordInHistory && this->selectedPage_ != nullptr && page != nullptr)
     {
         this->tabHistory_.recordNavigation(this->selectedPage_, page);
@@ -386,6 +410,37 @@ void Notebook::select(QWidget *page, bool focusPage, bool recordInHistory)
 
     this->performLayout();
     this->updateTabVisibility();
+    if (animateSwitch && page->isVisible())
+    {
+        const auto overlayName = QStringLiteral("NotebookTabTransition");
+        if (auto *previous = page->findChild<QWidget *>(
+                overlayName, Qt::FindDirectChildrenOnly))
+        {
+            delete previous;
+        }
+        auto *overlay = new QWidget(page);
+        overlay->setObjectName(overlayName);
+        overlay->setAttribute(Qt::WA_TransparentForMouseEvents);
+        overlay->setFocusPolicy(Qt::NoFocus);
+        overlay->setGeometry(page->rect());
+        auto palette = overlay->palette();
+        palette.setColor(QPalette::Window, getApp()->getThemes()->window.background);
+        overlay->setPalette(palette);
+        overlay->setAutoFillBackground(true);
+        auto *opacity = new QGraphicsOpacityEffect(overlay);
+        opacity->setOpacity(0.20);
+        overlay->setGraphicsEffect(opacity);
+        auto *animation = new QPropertyAnimation(opacity, "opacity", overlay);
+        animation->setDuration(95);
+        animation->setStartValue(0.20);
+        animation->setEndValue(0.0);
+        animation->setEasingCurve(QEasingCurve::OutCubic);
+        QObject::connect(animation, &QPropertyAnimation::finished,
+                         overlay, &QWidget::deleteLater);
+        overlay->show();
+        overlay->raise();
+        animation->start();
+    }
 }
 
 void Notebook::selectHistoryBack(bool focusPage)
@@ -667,8 +722,6 @@ QWidget *Notebook::tabAt(QPoint point, int &index, int maxWidth)
         }
 
         auto rect = item.tab->getDesiredRect();
-        rect.setHeight(int(this->scale() * 24));
-
         rect.setWidth(std::min(maxWidth, rect.width()));
 
         if (rect.contains(point))
@@ -759,7 +812,7 @@ void Notebook::showTabVisibilityInfoPopup()
             ")";
     }
     QMessageBox msgBox(this->window());
-    msgBox.window()->setWindowTitle(uiText("Leafyrino - hidden tabs"));
+    msgBox.window()->setWindowTitle(uiText("Chatterino Noctis - hidden tabs"));
     msgBox.setText(uiText("You've just hidden your tabs."));
     msgBox.setInformativeText(
         uiText("You can toggle tabs by using the keyboard shortcut ") + hotkeyInfo +
@@ -815,8 +868,13 @@ void Notebook::setShowAddButton(bool value)
 
 void Notebook::resizeAddButton()
 {
-    int h = static_cast<int>((NOTEBOOK_TAB_HEIGHT - 1) * this->scale());
+    int h = static_cast<int>((NOTEBOOK_TAB_HEIGHT - 1) * this->tabScale());
     this->addButton_->setFixedSize(h, h);
+}
+
+float Notebook::tabScale() const
+{
+    return std::max(1.F, this->scale());
 }
 
 void Notebook::scaleChangedEvent(float /*scale*/)
@@ -844,7 +902,15 @@ void Notebook::performLayout(bool animated)
 {
     std::vector<Item> filteredItems;
     filteredItems.reserve(this->items_.size());
-    if (this->tabVisibilityFilter_)
+    if (!this->showTabs_)
+    {
+        std::copy_if(this->items_.begin(), this->items_.end(),
+                     std::back_inserter(filteredItems),
+                     [this](const auto &item) {
+                         return !this->canClosePage(item.page);
+                     });
+    }
+    else if (this->tabVisibilityFilter_)
     {
         std::copy_if(this->items_.begin(), this->items_.end(),
                      std::back_inserter(filteredItems),
@@ -857,9 +923,9 @@ void Notebook::performLayout(bool animated)
         filteredItems.assign(this->items_.begin(), this->items_.end());
     }
 
-    const auto scale = this->scale();
+    const auto scale = this->tabScale();
     const auto tabHeight = int(NOTEBOOK_TAB_HEIGHT * scale);
-    const auto spacing = static_cast<int>(2 * this->scale());
+    const auto spacing = static_cast<int>(2 * scale);
     const LayoutContext ctx{
         .left = spacing,
         .right = this->width() - spacing,
@@ -885,7 +951,7 @@ void Notebook::performLayout(bool animated)
         this->performVerticalLayout(ctx, animated);
     }
 
-    if (this->showTabs_)
+    if (this->showTabs_ || !filteredItems.empty())
     {
         // raise elements
         for (auto &i : this->items_)
@@ -926,7 +992,7 @@ void Notebook::performHorizontalLayout(const LayoutContext &ctx, bool animated)
         consumedButtonHeights = ctx.tabHeight;
     }
 
-    if (this->showTabs_)
+    if (this->showTabs_ || !ctx.items.empty())
     {
         auto layoutWrappedLine = [&](std::span<Item> line, int x, const int y,
                                      int accumulatedWidth) {
@@ -1120,7 +1186,7 @@ void Notebook::performVerticalLayout(const LayoutContext &ctx, bool animated)
     int columnCount = ceil((float)count / tabsPerColumn);
 
     // only add width of all the tabs if they are not hidden
-    if (this->showTabs_)
+    if (this->showTabs_ || !ctx.items.empty())
     {
         for (int col = 0; col < columnCount; col++)
         {
@@ -1312,7 +1378,7 @@ void Notebook::setTabLocation(NotebookTabLocation location)
 
 void Notebook::paintEvent(QPaintEvent *event)
 {
-    auto scale = this->scale();
+    auto scale = this->tabScale();
 
     QPainter painter(this);
     if (this->tabLocation_ == NotebookTabLocation::Top ||
@@ -1399,8 +1465,9 @@ void Notebook::setTabVisibilityFilter(TabVisibilityFilter filter)
     {
         // Wrap tab filter to always accept selected tabs. This prevents confusion
         // when jumping to hidden tabs with the quick switcher, for example.
-        filter = [originalFilter = std::move(filter)](const NotebookTab *tab) {
-            return tab->isSelected() || originalFilter(tab);
+        filter = [this, originalFilter = std::move(filter)](const NotebookTab *tab) {
+            return !this->canClosePage(tab->page) ||
+                   tab->isSelected() || originalFilter(tab);
         };
     }
 
@@ -1411,6 +1478,10 @@ void Notebook::setTabVisibilityFilter(TabVisibilityFilter filter)
 
 bool Notebook::shouldShowTab(const NotebookTab *tab) const
 {
+    if (!this->canClosePage(tab->page))
+    {
+        return true;
+    }
     if (!this->showTabs_)
     {
         return false;
@@ -1716,7 +1787,7 @@ void SplitNotebook::addCustomButtons()
             }
         });
 
-    // currentUserChanged is boost::signals2 (leafyrino), not pajlada
+    // currentUserChanged is a Boost.Signals2 signal
     this->currentUserChangedConnection_ =
         getApp()->getAccounts()->twitch.currentUserChanged.connect(
             [this, userBtn, normalAccountSrc] {
@@ -1801,6 +1872,33 @@ SplitContainer *SplitNotebook::addPage(bool select)
     container->setTab(tab);
     tab->setParent(this);
     return container;
+}
+
+void SplitNotebook::ensureWhispersTab()
+{
+    for (int index = 0; index < this->getPageCount(); ++index)
+    {
+        auto *container = dynamic_cast<SplitContainer *>(this->getPageAt(index));
+        if (!container)
+        {
+            continue;
+        }
+        const auto splits = container->getSplits();
+        if (container->isPermanentWhispersTab() ||
+            (splits.size() == 1 && splits.front()->getChannel()->getType() ==
+                                       Channel::Type::TwitchWhispers))
+        {
+            container->setPermanentWhispersTab();
+            this->refresh();
+            return;
+        }
+    }
+
+    auto *container = this->addPage(false);
+    auto *split = container->appendNewSplit(false);
+    split->setChannel(IndirectChannel(getApp()->getTwitch()->getWhispersChannel()));
+    container->setPermanentWhispersTab();
+    this->refresh();
 }
 
 SplitContainer *SplitNotebook::getOrAddSelectedPage()

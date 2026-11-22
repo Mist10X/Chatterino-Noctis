@@ -71,49 +71,22 @@
                     "trailingSpace": true,
                     "type": "TextElement",
                     "words": [
-                        "followed"
-                    ]
-                },
-                {
-                    "color": "System",
-                    "flags": "Text",
-                    "link": {
-                        "type": "None",
-                        "value": ""
-                    },
-                    "style": "ChatMedium",
-                    "tooltip": "",
-                    "trailingSpace": true,
-                    "type": "TextElement",
-                    "words": [
-                        "the"
-                    ]
-                },
-                {
-                    "color": "System",
-                    "flags": "Text",
-                    "link": {
-                        "type": "None",
-                        "value": ""
-                    },
-                    "style": "ChatMedium",
-                    "tooltip": "",
-                    "trailingSpace": true,
-                    "type": "TextElement",
-                    "words": [
+                        "followed",
+                        "the",
                         "channel."
                     ]
                 }
             ],
             "externalBadges": [
             ],
-            "flags": "System|EventSub|Follow",
+            "flags": "System|Highlighted|EventSub|Follow",
             "frozen": true,
+            "highlightColor": "#6466a0ff",
             "id": "",
             "localizedName": "",
             "loginName": "",
-            "messageText": "Cool_User followed the channel. ",
-            "searchText": "Cool_User followed the channel. ",
+            "messageText": "cool_user followed the channel. ",
+            "searchText": "cool_user followed the channel. ",
             "serverReceivedTime": "2024-05-14T12:31:47Z",
             "timeoutUser": "",
             "twitchBadgeInfos": {

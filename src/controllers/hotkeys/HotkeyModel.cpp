@@ -24,12 +24,8 @@ std::shared_ptr<Hotkey> HotkeyModel::getItemFromRow(
 void HotkeyModel::getRowFromItem(const std::shared_ptr<Hotkey> &item,
                                  std::vector<QStandardItem *> &row)
 {
-    QFont font("Segoe UI", 10);
-
-    if (!item->validAction())
-    {
-        font.setStrikeOut(true);
-    }
+    QFont font;
+    font.setStrikeOut(!item->validAction());
 
     setStringItem(row[0], item->name(), false);
     row[0]->setData(font, Qt::FontRole);
@@ -48,7 +44,9 @@ int HotkeyModel::beforeInsert(const std::shared_ptr<Hotkey> &item,
         auto newRow = this->createRow();
 
         setStringItem(newRow[0], category, false, false);
-        newRow[0]->setData(QFont("Segoe UI Light", 16), Qt::FontRole);
+        QFont heading;
+        heading.setWeight(QFont::DemiBold);
+        newRow[0]->setData(heading, Qt::FontRole);
 
         for (unsigned long i = 1; i < newRow.size(); i++)
         {

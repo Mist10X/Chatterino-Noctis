@@ -18,6 +18,9 @@ class FilterModel : public SignalVectorModel<FilterRecordPtr>
 public:
     explicit FilterModel(QObject *parent);
 
+    bool setData(const QModelIndex &index, const QVariant &value,
+                 int role) override;
+
 protected:
     FilterRecordPtr getItemFromRow(std::vector<QStandardItem *> &row,
                                    const FilterRecordPtr &original) override;

@@ -129,7 +129,6 @@ void TwitchLiveController::add(const std::shared_ptr<TwitchChannel> &newChannel)
 void TwitchLiveController::request(std::optional<QStringList> optChannelIDs)
 {
     QStringList channelIDs;
-
     if (optChannelIDs)
     {
         channelIDs = *optChannelIDs;

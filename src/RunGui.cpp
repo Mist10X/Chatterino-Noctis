@@ -11,15 +11,19 @@
 #include "common/QLogging.hpp"
 #include "common/UiLanguage.hpp"
 #include "singletons/CrashHandler.hpp"
+#include "singletons/Fonts.hpp"
 #include "singletons/Paths.hpp"
 #include "singletons/Resources.hpp"
 #include "singletons/Settings.hpp"
+#include "singletons/Theme.hpp"
 #include "singletons/Updates.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/CombinePath.hpp"
 #include "util/SelfCheck.hpp"
 #include "util/UnixSignalHandler.hpp"
 #include "widgets/dialogs/LastRunCrashDialog.hpp"
+#include "widgets/helper/MenuStyle.hpp"
+#include "widgets/helper/NoctisTooltip.hpp"
 
 #include <QApplication>
 #include <QCryptographicHash>
@@ -27,7 +31,6 @@
 #include <QGuiApplication>
 #include <QLocalServer>
 #include <QLocalSocket>
-#include <QPalette>
 #include <QSessionManager>
 #include <QStyleFactory>
 #include <Qt>
@@ -63,7 +66,7 @@ QString guiActivationServerName(const Paths &paths)
 
 namespace {
 
-void restoreGuiInstance()
+void restoreGuiInstance(const QString &channel)
 {
     if (isAppAboutToQuit())
     {
@@ -77,6 +80,10 @@ void restoreGuiInstance()
     }
 
     app->getWindows()->showMainWindow();
+    if (!channel.isEmpty())
+    {
+        app->getWindows()->activateTwitchChannel(channel);
+    }
 }
 
 std::unique_ptr<QLocalServer> createGuiActivationServer(const Paths &paths)
@@ -94,7 +101,7 @@ std::unique_ptr<QLocalServer> createGuiActivationServer(const Paths &paths)
             if (!server->listen(serverName))
             {
                 qCWarning(chatterinoApp)
-                    << "Failed to listen for Leafyrino activation requests:"
+                    << "Failed to listen for Chatterino Noctis activation requests:"
                     << server->errorString();
                 return nullptr;
             }
@@ -102,7 +109,7 @@ std::unique_ptr<QLocalServer> createGuiActivationServer(const Paths &paths)
         else
         {
             qCDebug(chatterinoApp)
-                << "Leafyrino activation server already exists.";
+                << "Chatterino Noctis activation server already exists.";
             return nullptr;
         }
     }
@@ -111,47 +118,34 @@ std::unique_ptr<QLocalServer> createGuiActivationServer(const Paths &paths)
                      [server = server.get()] {
                          while (auto *socket = server->nextPendingConnection())
                          {
-                             socket->deleteLater();
+                             const auto readRequest = [socket] {
+                                 if (!socket->canReadLine())
+                                 {
+                                     return;
+                                 }
+                                 const auto line = socket->readLine().trimmed();
+                                 if (line == "activate")
+                                 {
+                                     restoreGuiInstance({});
+                                 }
+                                 else if (line.startsWith("activate "))
+                                 {
+                                     restoreGuiInstance(QString::fromUtf8(
+                                         QByteArray::fromPercentEncoding(line.mid(9))));
+                                 }
+                                 socket->disconnectFromServer();
+                             };
+                             QObject::connect(socket, &QLocalSocket::readyRead, socket, readRequest);
+                             QObject::connect(socket, &QLocalSocket::disconnected, socket, &QObject::deleteLater);
+                             socket->setReadBufferSize(2048);
+                             QTimer::singleShot(2000, socket, &QObject::deleteLater);
+                             readRequest();
                          }
-                         restoreGuiInstance();
                      });
     QObject::connect(qApp, &QApplication::aboutToQuit, server.get(),
                      &QLocalServer::close);
 
     return server;
-}
-
-void installCustomPalette()
-{
-    auto dark = QApplication::palette();
-
-    dark.setColor(QPalette::Window, QColor(22, 22, 22));
-    dark.setColor(QPalette::WindowText, Qt::white);
-    dark.setColor(QPalette::Text, Qt::white);
-    dark.setColor(QPalette::Base, QColor("#333"));
-    dark.setColor(QPalette::AlternateBase, QColor("#444"));
-    dark.setColor(QPalette::ToolTipBase, Qt::white);
-    dark.setColor(QPalette::ToolTipText, Qt::black);
-    dark.setColor(QPalette::Dark, QColor(35, 35, 35));
-    dark.setColor(QPalette::Shadow, QColor(20, 20, 20));
-    dark.setColor(QPalette::Button, QColor(70, 70, 70));
-    dark.setColor(QPalette::ButtonText, Qt::white);
-    dark.setColor(QPalette::BrightText, Qt::red);
-    dark.setColor(QPalette::Link, QColor(42, 130, 218));
-    dark.setColor(QPalette::Highlight, QColor(42, 130, 218));
-    dark.setColor(QPalette::HighlightedText, Qt::white);
-    dark.setColor(QPalette::PlaceholderText, QColor(127, 127, 127));
-
-    dark.setColor(QPalette::Disabled, QPalette::Highlight, QColor(80, 80, 80));
-    dark.setColor(QPalette::Disabled, QPalette::HighlightedText,
-                  QColor(127, 127, 127));
-    dark.setColor(QPalette::Disabled, QPalette::ButtonText,
-                  QColor(127, 127, 127));
-    dark.setColor(QPalette::Disabled, QPalette::Text, QColor(127, 127, 127));
-    dark.setColor(QPalette::Disabled, QPalette::WindowText,
-                  QColor(127, 127, 127));
-
-    QApplication::setPalette(dark);
 }
 
 void initQt(const Args &args, Settings &settings)
@@ -180,7 +174,6 @@ void initQt(const Args &args, Settings &settings)
     qt_set_sequence_auto_mnemonic(true);
 #endif
 
-    installCustomPalette();
 }
 
 void showLastCrashDialog(const Args &args, const Paths &paths)
@@ -325,7 +318,7 @@ bool restartRequested()
     return restartFlag;
 }
 
-bool activateExistingGuiInstance(const Paths &paths)
+bool activateExistingGuiInstance(const Paths &paths, const QString &channel)
 {
     QLocalSocket socket;
     socket.connectToServer(guiActivationServerName(paths));
@@ -334,9 +327,18 @@ bool activateExistingGuiInstance(const Paths &paths)
         return false;
     }
 
-    socket.write("activate\n");
-    socket.flush();
-    socket.waitForBytesWritten(150);
+    QByteArray request = "activate";
+    if (!channel.isEmpty())
+    {
+        request += ' ';
+        request += channel.toUtf8().toPercentEncoding();
+    }
+    request += '\n';
+    if (socket.write(request) != request.size() ||
+        (socket.bytesToWrite() && !socket.waitForBytesWritten(150)))
+    {
+        return false;
+    }
     socket.disconnectFromServer();
     return true;
 }
@@ -352,6 +354,9 @@ void runGui(QApplication &a, const Modes &modes, const Paths &paths,
 #ifdef Q_OS_WIN
     if (args.crashRecovery)
     {
+        // Recovery runs before Application and its normal appearance setup.
+        Theme recoveryTheme(paths);
+        Fonts recoveryFonts(settings);
         showLastCrashDialog(args, paths);
     }
 #endif
@@ -390,6 +395,8 @@ void runGui(QApplication &a, const Modes &modes, const Paths &paths,
     });
 
     Application app(settings, paths, args, modes, updates);
+    installMenuStyle();
+    noctistooltip::install();
     app.initialize(settings, paths);
 
 #ifndef QT_NO_SESSIONMANAGER

@@ -45,7 +45,7 @@ class Modes;
 
 #ifdef Q_OS_WIN32
 // The look of Chatterino Noctis: its bundled Montserrat, semi-bold
-#    define DEFAULT_FONT_FAMILY "Mist Montserrat"
+#    define DEFAULT_FONT_FAMILY "Noctis Montserrat"
 #    define DEFAULT_FONT_SIZE 10
 #    define DEFAULT_FONT_WEIGHT QFont::DemiBold
 #else
@@ -348,7 +348,6 @@ public:
 
     float getClampedUiScale() const;
     void setClampedUiScale(float value);
-
 
     /// Appearance
     BoolSetting showTimestamps = {"/appearance/messages/showTimestamps", true};
@@ -1229,6 +1228,8 @@ public:
         SoundBackend::Miniaudio,
     };
 
+    IntSetting soundVolume = {"/sound/volume", 100};
+
     BoolSetting soundMiniaudioKeepEngineAlive = {
         "/sound/miniaudio/keepEngineAlive",
         false,
@@ -1300,21 +1301,6 @@ public:
     QStringSetting customPinAuthToken{
         "/moltorino/pinnedMessages/customAuthToken", ""};
     QStringSetting moltorinoAuthAccounts{"/moltorino/auth/accounts", ""};
-
-    /// Bot badge / Helix chat message sender configuration
-    QStringSetting botBadgeClientID{"/moltorino/botBadge/clientId", ""};
-    QStringSetting botBadgeClientSecret{"/moltorino/botBadge/clientSecret", ""};
-    QStringSetting botBadgeAppAccessToken{"/moltorino/botBadge/appAccessToken",
-                                          ""};
-    QStringSetting botBadgeAppTokenExpiry{"/moltorino/botBadge/appTokenExpiry",
-                                          ""};
-    QStringSetting botBadgeUserID{"/moltorino/botBadge/userId", ""};
-    QStringSetting botBadgeUserLogin{"/moltorino/botBadge/userLogin", ""};
-    QStringSetting botBadgeUserName{"/moltorino/botBadge/userName", ""};
-
-    BoolSetting botBadgeAlwaysUse{"/moltorino/botBadge/alwaysUse", false};
-    BoolSetting botBadgeOverrideAllAccounts{
-        "/moltorino/botBadge/overrideAllAccounts", false};
 
     /// Predictions and Polls
     BoolSetting enablePredictions{"/moltorino/predictions/enabled", true};
@@ -1431,9 +1417,8 @@ public:
     /// banner only when the banner is enabled and its threshold is met.
     BoolSetting hideCommunityGiftMessages{"/moltorino/chat/hideCommunityGifts",
                                           true};
-    /// No chat line for an incoming raid ("N raiders from X have joined!");
-    /// the corner banner stays.
-    BoolSetting hideRaidMessages{"/moltorino/chat/hideRaids", true};
+    /// Incoming raids have a persistent chat line independent of the banner.
+    BoolSetting hideRaidMessages{"/moltorino/chat/hideRaids", false};
     /// Red input with a countdown while timed out, green once it is over.
     BoolSetting showOwnTimeoutInInput{"/moltorino/input/showOwnTimeout", true};
     IntSetting incomingRaidBannerSeconds{
@@ -1487,12 +1472,8 @@ public:
         "/leafyrino/showSupibotCommandAliases", true};
     BoolSetting hideUnavailableModCommands{
         "/moltorino/hideUnavailableModCommands", true};
-    BoolSetting showFollowButtonInSplitHeader{
-        "/moltorino/showFollowButtonInSplitHeader", true};
     BoolSetting showFollowEventsInChat{"/moltorino/showFollowEventsInChat",
                                        false};
-    BoolSetting confirmUnfollowFromSplitHeader{
-        "/moltorino/confirmUnfollowFromSplitHeader", true};
     BoolSetting transmitPresence{"/moltorino/client/runtime", true};
     BoolSetting sendActivityHeartbeats{
         "/moltorino/client/sendActivityHeartbeats", true};
@@ -1540,6 +1521,10 @@ private:
     IntSetting settingsVersion = {
         "/misc/settingsVersion",
         0,
+    };
+    BoolSetting noctisThemeMigrated = {
+        "/misc/noctisThemeMigrated",
+        false,
     };
 
     void migrate(bool isTest);

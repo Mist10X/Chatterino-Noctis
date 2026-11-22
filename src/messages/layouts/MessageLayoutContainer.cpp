@@ -18,6 +18,7 @@
 #include <QDebug>
 #include <QMargins>
 #include <QPainter>
+#include <QSet>
 #include <QVarLengthArray>
 
 #include <algorithm>
@@ -54,6 +55,7 @@ void MessageLayoutContainer::beginLayout(qreal width, float scale,
                                          MessageFlags flags)
 {
     this->elements_.clear();
+    this->titleLinks_.clear();
     this->lines_.clear();
 
     this->line_ = 0;
@@ -191,6 +193,18 @@ void MessageLayoutContainer::ensureSingleSpaceBeforeNextElement()
         }
     }
     this->currentX_ += this->spaceWidth_;
+}
+
+void MessageLayoutContainer::addTrailingAction(MessageLayoutElement *element,
+                                              qreal inset)
+{
+    const auto width = element->getRect().width() + inset;
+    if (!this->atStartOfLine() && !this->fitsInLine(width))
+    {
+        this->breakLine();
+    }
+    this->currentX_ += std::max(qreal(0), this->remainingWidth() - width);
+    this->addElementNoLineBreak(element);
 }
 
 void MessageLayoutContainer::breakLine()
@@ -454,15 +468,23 @@ void MessageLayoutContainer::paintSelection(QPainter &painter,
     this->paintSelectionEnd(painter, lineIndex, selection, yOffset);
 }
 
+void MessageLayoutContainer::markLinkTitle(const MessageElement *element,
+                                           const QString &url)
+{
+    this->titleLinks_.insert(element, url);
+}
+
 void MessageLayoutContainer::addSelectionText(QString &str, uint32_t from,
                                               uint32_t to,
                                               CopyMode copymode) const
 {
     uint32_t index = 0;
     bool first = true;
+    QSet<const MessageElement *> copiedTitles;
 
-    for (const auto &element : this->elements_)
+    for (auto it = this->elements_.cbegin(); it != this->elements_.cend(); ++it)
     {
+        const auto &element = *it;
         if (copymode != CopyMode::Everything &&
             element->getCreator().getFlags().has(
                 MessageElementFlag::RepliedMessage))
@@ -485,12 +507,37 @@ void MessageLayoutContainer::addSelectionText(QString &str, uint32_t from,
         }
 
         auto indexCount = element->getSelectionIndexCount();
+        const auto copy = [&](uint32_t start, uint32_t end) {
+            const auto *creator = &element->getCreator();
+            const auto title = this->titleLinks_.constFind(creator);
+            if (title == this->titleLinks_.cend())
+            {
+                element->addCopyTextToString(str, start, end);
+                return;
+            }
+
+            // The visible title may be split into several words or lines.
+            // Any selected part refers to the original address, once per link.
+            if (start < uint32_t(element->getText().size()) &&
+                end > start && !copiedTitles.contains(creator))
+            {
+                str += title.value();
+                copiedTitles.insert(creator);
+            }
+            const auto next = std::next(it);
+            if ((next == this->elements_.cend() ||
+                 &(*next)->getCreator() != creator) &&
+                element->hasTrailingSpace() && end > uint32_t(element->getText().size()))
+            {
+                str += ' ';
+            }
+        };
 
         if (first)
         {
             if (index + indexCount > from)
             {
-                element->addCopyTextToString(str, from - index, to - index);
+                copy(from - index, to - index);
                 first = false;
 
                 if (index + indexCount >= to)
@@ -503,11 +550,11 @@ void MessageLayoutContainer::addSelectionText(QString &str, uint32_t from,
         {
             if (index + indexCount >= to)
             {
-                element->addCopyTextToString(str, 0, to - index);
+                copy(0, to - index);
                 break;
             }
 
-            element->addCopyTextToString(str);
+            copy(0, UINT32_MAX);
         }
 
         index += indexCount;
@@ -1032,12 +1079,20 @@ void MessageLayoutContainer::paintSelectionRect(
     QPainter &painter, const Line &line, const qreal left, const qreal right,
     const qreal yOffset, const QColor &color) const
 {
-    QRectF rect = line.rect;
-
-    rect.setTop(std::max(rect.top(), 0.0) + yOffset);
-    rect.setBottom(std::min(this->height_, rect.bottom()) + yOffset);
-    rect.setLeft(left);
-    rect.setRight(right);
+    // Emote selection endpoints can coincide (e.g. the trailing space) or
+    // be reversed by RTL layout. Never paint a negative-width or zero-width
+    // selection, and keep even oversized emotes within the message area.
+    auto rect = QRectF(QPointF(std::min(left, right),
+                               line.rect.top() + yOffset),
+                       QPointF(std::max(left, right),
+                               line.rect.bottom() + yOffset))
+                    .intersected(QRectF(0, yOffset,
+                                        std::max<qreal>(0, this->width_),
+                                        this->height_));
+    if (rect.isEmpty())
+    {
+        return;
+    }
 
     painter.fillRect(rect, color);
     if (color.alpha() != 255)
@@ -1060,7 +1115,7 @@ void MessageLayoutContainer::paintSelectionRect(
             continue;
         }
         painter.save();
-        painter.setClipRect(rect);
+        painter.setClipRect(rect, Qt::IntersectClip);
         (void)element->paintAnimated(painter, yOffset);
         painter.translate(0, yOffset);
         element->paint(painter, colors);

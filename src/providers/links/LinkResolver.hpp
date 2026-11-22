@@ -27,6 +27,8 @@ public:
     LinkResolver() = default;
 
     void resolve(LinkInfo *info) override;
+    /// Inline previews share metadata requests with titles and hover cards.
+    static void resolveThumbnail(LinkInfo *info);
 };
 
 }  // namespace chatterino

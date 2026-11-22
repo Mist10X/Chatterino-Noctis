@@ -13,6 +13,6 @@ namespace chatterino {
 /// "Chat statistics" of a channel: messages, activity, the most active
 /// chatters and emotes, new chatters (see ChannelStats). Updates itself while
 /// open.
-void showStreamStatsDialog(QWidget *parent, const QString &channelName);
+void showStreamStatsDialog(QWidget *parent, const QString &channelName, bool anonymous = false);
 
 }  // namespace chatterino

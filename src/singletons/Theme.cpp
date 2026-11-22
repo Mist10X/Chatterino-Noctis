@@ -356,6 +356,12 @@ const std::vector<ThemeDescriptor> Theme::builtInThemes{
         .path = ":/themes/Wine.json",
         .name = "Wine",
     },
+    {
+        .key = "Noctis-Dark",
+        .path = ":/themes/Noctis-Dark.json",
+        .name = "Noctis Dark",
+        .custom = false,
+    },
 };
 
 const ThemeDescriptor Theme::fallbackTheme = Theme::builtInThemes.at(2);
@@ -396,7 +402,10 @@ Theme::Theme(const Paths &paths)
                          if (this->isSystemTheme())
                          {
                              this->update();
-                             getApp()->getWindows()->forceLayoutChannelViews();
+                             if (auto *app = tryGetApp())
+                             {
+                                 app->getWindows()->forceLayoutChannelViews();
+                             }
                          }
                      });
 #endif
@@ -622,27 +631,36 @@ void Theme::parseFrom(const QJsonObject &root, bool isCustomTheme)
         this->buttons.copy = getResources().buttons.copyLight;
     }
 
-    auto palette = QApplication::palette();
-
-    if (this->isLightTheme())
+    QPalette controls(this->splits.input.background);
+    controls.setColor(QPalette::Window, this->window.background);
+    controls.setColor(QPalette::WindowText, this->window.text);
+    controls.setColor(QPalette::Base, this->messages.backgrounds.regular);
+    controls.setColor(QPalette::AlternateBase, this->messages.backgrounds.alternate);
+    controls.setColor(QPalette::ButtonText, this->messages.textColors.regular);
+    controls.setColor(QPalette::Text, this->messages.textColors.regular);
+    controls.setColor(QPalette::Mid, this->tabs.dividerLine);
+    controls.setColor(QPalette::ToolTipBase, this->tabs.selected.backgrounds.regular);
+    controls.setColor(QPalette::ToolTipText, this->tabs.selected.text);
+    controls.setColor(QPalette::Highlight, this->tabs.selected.backgrounds.regular);
+    controls.setColor(QPalette::HighlightedText, this->tabs.selected.text);
+    controls.setColor(QPalette::PlaceholderText, this->messages.textColors.system);
+    controls.setColor(QPalette::Link, this->messages.textColors.link);
+    controls.setColor(QPalette::LinkVisited, this->messages.textColors.link);
+    controls.setColor(QPalette::BrightText,
+                      this->isLightTheme() ? QColor("#a1262f") : QColor("#ef8a91"));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+    controls.setColor(QPalette::Accent, this->accent);
+#endif
+    for (const auto role : {QPalette::Text, QPalette::WindowText,
+                            QPalette::ButtonText, QPalette::HighlightedText})
     {
-        palette.setColor(QPalette::Window, this->window.background);
-        palette.setColor(QPalette::Base, {0xe9, 0xe9, 0xe9});
-        palette.setColor(QPalette::AlternateBase, {0xe0, 0xe0, 0xe0});
-        palette.setColor(QPalette::Button, {0xd9, 0xd9, 0xd9});
-        palette.setColor(QPalette::Text, this->window.text);
-        palette.setColor(QPalette::WindowText, this->window.text);
-        palette.setColor(QPalette::ButtonText, this->window.text);
-        palette.setColor(QPalette::BrightText, Qt::red);
-        palette.setColor(QPalette::ToolTipBase, Qt::white);
-        palette.setColor(QPalette::ToolTipText, Qt::black);
-        palette.setColor(QPalette::Link, Qt::blue);
-        palette.setColor(QPalette::LinkVisited, Qt::magenta);
-        palette.setColor(QPalette::Highlight, {42, 130, 218});
-        palette.setColor(QPalette::HighlightedText, Qt::white);
-        palette.setColor(QPalette::PlaceholderText, {0x90, 0x90, 0x90});
+        controls.setColor(QPalette::Disabled, role, this->messages.textColors.system);
     }
-    this->palette = palette;
+    this->palette = controls;
+    if (QApplication::palette() != controls)
+    {
+        QApplication::setPalette(controls);
+    }
 }
 
 bool Theme::isAutoReloading() const

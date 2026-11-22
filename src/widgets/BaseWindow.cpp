@@ -5,7 +5,9 @@
 #include "widgets/BaseWindow.hpp"
 
 #include "Application.hpp"
+#include "common/Version.hpp"
 #include "common/QLogging.hpp"
+#include "common/UiScale.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "singletons/WindowManager.hpp"
@@ -22,9 +24,12 @@
 #include <QFile>
 #include <QFont>
 #include <QIcon>
+#include <QPainter>
 #include <QScreen>
 #include <QWindow>
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
 
 #ifdef USEWINSDK
@@ -47,7 +52,78 @@ namespace {
 
 using namespace chatterino;
 
+void updateCaptionScale(BaseWidget *item, float captionScale)
+{
+    if (item->overrideScale() != captionScale)
+    {
+        item->setOverrideScale(captionScale);
+    }
+    if (auto *button = dynamic_cast<LabelButton *>(item))
+    {
+        button->setFont(getApp()->getFonts()->getFont(
+            FontStyle::UiTabs, captionScale));
+    }
+}
+
 #ifdef USEWINSDK
+
+class CaptionLabel final : public Label
+{
+public:
+    CaptionLabel()
+    {
+        this->setShouldElide(true);
+    }
+
+    static bool isAppCaption(const QString &text)
+    {
+        return text == Version::instance().fullVersion() ||
+               text == Version::instance().fullVersion() + QStringLiteral(" (safe mode)");
+    }
+
+    void setCaptionText(const QString &text)
+    {
+        const bool branded = isAppCaption(text);
+        this->setFontStyle(branded ? FontStyle::UiTabs : FontStyle::UiMedium);
+        this->setPadding(branded ? QMargins(30, 0, 8, 0) : QMargins(8, 0, 8, 0));
+        this->setAccessibleName(text);
+        this->setText(text);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        if (isAppCaption(this->getText()))
+        {
+            const auto metrics = this->getFontMetrics();
+            const auto area = this->textRect();
+            const auto shortName = QStringLiteral("Noctis");
+            QString visibleTitle = this->getText();
+            if (metrics.horizontalAdvance(visibleTitle) > area.width())
+            {
+                visibleTitle = metrics.horizontalAdvance(shortName) <= area.width()
+                                   ? shortName : QString();
+            }
+
+            QPainter painter(this);
+            painter.setRenderHint(QPainter::TextAntialiasing);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform);
+            painter.setFont(getApp()->getFonts()->getFont(this->getFontStyle(), this->scale()));
+            painter.setPen(this->palette().windowText().color());
+            const int iconSize = qRound(16 * this->scale());
+            const int iconLeft = qRound(8 * this->scale());
+            if (this->width() >= iconLeft + iconSize)
+            {
+                static const QIcon icon(QStringLiteral(":/icon.ico"));
+                icon.paint(&painter, QRect(iconLeft, (this->height() - iconSize) / 2,
+                                            iconSize, iconSize));
+            }
+            painter.drawText(area, Qt::AlignLeft | Qt::AlignVCenter, visibleTitle);
+            return;
+        }
+        Label::paintEvent(event);
+    }
+};
 
 constexpr UINT HIDDEN_TASKBAR_SIZE = 2;
 
@@ -247,6 +323,10 @@ BaseWindow::BaseWindow(FlagsEnum<Flags> _flags, QWidget *parent)
 
     this->init();
 
+    this->connections_.managedConnect(getApp()->getFonts()->fontChanged, [this] {
+        this->setFont(getApp()->getFonts()->getFont(FontStyle::UiMedium, this->scale()));
+        this->calcButtonsSizes();
+    });
     getSettings()->uiScale.connect(
         [this]() {
             postToThread([this] {
@@ -282,7 +362,6 @@ BaseWindow::BaseWindow(FlagsEnum<Flags> _flags, QWidget *parent)
         }
         QString stylesheet = QString::fromUtf8(styleFile.readAll());
         this->setStyleSheet(stylesheet);
-        this->overrideBackgroundColor_ = QColor("#111111");
     }
 
     DebugCount::increase(DebugObject::BaseWindow);
@@ -339,10 +418,11 @@ void BaseWindow::init()
             buttonLayout->setContentsMargins(0, 0, 0, 0);
             layout->addLayout(buttonLayout);
 
-            Label *title = new Label;
+            auto *title = new CaptionLabel;
             QObject::connect(this, &QWidget::windowTitleChanged,
-                             [title](const QString &text) {
-                                 title->setText(text);
+                             [this, title](const QString &text) {
+                                 title->setCaptionText(text);
+                                 this->calcButtonsSizes();
                              });
 
             QSizePolicy policy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -381,11 +461,10 @@ void BaseWindow::init()
             // Windows can start us minimized without WM_SHOWWINDOW. Establish
             // caption constraints before the first layout, independent of that
             // native notification, so the title row cannot consume chat space.
-            this->calcButtonsSizes();
-
             this->ui_.buttons.push_back(minButton);
             this->ui_.buttons.push_back(maxButton);
             this->ui_.buttons.push_back(exitButton);
+            this->calcButtonsSizes();
 
             buttonLayout->addWidget(minButton);
             buttonLayout->addWidget(maxButton);
@@ -487,6 +566,15 @@ QWidget *BaseWindow::getLayoutContainer()
     }
 }
 
+bool BaseWindow::setCustomTitlebarContent(QWidget *content)
+{
+    if (!this->ui_.titlebarBox || !this->ui_.titleLabel)
+        return false;
+    this->ui_.titleLabel->hide();
+    this->ui_.titlebarBox->insertWidget(0, content, 1);
+    return true;
+}
+
 bool BaseWindow::hasCustomWindowFrame() const
 {
     return BaseWindow::supportsCustomWindowFrame() && this->enableCustomFrame_;
@@ -527,39 +615,13 @@ void BaseWindow::windowDeactivationEvent()
 
 void BaseWindow::themeChangedEvent()
 {
+    this->setPalette(this->theme->palette);
     if (this->hasCustomWindowFrame())
     {
-        QPalette palette;
-        palette.setColor(QPalette::Window, QColor(80, 80, 80, 255));
-        palette.setColor(QPalette::WindowText, this->theme->window.text);
-        this->setPalette(palette);
-
-        if (this->ui_.titleLabel)
-        {
-            QPalette palette_title;
-            palette_title.setColor(
-                QPalette::WindowText,
-                this->theme->isLightTheme() ? "#333" : "#ccc");
-            this->ui_.titleLabel->setPalette(palette_title);
-        }
-
         for (Button *button : this->ui_.buttons)
         {
             button->setMouseEffectColor(this->theme->window.text);
         }
-    }
-    else if (this->flags_.has(UseSettingsStylesheet))
-    {
-        QPalette palette;
-        palette.setColor(QPalette::Window, QColor("#111"));
-        this->setPalette(palette);
-    }
-    else
-    {
-        QPalette palette;
-        palette.setColor(QPalette::Window, this->theme->window.background);
-        palette.setColor(QPalette::WindowText, this->theme->window.text);
-        this->setPalette(palette);
     }
 }
 
@@ -568,6 +630,10 @@ bool BaseWindow::event(QEvent *event)
     if (event->type() == QEvent::WindowDeactivate)
     {
         this->windowDeactivationEvent();
+    }
+    else if (event->type() == QEvent::LayoutRequest)
+    {
+        this->calcButtonsSizes();
     }
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
@@ -697,6 +763,7 @@ void BaseWindow::appendTitlebarButton(Button *button)
 {
     this->ui_.buttons.push_back(button);
     this->ui_.titlebarBox->insertWidget(1, button);
+    this->calcButtonsSizes();
 }
 
 LabelButton *BaseWindow::addTitleBarLabel(std::function<void()> onClicked)
@@ -964,7 +1031,7 @@ void BaseWindow::scaleChangedEvent(float scale)
 #endif
 
     this->setFont(
-        getApp()->getFonts()->getFont(FontStyle::UiTabs, this->scale()));
+        getApp()->getFonts()->getFont(FontStyle::UiMedium, scale));
 }
 
 void BaseWindow::paintEvent(QPaintEvent *)
@@ -985,7 +1052,7 @@ void BaseWindow::drawOutline(QPainter &painter)
 
 float BaseWindow::desiredScale() const
 {
-    return getSettings()->getClampedUiScale();
+    return contentUiScale(getSettings()->getClampedUiScale());
 }
 
 void BaseWindow::updateScale()
@@ -1041,7 +1108,44 @@ void BaseWindow::calcButtonsSizes()
     }
 
 #ifdef USEWINSDK
-    if ((static_cast<float>(this->width()) / this->scale()) < 300)
+    auto scale = std::max(1.F, this->scale());
+    // A large chat zoom must still leave room for complete account and action
+    // names. Keep caption controls at the largest size that fits this window.
+    const auto fits = [&](float candidate) {
+        const auto metrics = getApp()->getFonts()->getFontMetrics(FontStyle::UiTabs, candidate);
+        int width = CaptionLabel::isAppCaption(this->windowTitle())
+                        ? qRound(38 * candidate + metrics.horizontalAdvance(QStringLiteral("Noctis"))) + 2
+                        : qRound(28 * candidate);
+        for (auto *button : this->ui_.buttons)
+        {
+            if (button->isHidden())
+                continue;
+            if (auto *label = dynamic_cast<LabelButton *>(button))
+            {
+                width += static_cast<int>(std::ceil(metrics.horizontalAdvance(label->text()))) +
+                         2 * label->padding().width() + 2;
+            }
+            else
+            {
+                const bool compact = this->width() < qRound(300 * candidate);
+                const auto *caption = dynamic_cast<const TitleBarButton *>(button);
+                const bool systemButton = caption &&
+                    caption->getButtonStyle() != TitleBarButtonStyle::Settings;
+                width += qRound((systemButton && !compact ? 46 : 30) * candidate);
+            }
+        }
+        return width <= this->contentsRect().width();
+    };
+    while (scale > 1.F && !fits(scale))
+    {
+        scale = std::max(1.F, (std::ceil(scale * 4.F) - 1.F) / 4.F);
+    }
+    updateCaptionScale(static_cast<Label *>(this->ui_.titleLabel), scale);
+    for (auto *button : this->ui_.buttons)
+    {
+        updateCaptionScale(button, scale);
+    }
+    if ((static_cast<float>(this->width()) / scale) < 300)
     {
         this->ui_.titlebarButtons->setSmallSize();
     }
@@ -1065,22 +1169,9 @@ void BaseWindow::drawCustomWindowFrame(QPainter &painter)
         }
         else
         {
-            auto dpr = this->devicePixelRatio();
-            if (dpr != 1)
-            {
-                painter.setTransform(QTransform::fromScale(1 / dpr, 1 / dpr));
-            }
-
-            if (isWindows11OrGreater())
-            {
-                painter.fillRect(0, 0, this->realBounds_.width() - 1,
-                                 this->realBounds_.height() - 1, bg);
-            }
-            else
-            {
-                painter.fillRect(1, 1, this->realBounds_.width() - 2,
-                                 this->realBounds_.height() - 2, bg);
-            }
+            const auto pixel = 1.0 / this->devicePixelRatioF();
+            const auto inset = isWindows11OrGreater() ? 0.0 : pixel;
+            painter.fillRect(QRectF(this->rect()).adjusted(inset, inset, -pixel, -pixel), bg);
         }
     }
 #endif

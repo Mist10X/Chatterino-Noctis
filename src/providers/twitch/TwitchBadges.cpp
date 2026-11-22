@@ -12,6 +12,7 @@
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
 #include "providers/twitch/api/Helix.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/DisplayBadge.hpp"
 #include "util/LoadPixmap.hpp"
@@ -165,6 +166,7 @@ void TwitchBadges::loadLocalBadges()
 
 void TwitchBadges::loaded()
 {
+    notifyGlobalChatBadgesChanged();
     std::unique_lock loadedLock(this->loadedMutex_);
 
     const bool firstLoad = !this->loaded_;

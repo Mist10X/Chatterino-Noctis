@@ -4,6 +4,7 @@ name: Build
 on:
   push:
     branches:
+      - main
       - leafyrino
       - "bugfix-release/**"
       - "release/*"
@@ -30,8 +31,8 @@ env:
   CHATTERINO_REQUIRE_CLEAN_GIT: On
   CHATTERINO_BUILD_TYPE: ${{ case(inputs.buildType != '', inputs.buildType, 'auto') }}
   CONAN_VERSION: 2.28.1
-  C2_APP_EXECUTABLE: Leafyrino
-  C2_APP_BUNDLE: Leafyrino.app
+  C2_APP_EXECUTABLE: Chatterino Noctis
+  C2_APP_BUNDLE: Chatterino Noctis.app
 
 jobs:
   build-ubuntu:
@@ -166,8 +167,8 @@ jobs:
         if: matrix.build-appimage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Leafyrino-x86_64-Qt-${{ matrix.qt-version }}.AppImage
-          path: build/Leafyrino-x86_64.AppImage
+          name: chatterino-noctis-x86_64-Qt-${{ matrix.qt-version }}.AppImage
+          path: build/chatterino-noctis-x86_64.AppImage
 
       - name: Package - .deb (Ubuntu)
         if: matrix.build-deb
@@ -179,8 +180,8 @@ jobs:
         if: matrix.build-deb
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Chatterino-${{ matrix.os }}.deb
-          path: build/Chatterino-${{ matrix.os }}-x86_64.deb
+          name: Chatterino-Noctis-${{ matrix.os }}.deb
+          path: build/Chatterino-Noctis-${{ matrix.os }}-x86_64.deb
 
   # MARK: Flatpak
   build-flatpak:
@@ -196,7 +197,7 @@ jobs:
           persist-credentials: false
       - uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
         with:
-          bundle: chatterino.flatpak
+          bundle: chatterino-noctis.flatpak
           manifest-path: .CI/com.chatterino.chatterino.yml
           cache-key: flatpak-builder-${{ github.sha }}
 
@@ -377,14 +378,15 @@ jobs:
           ninja chatterino-crash-handler
           mkdir Chatterino2/crashpad
           cp bin/crashpad/crashpad-handler.exe Chatterino2/crashpad/crashpad-handler.exe
-          7z a bin/leafyrino-${{ env.C2_ARCH }}-Qt-${{ matrix.qt-version }}.pdb.7z bin/${{ env.C2_APP_EXECUTABLE }}.pdb
+          7z a bin/chatterino-noctis-${{ env.C2_ARCH }}-Qt-${{ matrix.qt-version }}.pdb.7z "bin/${{ env.C2_APP_EXECUTABLE }}.pdb"
 
       - name: Prepare build dir (windows)
         if: startsWith(matrix.os, 'windows')
         working-directory: build
         run: |
-          windeployqt bin/${{ env.C2_APP_EXECUTABLE }}.exe --release --no-compiler-runtime --no-translations --no-opengl-sw --dir Chatterino2/ --force-openssl
-          cp bin/${{ env.C2_APP_EXECUTABLE }}.exe Chatterino2/
+          windeployqt "bin/${{ env.C2_APP_EXECUTABLE }}.exe" --release --no-compiler-runtime --no-translations --no-opengl-sw --dir Chatterino2/ --force-openssl
+          cp "bin/${{ env.C2_APP_EXECUTABLE }}.exe" Chatterino2/
+          cp bin/Leafyrino.exe Chatterino2/
           ..\.CI\deploy-crt.ps1 Chatterino2
 
       - name: Package (windows)
@@ -404,8 +406,8 @@ jobs:
         if: startsWith(matrix.os, 'windows') && !matrix.skip-artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: leafyrino-windows-${{ env.C2_ARCH }}-Qt-${{ matrix.qt-version }}-symbols.pdb.7z
-          path: build/bin/leafyrino-${{ env.C2_ARCH }}-Qt-${{ matrix.qt-version }}.pdb.7z
+          name: chatterino-noctis-windows-${{ env.C2_ARCH }}-Qt-${{ matrix.qt-version }}-symbols.pdb.7z
+          path: build/bin/chatterino-noctis-${{ env.C2_ARCH }}-Qt-${{ matrix.qt-version }}.pdb.7z
 
       # MARK: macOS
       - name: Install dependencies (MacOS)

@@ -13,6 +13,7 @@
 #include "providers/twitch/ChannelPointReward.hpp"
 #include "providers/twitch/PubSubManager.hpp"
 #include "Test.hpp"
+#include "TwitchChannelTestAccess.hpp"
 
 #include <QDateTime>
 #include <QJsonArray>
@@ -167,14 +168,6 @@ TEST(TwitchChannelDetail_isUnknownCommand, bad)
 
 namespace chatterino {
 
-class TwitchChannelTestAccess
-{
-public:
-    static void setRoomId(TwitchChannel &channel, const QString &roomId)
-    {
-        channel.setRoomId(roomId);
-    }
-};
 
 namespace {
 

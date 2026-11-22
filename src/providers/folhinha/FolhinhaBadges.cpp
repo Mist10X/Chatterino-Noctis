@@ -10,6 +10,7 @@
 #include "common/QLogging.hpp"
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -133,11 +134,6 @@ void tryInsert(std::unordered_map<QString, BuiltBadge> &out,
 
 }  // namespace
 
-FolhinhaBadges::FolhinhaBadges()
-{
-    this->loadFolhinhaBadges();
-}
-
 std::optional<EmotePtr> FolhinhaBadges::getBadge(const UserId &id)
 {
     std::shared_lock lock(this->mutex_);
@@ -155,7 +151,7 @@ void FolhinhaBadges::loadFolhinhaBadges()
     static QUrl url("https://api.folhinhabot.com/plus");
 
     NetworkRequest(url)
-        .concurrent()
+        .caller(this)
         .onSuccess([this](auto result) -> Outcome {
             auto jsonRoot = result.parseJson();
 
@@ -302,6 +298,8 @@ void FolhinhaBadges::applyBadgeJson(const QJsonObject &jsonRoot)
         this->badgeMap.emplace(userId, badge.emote);
         this->badgePriority.emplace(userId, badge.priority);
     }
+    lock.unlock();
+    notifyGlobalChatBadgesChanged();
 }
 
 }  // namespace chatterino

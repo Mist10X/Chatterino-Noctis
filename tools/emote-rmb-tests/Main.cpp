@@ -8,6 +8,7 @@
 #include "controllers/hotkeys/HotkeyController.hpp"
 #include "controllers/spellcheck/SpellChecker.hpp"
 #include "messages/Emote.hpp"
+#include "common/UiLanguage.hpp"
 #include "messages/Image.hpp"
 #include "messages/Message.hpp"
 #include "messages/MessageBuilder.hpp"
@@ -21,14 +22,19 @@
 #include "providers/seventv/SeventvEmotes.hpp"
 #include "providers/seventv/SeventvPersonalEmotes.hpp"
 #include "providers/seventv/SeventvPaints.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/CrashHandler.hpp"
 #include "singletons/Resources.hpp"
 #include "singletons/WindowManager.hpp"
 #include "widgets/helper/ChannelView.hpp"
+#include "widgets/helper/MenuStyle.hpp"
+#include "widgets/helper/MessageView.hpp"
 #include "widgets/splits/Split.hpp"
 #include "widgets/splits/SplitInput.hpp"
 
 #include <QApplication>
+#include <QClipboard>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -39,8 +45,10 @@
 #include <QJsonObject>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QStyleFactory>
 #include <QTextEdit>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -222,12 +230,48 @@ void closeMenus()
     pump();
 }
 
+QAction *menuAction(QMenu *menu, const QString &title)
+{
+    if (menu)
+    {
+        for (auto *action : menu->actions())
+        {
+            if (action->text() == title)
+            {
+                return action;
+            }
+        }
+    }
+    return nullptr;
+}
+
 bool visibleMenu()
 {
     const auto widgets = QApplication::allWidgets();
     return std::ranges::any_of(widgets, [](auto *widget) {
         return qobject_cast<QMenu *>(widget) && widget->isVisible();
     });
+}
+
+// Windows sends a separate context-menu event after the mouse release.
+// Deliver it to the widget under the cursor after the reply layout changes.
+bool contextMenuOpens(QWidget &widget, QContextMenuEvent::Reason reason,
+                      Qt::KeyboardModifiers modifiers = Qt::NoModifier)
+{
+    bool opened = false;
+    QTimer closeOnOpen;
+    closeOnOpen.setSingleShot(true);
+    QObject::connect(&closeOnOpen, &QTimer::timeout, [&] {
+        opened = visibleMenu();
+        closeMenus();
+    });
+    const QPoint local = widget.rect().center();
+    QContextMenuEvent event(reason, local, widget.mapToGlobal(local), modifiers);
+    closeOnOpen.start(0);
+    QApplication::sendEvent(&widget, &event);
+    closeOnOpen.stop();
+    pump();
+    return opened;
 }
 
 void draft(Split &split, QTextEdit &edit, const QString &text,
@@ -255,11 +299,7 @@ int main(int argc, char **argv)
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication qt(argc, argv);
     qt.setApplicationName(QStringLiteral("Leafyrino-offline-emote-rmb-tests"));
-    // The fork is forcibly portable, so Paths creates folders beside the EXE.
-    // Refuse to run a copied fixture in any installed client/profile directory.
-    if (!QDir::fromNativeSeparators(QCoreApplication::applicationFilePath())
-             .startsWith(QStringLiteral("D:/devtools/"), Qt::CaseInsensitive) ||
-        argc < 2)
+    if (argc < 2)
     {
         return 20;
     }
@@ -282,6 +322,8 @@ int main(int argc, char **argv)
     {
         progress(QStringLiteral("constructing offline application"));
         OfflineApp app;
+        installMenuStyle();
+        initializeUiLanguage(QStringLiteral("ru"));
         progress(QStringLiteral("offline application constructed"));
         QWidget host;
         QVBoxLayout layout(&host);
@@ -301,9 +343,11 @@ int main(int argc, char **argv)
         auto *edit = split.getInput().findChild<QTextEdit *>();
         check(edit != nullptr, QStringLiteral("real split input exists"));
         int menuCount = 0;
+        QPointer<QMenu> lastMenu;
         auto connection = app.windows.channelViewContextMenuRequested.connect(
-            [&](const ChannelView &, const auto &, const auto *, QMenu &) {
+            [&](const ChannelView &, const auto &, const auto *, QMenu &menu) {
                 ++menuCount;
+                lastMenu = &menu;
             });
 
         const QColor marker(17, 234, 85);
@@ -356,6 +400,11 @@ int main(int argc, char **argv)
                       edit->textCursor().position() == 3 &&
                       menuCount == beforeShiftMenus + 1 && visibleMenu(),
                   QStringLiteral("Shift RMB keeps original menu and draft/cursor"));
+            check(lastMenu && !menuAction(lastMenu, uiText("&Open")) &&
+                      !menuAction(lastMenu, uiText("&Copy")) &&
+                      menuAction(lastMenu, uiText("Copy &message")) &&
+                      !menuAction(lastMenu, uiText("Copy &full message")),
+                  QStringLiteral("local emote omits empty links and identical clipboard actions"));
             closeMenus();
 
             draft(split, *edit, QStringLiteral("readonly"));
@@ -388,6 +437,91 @@ int main(int argc, char **argv)
             pump();
             return next;
         };
+
+        // Populate all image frames before displaying this message so URLs are
+        // only used as menu data. No provider, fetch or browser is started.
+        const auto menuEmote = std::make_shared<Emote>(*smile);
+        const auto imageURL = [](int size) {
+            return QStringLiteral("file:///fixture/emote-%1.png").arg(size);
+        };
+        const auto fixtureImage = [&](int size) {
+            QPixmap frame(28 * size, 28 * size);
+            frame.fill(marker);
+            auto image = Image::fromUrl(Url{imageURL(size)}, 1.0 / size, frame.size());
+            detail::assignFrames(image, {{frame, 1}});
+            return image;
+        };
+        const auto small = fixtureImage(1);
+        menuEmote->images = ImageSet{small, small, fixtureImage(4), fixtureImage(8)};
+        menuEmote->homePage = Url{QStringLiteral("https://7tv.app/emotes/fixture")};
+        pump();
+        const auto menuChannel = show([&](MessageBuilder &message) {
+            message.emplace<TextElement>(QStringLiteral("Viewer:"),
+                                         MessageElementFlag::Username);
+            message.emplace<EmoteElement>(menuEmote, MessageElementFlag::Emote);
+        });
+        const auto menuPoint = visiblePixel(view, marker);
+        check(menuPoint.has_value(), QStringLiteral("linked emote visible in real message"));
+        if (menuPoint)
+        {
+            rightClick(view, *menuPoint, Qt::ShiftModifier);
+            auto *open = menuAction(lastMenu, uiText("&Open"));
+            auto *copy = menuAction(lastMenu, uiText("&Copy"));
+            auto *openMenu = open ? open->menu() : nullptr;
+            auto *copyMenu = copy ? copy->menu() : nullptr;
+            check(openMenu && copyMenu && menuAction(lastMenu, uiText("Copy &message")) &&
+                      menuAction(lastMenu, uiText("Copy &full message")),
+                  QStringLiteral("image menus and distinct message copy formats are available"));
+            const QString page = QStringLiteral("&Страница смайлика");
+            check(menuAction(openMenu, QStringLiteral("Изображение · &1×")) &&
+                      !menuAction(openMenu, QStringLiteral("Изображение · &2×")) &&
+                      menuAction(openMenu, QStringLiteral("Изображение · &4×")) &&
+                      menuAction(openMenu, QStringLiteral("Изображение · &8×")) &&
+                      menuAction(openMenu, page) && menuAction(copyMenu, page) &&
+                      menuAction(openMenu, QStringLiteral("&ChatVault")) &&
+                      menuAction(openMenu, QStringLiteral("Lur&kology")),
+                  QStringLiteral("Russian image sizes, unique URLs, provider page and external sites"));
+            auto *copyLargest = menuAction(copyMenu, QStringLiteral("Ссылка на изображение · &8×"));
+            if (copyLargest)
+            {
+                copyLargest->trigger();
+            }
+            check(copyLargest && QApplication::clipboard()->text() == imageURL(8),
+                  QStringLiteral("largest image action copies the original exact URL"));
+            if (lastMenu && openMenu)
+            {
+                lastMenu->setActiveAction(open);
+                openMenu->popup(lastMenu->mapToGlobal(
+                    QPoint(lastMenu->width(), lastMenu->actionGeometry(open).top())));
+                pump();
+                const auto styled = [&](QMenu *menu) {
+                    return menu->testAttribute(Qt::WA_TranslucentBackground) &&
+                           menu->styleSheet().contains(QStringLiteral("border-radius")) &&
+                           menu->font().family() == app.fonts.getFont(
+                               FontStyle::ChatMediumSmall, view.scale()).family();
+                };
+                check(lastMenu->isVisible() && openMenu->isVisible() &&
+                          styled(lastMenu) && styled(openMenu),
+                      QStringLiteral("root and nested image popup use translucent rounded chat style"));
+                const QPixmap root = lastMenu->grab();
+                const QPixmap nested = openMenu->grab();
+                const auto rootSize = root.deviceIndependentSize().toSize();
+                const auto subSize = nested.deviceIndependentSize().toSize();
+                const int top = lastMenu->actionGeometry(open).top();
+                const auto dpr = root.devicePixelRatio();
+                QPixmap cascade(QSize(rootSize.width() + subSize.width(),
+                                      std::max(rootSize.height(), top + subSize.height())) * dpr);
+                cascade.setDevicePixelRatio(dpr);
+                cascade.fill(Qt::transparent);
+                QPainter painter(&cascade);
+                painter.drawPixmap(0, 0, root);
+                painter.drawPixmap(rootSize.width(), top, nested);
+                painter.end();
+                check(cascade.save(reportPath.absoluteFilePath() + ".menu.png"),
+                      QStringLiteral("saved real chat menu and submenu render"));
+            }
+            closeMenus();
+        }
 
         auto layeredChannel = show([&](MessageBuilder &message) {
             const auto overlay = emote(QStringLiteral("RmbOverlay"), marker, true);
@@ -462,6 +596,58 @@ int main(int argc, char **argv)
         check(channel->sent == 0 && layeredChannel->sent == 0 &&
                   badgeChannel->sent == 0 && regexChannel->sent == 0,
               QStringLiteral("all clicks leave message send count at zero"));
+        auto local = std::make_shared<TwitchChannel>("fixture-reply-room");
+        split.setChannel(IndirectChannel(local));
+        app.settings.usernameRightClickModifier = Qt::ShiftModifier;
+        app.settings.usernameRightClickModifierBehavior = UsernameRightClickBehavior::Reply;
+        MessageBuilder replyable;
+        replyable.message().id = "fixture-reply-id";
+        replyable.message().loginName = "viewer";
+        replyable.message().displayName = "Viewer";
+        // The reply preview displays the IRC text; the chat renders its elements.
+        replyable.message().messageText = smile->name.string;
+        replyable.message().serverReceivedTime = QDateTime::currentDateTime();
+        replyable.emplace<EmoteElement>(smile, MessageElementFlag::Emote);
+        local->addMessage(replyable.release(), MessageContext::Repost);
+        pump();
+        const auto replyPoint = visiblePixel(view, marker);
+        check(replyPoint.has_value(), QStringLiteral("replyable row rendered"));
+        if (edit && replyPoint)
+        {
+            draft(split, *edit, QStringLiteral("draft"));
+            const auto before = menuCount;
+            rightClick(view, *replyPoint, Qt::ShiftModifier);
+            check(edit->toPlainText().startsWith("@Viewer") &&
+                      edit->toPlainText().contains("draft") &&
+                      menuCount == before && !visibleMenu(),
+                  QStringLiteral("Shift RMB on message content starts reply without menu"),
+                  edit->toPlainText());
+            auto *preview = split.getInput().findChild<MessageView *>();
+            check(preview && preview->isVisible(),
+                  QStringLiteral("reply preview is displayed"));
+            if (preview && preview->isVisible())
+            {
+                check(!contextMenuOpens(*preview, QContextMenuEvent::Mouse,
+                                        Qt::ShiftModifier) &&
+                          !contextMenuOpens(*preview, QContextMenuEvent::Mouse),
+                      QStringLiteral("late native context menu event cannot open reply preview menu"));
+                const QPointF local = preview->rect().center();
+                const QPointF global = preview->mapToGlobal(local.toPoint());
+                QMouseEvent press(QEvent::MouseButtonPress, local, global,
+                                  Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+                QMouseEvent release(QEvent::MouseButtonRelease, local, global,
+                                    Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(preview, &press);
+                QApplication::sendEvent(preview, &release);
+                check(contextMenuOpens(*preview, QContextMenuEvent::Mouse),
+                      QStringLiteral("deliberate right click on reply preview still opens copy menu"));
+                check(contextMenuOpens(*preview, QContextMenuEvent::Keyboard),
+                      QStringLiteral("keyboard context menu remains available"));
+                check(edit->toPlainText().startsWith("@Viewer") &&
+                          edit->toPlainText().contains("draft"),
+                      QStringLiteral("context menu events preserve the reply and draft"));
+            }
+        }
         connection.disconnect();
         markAppAboutToQuit();
     }

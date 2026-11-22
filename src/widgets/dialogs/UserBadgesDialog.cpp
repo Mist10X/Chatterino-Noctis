@@ -318,7 +318,7 @@ UserBadgesDialog::UserBadgesDialog(const QString &userLogin,
         {.dark = ":/buttons/cancel.svg", .light = ":/buttons/cancelDark.svg"},
         this, QSize{3, 3});
     this->closeButton_->setScaleIndependentSize(18, 18);
-    this->closeButton_->setToolTip(uiText("Close"));
+    this->closeButton_->setAccessibleName(uiText("Close"));
     this->closeButton_->setCursor(Qt::PointingHandCursor);
     this->closeButton_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     QObject::connect(this->closeButton_, &Button::leftClicked, this,

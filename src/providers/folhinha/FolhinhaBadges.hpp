@@ -7,6 +7,7 @@
 #include "common/Aliases.hpp"
 
 #include <QJsonObject>
+#include <QObject>
 
 #include <memory>
 #include <optional>
@@ -26,14 +27,9 @@ namespace chatterino {
 struct Emote;
 using EmotePtr = std::shared_ptr<const Emote>;
 
-class FolhinhaBadges
+class FolhinhaBadges : public QObject
 {
 public:
-    /**
-     * Makes a network request to load FolhinhaBot user badges
-     */
-    FolhinhaBadges();
-
     /**
      * Returns the FolhinhaBot badge for the given user, if any
      */

@@ -1,8 +1,10 @@
 #include "controllers/commands/builtin/twitch/Raid.hpp"
 
 #include "Application.hpp"
+#include "common/UiLanguage.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "controllers/commands/CommandContext.hpp"
+#include "messages/MessageBuilder.hpp"
 #include "providers/moltorino/MoltorinoAuth.hpp"
 #include "providers/twitch/api/Helix.hpp"
 #include "providers/twitch/api/TwitchGql.hpp"
@@ -140,7 +142,7 @@ QString raidAuthRequiredMessage()
 {
     return QStringLiteral(
         "Raid controls need a broadcaster or editor account. Add it in "
-        "Settings -> Moltorino -> Authentication, then try again.");
+        "Settings -> Sign-in for extra features -> Authentication, then try again.");
 }
 
 QString raidAuthMessage(const QString &authError)
@@ -413,7 +415,8 @@ QString sendRaidNow(const CommandContext &ctx)
                 {
                     shared->clearActiveRaid();
                 }
-                channel->addSystemMessage("Raid sent");
+                channel->addMessage(makeRaidMessage(uiText("Raid sent")),
+                                    MessageContext::Original);
             });
         },
         [channel{ctx.channel}](const QString &error) {

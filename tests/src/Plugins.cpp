@@ -30,6 +30,10 @@
 #    include "Test.hpp"
 
 #    include <lauxlib.h>
+#    include <QCoreApplication>
+#    include <QEvent>
+#    include <QFile>
+#    include <QScopeGuard>
 #    include <sol/state_view.hpp>
 #    include <sol/table.hpp>
 
@@ -267,7 +271,7 @@ protected:
 
     Plugin *rawpl = nullptr;
     std::unique_ptr<MockApplication> app;
-    sol::state_view *lua;
+    sol::state_view *lua = nullptr;
     ChannelPtr channel;
 };
 
@@ -307,6 +311,49 @@ TEST_F(PluginTest, testCommands)
     EXPECT_EQ(chnobj.get_type(), sol::type::userdata);
     lua::api::ChannelRef ref = chnobj.as<lua::api::ChannelRef>();
     EXPECT_EQ(ref.get_name(), channel->getName());
+}
+
+TEST_F(PluginTest, commandsSurviveDisableEnableAndReload)
+{
+    this->app = std::make_unique<MockApplication>();
+    QDir dir(QDir(app->paths_.pluginsDirectory).filePath("test"));
+    ASSERT_TRUE(dir.mkpath("."));
+    QFile meta(dir.filePath("info.json"));
+    ASSERT_TRUE(meta.open(QIODevice::WriteOnly));
+    ASSERT_GT(meta.write(R"({"name":"Test","description":"Command lifecycle","authors":["test"],"license":"MIT","version":"1.0.0"})"), 0);
+    meta.close();
+    QFile script(dir.filePath("init.lua"));
+    ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+    ASSERT_GT(script.write(R"lua(
+        assert(c2.register_command("/cycle", function(ctx)
+            return ctx.words[2]
+        end))
+    )lua"), 0);
+    script.close();
+
+    app->settings.pluginsEnabled = false;
+    app->plugins.initialize(app->settings);
+    const auto deliverPluginNotifications = qScopeGuard([] {
+        QCoreApplication::sendPostedEvents(QCoreApplication::instance(),
+                                          QEvent::MetaCall);
+    });
+    const auto run = [this] {
+        return app->commands.execCommand("/cycle works", app->twitch.mm2pl, false);
+    };
+    app->settings.pluginsEnabled = true;
+    ASSERT_EQ(app->commands.pluginCommands(), QStringList{"/cycle"});
+    EXPECT_EQ(run(), "works");
+
+    app->settings.pluginsEnabled = false;
+    ASSERT_TRUE(app->commands.pluginCommands().isEmpty());
+    EXPECT_EQ(run(), "/cycle works");
+    app->settings.pluginsEnabled = true;
+    ASSERT_EQ(app->commands.pluginCommands(), QStringList{"/cycle"});
+    EXPECT_EQ(run(), "works");
+
+    ASSERT_TRUE(app->plugins.reload("test"));
+    ASSERT_EQ(app->commands.pluginCommands(), QStringList{"/cycle"});
+    EXPECT_EQ(run(), "works");
 }
 
 TEST_F(PluginTest, testCompletion)
@@ -965,13 +1012,23 @@ TEST_F(PluginTest, MessageElementFlag)
 
     const char *VALUES = "AlwaysShow=0x2000000,"
                          "AnnouncementHeader=0x8000000000,"
+                         "BadgeBadgeHQ=0x800000000000,"
+                         "BadgeBluzyrino=0x200000000000,"
                          "BadgeBttv=0x40,"
                          "BadgeChannelAuthority=0x8000,"
+                         "BadgeChatsen=0x100000000000,"
                          "BadgeChatterino=0x40000,"
+                         "BadgeDankChat=0x40000000000,"
                          "BadgeFfz=0x80000,"
+                         "BadgeFfzAp=0x80000000000,"
                          "BadgeFolhinha=0x4000000000000000,"
                          "BadgeGlobalAuthority=0x2000,"
                          "BadgeHomies=0x2000000000000000,"
+                         "BadgeHomiesCustom=0x800000000,"
+                         "BadgeHomiesSupporter=0x80,"
+                         "BadgeJilChat=0x400000000000,"
+                         "BadgeLimerino=0x1000000000000,"
+                         "BadgeMoltorino=0x400000000,"
                          "BadgePredictions=0x4000,"
                          "BadgeSevenTV=0x1000000000,"
                          "BadgeSharedChannel=0x2000000000,"
@@ -995,6 +1052,7 @@ TEST_F(PluginTest, MessageElementFlag)
                          "ModeratorTools=0x400000,"
                          "PlatformBadgeAlways=0x8000000000000,"
                          "PlatformBadgeIfUnselected=0x10000000000000,"
+                         "RepeatedMessageCounter=0x10000000,"
                          "RepliedMessage=0x100000000,"
                          "ReplyButton=0x200000000,"
                          "SubscriptionHeader=0x10000000000,"

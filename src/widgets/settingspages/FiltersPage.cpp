@@ -44,11 +44,12 @@ FiltersPage::FiltersPage()
         QHeaderView::Interactive);
     view->getTableView()->horizontalHeader()->setSectionResizeMode(
         1, QHeaderView::Stretch);
+    view->getTableView()->horizontalHeader()->setSectionResizeMode(
+        2, QHeaderView::ResizeToContents);
 
     QTimer::singleShot(1, [view] {
         view->getTableView()->resizeColumnsToContents();
         view->getTableView()->setColumnWidth(0, 150);
-        view->getTableView()->setColumnWidth(2, 125);
     });
 
     std::ignore = view->addButtonPressed.connect([this] {
@@ -73,9 +74,8 @@ FiltersPage::FiltersPage()
                      });
 
     auto *filterHelpLabel =
-        new QLabel(uiText(QStringView(u"<a href='%1'><span "
-                               "style='color:#99f'>filter info</span></a>"))
-                       .arg(FILTERS_DOCUMENTATION));
+        new QLabel(QStringLiteral("<a href='%1'>%2</a>")
+                       .arg(FILTERS_DOCUMENTATION, uiText("Filter reference").toHtmlEscaped()));
     filterHelpLabel->setOpenExternalLinks(true);
     view->addCustomButton(filterHelpLabel);
 

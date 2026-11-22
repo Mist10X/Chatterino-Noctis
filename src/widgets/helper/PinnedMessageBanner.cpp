@@ -9,14 +9,18 @@
 #include "messages/Message.hpp"
 #include "messages/MessageBuilder.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
+#include "singletons/Fonts.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "singletons/WindowManager.hpp"
 #include "widgets/helper/ChannelView.hpp"
+#include "widgets/helper/NoctisTooltip.hpp"
 #include "widgets/Scrollbar.hpp"
+#include "widgets/helper/BannerText.hpp"
 #include "widgets/splits/Split.hpp"
 
 #include <IrcMessage>
+#include <QCursor>
 #include <QFontMetrics>
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
@@ -25,7 +29,7 @@
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QTimer>
-#include <QToolTip>
+#include <QToolButton>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -35,11 +39,10 @@ namespace chatterino {
 
 namespace {
 constexpr int BASE_ICON_SIZE = 14;
-constexpr int BASE_HEADER_FONT_SIZE = 11;
 constexpr int BASE_COLLAPSED_MSG_HEIGHT = 28;
 constexpr int MAX_EXPANDED_HEIGHT = 500;
-constexpr int BASE_TOP_MARGIN = 4;
-constexpr int BASE_BOTTOM_MARGIN = 7;
+constexpr int BASE_TOP_MARGIN = 2;
+constexpr int BASE_BOTTOM_MARGIN = 2;
 constexpr int BASE_HEADER_LEFT_MARGIN = 8;
 constexpr int BASE_MESSAGE_LEFT_MARGIN = 0;
 constexpr int BASE_RIGHT_MARGIN = 8;
@@ -204,48 +207,25 @@ PinnedMessageBanner::PinnedMessageBanner(Split *split, QWidget *parent)
     this->topLayout_->setContentsMargins(BASE_HEADER_LEFT_MARGIN, 0, 0, 0);
     this->topLayout_->setSpacing(BASE_HEADER_SPACING);
 
-    this->icon_ = new SvgButton(
-        {
-            .dark = ":/buttons/pinEnabled.svg",
-            .light = ":/buttons/pinEnabled.svg",
-        },
-        this, QSize(2, 2));
-    this->icon_->setFixedSize(BASE_ICON_SIZE, BASE_ICON_SIZE);
-    this->icon_->setCursor(Qt::ArrowCursor);
-    this->icon_->setGraphicsEffect(new QGraphicsOpacityEffect);
-    static_cast<QGraphicsOpacityEffect *>(this->icon_->graphicsEffect())
-        ->setOpacity(0.5);
-    this->icon_->installEventFilter(this);
-    this->topLayout_->addWidget(this->icon_, 0, Qt::AlignBottom);
-
-    this->pinnerLabel_ = new QLabel(this);
-    this->pinnerLabel_->setContentsMargins(0, 0, 0, 0);
-    this->pinnerLabel_->setAlignment(Qt::AlignLeft | Qt::AlignBottom);
-
-    this->pinnerLabel_->setStyleSheet(
-        QString("font-size: %1px;").arg(BASE_HEADER_FONT_SIZE));
-
-    this->pinnerLabel_->setSizePolicy(QSizePolicy::Expanding,
-                                      QSizePolicy::Preferred);
-    this->topLayout_->addWidget(this->pinnerLabel_, 1, Qt::AlignBottom);
+    this->pinnerLabel_ = new QToolButton(this);
+    this->pinnerLabel_->setObjectName("PinnedMessageAuthor");
+    this->pinnerLabel_->setAutoRaise(true);
+    this->pinnerLabel_->installEventFilter(this);
+    this->topLayout_->addWidget(this->pinnerLabel_, 0, Qt::AlignVCenter);
 
     this->moreLabel_ = new QLabel(this);
+    this->moreLabel_->setObjectName("PinnedMessageMore");
     this->moreLabel_->setContentsMargins(0, 0, 4, 0);
-    this->moreLabel_->setAlignment(Qt::AlignRight | Qt::AlignBottom);
-    this->moreLabel_->setStyleSheet(
-        QString("font-size: %1px; font-weight: bold;")
-            .arg(BASE_HEADER_FONT_SIZE));
+    this->moreLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     this->moreLabel_->setAttribute(Qt::WA_TransparentForMouseEvents);
     this->moreLabel_->hide();
-    this->topLayout_->addWidget(this->moreLabel_, 0, Qt::AlignBottom);
+    this->topLayout_->addWidget(this->moreLabel_, 0, Qt::AlignVCenter);
 
     this->timerLabel_ = new QLabel(this);
     this->timerLabel_->setContentsMargins(0, 0, 4, 0);
-    this->timerLabel_->setAlignment(Qt::AlignRight | Qt::AlignBottom);
-    this->timerLabel_->setStyleSheet(
-        QString("font-size: %1px;").arg(BASE_HEADER_FONT_SIZE));
+    this->timerLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     this->timerLabel_->hide();
-    this->topLayout_->addWidget(this->timerLabel_, 0, Qt::AlignBottom);
+    this->topLayout_->addWidget(this->timerLabel_, 0, Qt::AlignVCenter);
 
     this->toggleButton_ = new SvgButton(
         {
@@ -259,21 +239,13 @@ PinnedMessageBanner::PinnedMessageBanner(Split *split, QWidget *parent)
     toggleOpacity->setOpacity(0.5);
     this->toggleButton_->setGraphicsEffect(toggleOpacity);
     this->toggleButton_->hide();
-    this->topLayout_->addWidget(this->toggleButton_, 0, Qt::AlignBottom);
+    this->topLayout_->addWidget(this->toggleButton_, 0, Qt::AlignVCenter);
 
-    this->unpinButton_ = new SvgButton(
-        {
-            .dark = ":/buttons/cancel.svg",
-            .light = ":/buttons/cancelDark.svg",
-        },
-        this, QSize(2, 2));
-    this->unpinButton_->setToolTip(uiText("Dismiss"));
-    this->unpinButton_->setFixedSize(BASE_ICON_SIZE, BASE_ICON_SIZE);
-    this->unpinButton_->setGraphicsEffect(new QGraphicsOpacityEffect);
-    static_cast<QGraphicsOpacityEffect *>(this->unpinButton_->graphicsEffect())
-        ->setOpacity(0.5);
-    this->unpinButton_->setVisible(true);
-    this->topLayout_->addWidget(this->unpinButton_, 0, Qt::AlignBottom);
+    this->unpinButton_ = new QToolButton(this);
+    this->unpinButton_->setAutoRaise(true);
+    this->unpinButton_->setText(QStringLiteral("×"));
+    this->unpinButton_->setCursor(Qt::PointingHandCursor);
+    this->topLayout_->addWidget(this->unpinButton_, 0, Qt::AlignTop);
 
     layout->addLayout(this->topLayout_);
 
@@ -319,7 +291,7 @@ PinnedMessageBanner::PinnedMessageBanner(Split *split, QWidget *parent)
     this->messageLayout_ = new QHBoxLayout();
     this->messageLayout_->setContentsMargins(BASE_MESSAGE_LEFT_MARGIN, 0, 0, 0);
     this->messageLayout_->addWidget(this->messageView_);
-    layout->addLayout(this->messageLayout_);
+    this->topLayout_->insertLayout(0, this->messageLayout_, 1);
 
     this->hide();
 
@@ -332,6 +304,13 @@ PinnedMessageBanner::PinnedMessageBanner(Split *split, QWidget *parent)
             }
         },
         this->managedConnections_);
+
+    this->signalHolder_.managedConnect(getApp()->getFonts()->fontChanged, [this] {
+        if (this->isVisible())
+        {
+            this->scaleChangedEvent(this->scale());
+        }
+    });
 
     getSettings()->pinnedContentScale.connect(
         [this](const float &, auto) {
@@ -538,24 +517,24 @@ void PinnedMessageBanner::setPinnedMessage(
         this->channel_->addMessage(message, MessageContext::Original);
     }
 
-    this->pinnerName_ =
-        pin->pinnerName.isEmpty() ? "Moderator" : pin->pinnerName;
-    this->pinnerLabel_->clear();
+    const auto pinner = pin->pinnerName.isEmpty() ? pin->pinnerLogin : pin->pinnerName;
+    this->pinnerLabel_->setText(pinner.isEmpty() ? uiText("Pinned message")
+                                                : uiText("Pinned by %1").arg(pinner));
 
     int displayMode = getSettings()->pinTimerDisplay;
 
     if (displayMode <= 2 && this->endsAt_.has_value())
     {
-        this->icon_->setToolTip(QString());
+        this->pinnerLabel_->setToolTip(QString());
     }
     else if (!this->endsAt_.has_value())
     {
-        this->icon_->setToolTip(uiText(QString("Pinned by %1\nPinned indefinitely"))
-                                    .arg(this->pinnerName_));
+        this->pinnerLabel_->setToolTip(uiText(QString("%1 · %2"))
+                                    .arg(this->pinnerLabel_->text(), uiText("Indefinitely")));
     }
     else
     {
-        this->icon_->setToolTip(QString());
+        this->pinnerLabel_->setToolTip(QString());
     }
 
     if (displayMode <= 2 &&
@@ -575,7 +554,7 @@ void PinnedMessageBanner::setPinnedMessage(
 
     this->unpinButton_->disconnect();
     this->unpinButton_->setVisible(true);
-    this->connect(this->unpinButton_, &Button::leftClicked,
+    this->connect(this->unpinButton_, &QToolButton::clicked,
                   [this, channel, pin, hasModRights]() {
                       int action = getSettings()->pinCloseButtonAction;
                       if (action == 1 && hasModRights)
@@ -596,11 +575,11 @@ void PinnedMessageBanner::setPinnedMessage(
             ? uiText("Unpin message")
             : uiText("Dismiss"));
 
-    this->icon_->disconnect();
+    this->pinnerLabel_->disconnect();
     if (hasModRights)
     {
-        this->icon_->setCursor(Qt::PointingHandCursor);
-        this->connect(this->icon_, &Button::leftClicked,
+        this->pinnerLabel_->setCursor(Qt::PointingHandCursor);
+        this->connect(this->pinnerLabel_, &QToolButton::clicked,
                       [this, channel, pin]() {
                           auto *menu = new QMenu(this);
                           menu->setAttribute(Qt::WA_DeleteOnClose);
@@ -622,7 +601,7 @@ void PinnedMessageBanner::setPinnedMessage(
     }
     else
     {
-        this->icon_->setCursor(Qt::ArrowCursor);
+        this->pinnerLabel_->setCursor(Qt::ArrowCursor);
     }
 
     this->userManuallyCollapsed_ = false;
@@ -650,10 +629,9 @@ void PinnedMessageBanner::scaleChangedEvent(float scale)
 
     const float contentScale = scale * pinnedContentScale();
     int iconSize = scaledInt(BASE_ICON_SIZE * contentScale);
-    this->headerFontSize_ = scaledInt(BASE_HEADER_FONT_SIZE * contentScale);
 
-    this->icon_->setFixedSize(iconSize, iconSize);
-    this->unpinButton_->setFixedSize(iconSize, iconSize);
+    const int closeSize = scaledInt(20 * scale);
+    this->unpinButton_->setFixedSize(closeSize, closeSize);
     this->toggleButton_->setFixedSize(iconSize, iconSize);
 
     if (auto *lay = qobject_cast<QVBoxLayout *>(this->layout()))
@@ -687,41 +665,32 @@ void PinnedMessageBanner::themeChangedEvent()
 {
     this->updateLabelStyles();
 
-    QColor textColor = this->theme->splits.header.text;
-    this->icon_->setColor(textColor);
-    if (auto *eff = qobject_cast<QGraphicsOpacityEffect *>(
-            this->icon_->graphicsEffect()))
-    {
-        eff->setOpacity(0.55);
-    }
-
     this->update();
 }
 
 void PinnedMessageBanner::updateLabelStyles()
 {
-    // Readable, in the chat font: the "Pinned by …" line was tiny and faint.
-    QColor textColor = this->theme->splits.header.text;
-    auto colorStr = QString("rgba(%1, %2, %3, 0.85)")
-                        .arg(textColor.red())
-                        .arg(textColor.green())
-                        .arg(textColor.blue());
-    int fs = this->headerFontSize_;
-    const auto family =
-        QString("font-family: '%1';").arg(getSettings()->chatFontFamily.getValue());
+    const auto textColor = this->theme->splits.header.text;
+    const auto scale = this->scale() * std::max(1.F, pinnedContentScale());
+    const auto body = getApp()->getFonts()->getFont(FontStyle::ChatMediumSmall, scale);
+    auto emphasis = body;
+    emphasis.setWeight(QFont::DemiBold);
+    this->timerLabel_->setFont(body);
+    this->pinnerLabel_->setFont(emphasis);
+    this->moreLabel_->setFont(emphasis);
+    const auto muted = this->theme->messages.textColors.system;
+    setBannerTextColor(this->timerLabel_, muted);
+    setBannerTextColor(this->moreLabel_, muted);
 
+    this->unpinButton_->setAccessibleName(this->unpinButton_->toolTip());
+    this->unpinButton_->setStyleSheet(
+        QString("QToolButton { border: 0; padding: 0; background: transparent; color: %1; font-size: %2px; }"
+                "QToolButton:hover { background: %3; border-radius: 3px; }")
+            .arg(textColor.name()).arg(scaledInt(16 * this->scale()))
+            .arg(this->theme->splits.background.name()));
     this->pinnerLabel_->setStyleSheet(
-        QString("%1 font-size: %2px; font-weight: 600; color: %3;")
-            .arg(family)
-            .arg(fs)
-            .arg(colorStr));
-    this->timerLabel_->setStyleSheet(
-        QString("%1 font-size: %2px; color: %3;").arg(family).arg(fs).arg(colorStr));
-    this->moreLabel_->setStyleSheet(
-        QString("%1 font-size: %2px; font-weight: bold; color: %3;")
-            .arg(family)
-            .arg(fs)
-            .arg(colorStr));
+        QStringLiteral("border: 0; padding: 0; background: transparent; color: %1;")
+            .arg(muted.name()));
 }
 
 void PinnedMessageBanner::scheduleInitialLayoutStabilization()
@@ -962,7 +931,7 @@ bool PinnedMessageBanner::eventFilter(QObject *obj, QEvent *event)
         return true;
     }
 
-    if (obj == this->icon_)
+    if (obj == this->pinnerLabel_)
     {
         int mode = getSettings()->pinTimerDisplay;
         if (event->type() == QEvent::Enter)
@@ -985,7 +954,7 @@ bool PinnedMessageBanner::eventFilter(QObject *obj, QEvent *event)
             {
                 this->countdownTimer_->stop();
             }
-            QToolTip::hideText();
+            noctistooltip::hideText();
         }
     }
 
@@ -1066,10 +1035,6 @@ void PinnedMessageBanner::updateTimer()
         }
     }
 
-    // No "Pinned by ..." line above the message (who pinned it stays in the
-    // pin icon's tooltip); the label only keeps the row's layout.
-    this->pinnerLabel_->clear();
-
     if ((displayMode == 0 || displayMode == 2) && !countdownStr.isEmpty())
     {
         this->timerLabel_->setText(countdownStr);
@@ -1085,7 +1050,7 @@ void PinnedMessageBanner::updateTimer()
         this->timerLabel_->hide();
     }
 
-    if (displayMode == 3 && this->icon_->underMouse())
+    if (displayMode == 3 && this->pinnerLabel_->underMouse())
     {
         QString tooltip;
         if (!timeStr.isEmpty() && !countdownStr.isEmpty())
@@ -1098,23 +1063,23 @@ void PinnedMessageBanner::updateTimer()
         else
             tooltip = "Pinned indefinitely";
 
-        QToolTip::showText(
-            this->icon_->mapToGlobal(QPoint(0, this->icon_->height() + 4)),
-            tooltip, this->icon_);
+        noctistooltip::showText(
+            QCursor::pos(),
+            tooltip, this->pinnerLabel_);
     }
-    else if (displayMode == 1 && this->icon_->underMouse() &&
+    else if (displayMode == 1 && this->pinnerLabel_->underMouse() &&
              this->endsAt_.has_value())
     {
-        QToolTip::showText(
-            this->icon_->mapToGlobal(QPoint(0, this->icon_->height() + 4)),
-            uiText(QString("%1 remaining")).arg(countdownStr), this->icon_);
+        noctistooltip::showText(
+            QCursor::pos(),
+            uiText(QString("%1 remaining")).arg(countdownStr), this->pinnerLabel_);
     }
-    else if (displayMode == 2 && this->icon_->underMouse() &&
+    else if (displayMode == 2 && this->pinnerLabel_->underMouse() &&
              !timeStr.isEmpty())
     {
-        QToolTip::showText(
-            this->icon_->mapToGlobal(QPoint(0, this->icon_->height() + 4)),
-            timeStr, this->icon_);
+        noctistooltip::showText(
+            QCursor::pos(),
+            timeStr, this->pinnerLabel_);
     }
 }
 

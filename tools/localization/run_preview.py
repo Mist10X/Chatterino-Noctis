@@ -4,15 +4,20 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import tempfile
+import sys
 
-root=Path('D:/devtools/leafyrino-russian-20261021')
-env=dict(os.environ,QT_QPA_PLATFORM='offscreen',QT_PLUGIN_PATH='D:/devtools/leafyrino-build/Qt/6.9.3/msvc2022_64/plugins')
-env['PATH']='D:/devtools/leafyrino-build/Qt/6.9.3/msvc2022_64/bin;C:/Leafyrino;'+env.get('PATH','')
+build_bin = Path(os.environ.get('NOCTIS_BUILD_BIN', 'D:/devtools/leafyrino-build/build/bin'))
+qt = Path(os.environ.get('QTDIR', 'D:/devtools/leafyrino-build/Qt/6.9.3/msvc2022_64'))
+root = Path(tempfile.mkdtemp(prefix='noctis-localization-'))
+print(root)
+env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QT_PLUGIN_PATH=str(qt / 'plugins'))
+env['PATH'] = os.pathsep.join((str(qt / 'bin'), str(build_bin), env.get('PATH', '')))
 for key in ('TEMP','TMP','APPDATA','LOCALAPPDATA'):
     path=root/('isolated-'+key.lower());path.mkdir(exist_ok=True);env[key]=str(path)
 begin=time.monotonic()
 try:
-    result=subprocess.run(['D:/devtools/leafyrino-russian-20261021/build/bin/Leafyrino-localization-tests.exe',str(root)],
+    result=subprocess.run([build_bin / 'Leafyrino-localization-tests.exe', str(root), *sys.argv[1:]],
                           env=env,capture_output=True,timeout=60,creationflags=subprocess.CREATE_NO_WINDOW)
     (root/'preview-stdout.log').write_bytes(result.stdout)
     (root/'preview-stderr.log').write_bytes(result.stderr)

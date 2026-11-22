@@ -5,6 +5,7 @@
 #include "controllers/highlights/HighlightModel.hpp"
 
 #include "Application.hpp"
+#include "common/UiLanguage.hpp"
 #include "common/SignalVectorModel.hpp"
 #include "controllers/highlights/HighlightPhrase.hpp"
 #include "providers/colors/ColorProvider.hpp"
@@ -55,7 +56,7 @@ void HighlightModel::afterInit()
     std::vector<QStandardItem *> usernameRow = this->createRow();
     setBoolItem(usernameRow[Column::Pattern],
                 getSettings()->enableSelfHighlight.getValue(), true, false);
-    usernameRow[Column::Pattern]->setData("Your username (automatic)",
+    usernameRow[Column::Pattern]->setData(uiText("Your username (automatic)"),
                                           Qt::DisplayRole);
     setBoolItem(usernameRow[Column::ShowInMentions],
                 getSettings()->showSelfHighlightInMentions.getValue(), true,
@@ -80,7 +81,7 @@ void HighlightModel::afterInit()
     std::vector<QStandardItem *> whisperRow = this->createRow();
     setBoolItem(whisperRow[Column::Pattern],
                 getSettings()->enableWhisperHighlight.getValue(), true, false);
-    whisperRow[Column::Pattern]->setData("Whispers", Qt::DisplayRole);
+    whisperRow[Column::Pattern]->setData(uiText("Whispers"), Qt::DisplayRole);
     whisperRow[Column::ShowInMentions]->setFlags({});
     setBoolItem(whisperRow[Column::FlashTaskbar],
                 getSettings()->enableWhisperHighlightTaskbar.getValue(), true,
@@ -103,7 +104,7 @@ void HighlightModel::afterInit()
     std::vector<QStandardItem *> subRow = this->createRow();
     setBoolItem(subRow[Column::Pattern],
                 getSettings()->enableSubHighlight.getValue(), true, false);
-    subRow[Column::Pattern]->setData("Subscriptions", Qt::DisplayRole);
+    subRow[Column::Pattern]->setData(uiText("Subscriptions"), Qt::DisplayRole);
     subRow[Column::ShowInMentions]->setFlags({});
     setBoolItem(subRow[Column::FlashTaskbar],
                 getSettings()->enableSubHighlightTaskbar.getValue(), true,
@@ -124,7 +125,7 @@ void HighlightModel::afterInit()
     std::vector<QStandardItem *> followRow = this->createRow();
     setBoolItem(followRow[Column::Pattern],
                 getSettings()->enableFollowHighlight.getValue(), true, false);
-    followRow[Column::Pattern]->setData("Follows", Qt::DisplayRole);
+    followRow[Column::Pattern]->setData(uiText("Follows"), Qt::DisplayRole);
     followRow[Column::ShowInMentions]->setFlags({});
     setBoolItem(followRow[Column::FlashTaskbar],
                 getSettings()->enableFollowHighlightTaskbar.getValue(), true,
@@ -147,7 +148,7 @@ void HighlightModel::afterInit()
     setBoolItem(redeemedRow[Column::Pattern],
                 getSettings()->enableRedeemedHighlight.getValue(), true, false);
     redeemedRow[Column::Pattern]->setData(
-        "Highlights redeemed with Channel Points", Qt::DisplayRole);
+        uiText("Highlights redeemed with Channel Points"), Qt::DisplayRole);
     redeemedRow[Column::ShowInMentions]->setFlags({});
 
     redeemedRow[Column::FlashTaskbar]->setFlags({});
@@ -166,7 +167,7 @@ void HighlightModel::afterInit()
     setBoolItem(firstMessageRow[Column::Pattern],
                 getSettings()->enableFirstMessageHighlight.getValue(), true,
                 false);
-    firstMessageRow[Column::Pattern]->setData("First Messages",
+    firstMessageRow[Column::Pattern]->setData(uiText("First Messages"),
                                               Qt::DisplayRole);
     firstMessageRow[Column::ShowInMentions]->setFlags({});
 
@@ -187,7 +188,7 @@ void HighlightModel::afterInit()
     std::vector<QStandardItem *> threadMessageRow = this->createRow();
     setBoolItem(threadMessageRow[Column::Pattern],
                 getSettings()->enableThreadHighlight.getValue(), true, false);
-    threadMessageRow[Column::Pattern]->setData("Subscribed Reply Threads",
+    threadMessageRow[Column::Pattern]->setData(uiText("Subscribed Reply Threads"),
                                                Qt::DisplayRole);
     setBoolItem(threadMessageRow[Column::ShowInMentions],
                 getSettings()->showThreadHighlightInMentions.getValue(), true,
@@ -218,7 +219,7 @@ void HighlightModel::afterInit()
                 getSettings()->enableAutomodHighlight.getValue(), true, false);
     setBoolItem(automodRow[Column::ShowInMentions],
                 getSettings()->showAutomodInMentions.getValue(), true, false);
-    automodRow[Column::Pattern]->setData("AutoMod Caught Messages",
+    automodRow[Column::Pattern]->setData(uiText("AutoMod Caught Messages"),
                                          Qt::DisplayRole);
     setBoolItem(automodRow[Column::FlashTaskbar],
                 getSettings()->enableAutomodHighlightTaskbar.getValue(), true,
@@ -242,7 +243,7 @@ void HighlightModel::afterInit()
     setBoolItem(watchStreakRow[Column::Pattern],
                 getSettings()->enableWatchStreakHighlight.getValue(), true,
                 false);
-    watchStreakRow[Column::Pattern]->setData("Watch Streaks", Qt::DisplayRole);
+    watchStreakRow[Column::Pattern]->setData(uiText("Watch Streaks"), Qt::DisplayRole);
     watchStreakRow[Column::ShowInMentions]->setFlags({});
     watchStreakRow[Column::FlashTaskbar]->setFlags({});
     watchStreakRow[Column::PlaySound]->setFlags({});
@@ -260,7 +261,7 @@ void HighlightModel::afterInit()
     setBoolItem(announcementRow[Column::Pattern],
                 getSettings()->enableAnnouncementHighlight.getValue(), true,
                 false);
-    announcementRow[Column::Pattern]->setData("Announcements", Qt::DisplayRole);
+    announcementRow[Column::Pattern]->setData(uiText("Announcements"), Qt::DisplayRole);
     announcementRow[Column::ShowInMentions]->setFlags({});
     announcementRow[Column::FlashTaskbar]->setFlags({});
     announcementRow[Column::PlaySound]->setFlags({});
@@ -279,7 +280,7 @@ void HighlightModel::afterInit()
     setBoolItem(coloredAnnouncementRow[Column::Pattern],
                 getSettings()->enableColoredAnnouncementHighlight.getValue(),
                 true, false);
-    coloredAnnouncementRow[Column::Pattern]->setData("Colored Announcements",
+    coloredAnnouncementRow[Column::Pattern]->setData(uiText("Colored Announcements"),
                                                      Qt::DisplayRole);
     coloredAnnouncementRow[Column::ShowInMentions]->setFlags({});
     coloredAnnouncementRow[Column::FlashTaskbar]->setFlags({});

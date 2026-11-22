@@ -14,6 +14,7 @@
 #include <QColor>
 #include <QMenu>
 #include <QPropertyAnimation>
+#include <QVariantAnimation>
 
 #include <memory>
 #include <unordered_map>
@@ -176,6 +177,7 @@ private:
     void recreateCloseMultipleTabsMenu(NotebookTabLocation tabLocation);
 
     QPropertyAnimation positionChangedAnimation_;
+    QVariantAnimation selectionAnimation_;
     QPoint positionAnimationDesiredPoint_;
 
     Notebook *notebook_;

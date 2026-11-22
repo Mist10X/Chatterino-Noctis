@@ -15,7 +15,7 @@
 
 ## Что добавлено в этой сборке
 
-Автор изменений — Mist1X (2026). В том числе: русский интерфейс, настройки по темам, окно «С чего начать» и перенос настроек из другого Chatterino, автообновление с GitHub, собственное оформление (тема Mist-Dark, шрифт Mist Montserrat), отсчёт и очередь медленного режима, мут и бан в строке ввода, чтение чата при бане, смайлики в строке ввода, история сообщений из публичных логов в карточке пользователя, переработанная карточка, вставка смайлика правой кнопкой и другие изменения. Полный список — в истории коммитов репозитория.
+Автор изменений — Mist1X (2026). В том числе: русский интерфейс, настройки по темам, окно «С чего начать» и перенос настроек из другого Chatterino, автообновление с GitHub, собственное оформление (тема Mist-Dark, шрифт Noctis Montserrat), отсчёт и очередь медленного режима, мут и бан в строке ввода, чтение чата при бане, смайлики в строке ввода, история сообщений из публичных логов в карточке пользователя, переработанная карточка, вставка смайлика правой кнопкой и другие изменения. Полный список — в истории коммитов репозитория.
 
 ## Сторонние компоненты
 
@@ -23,7 +23,7 @@
 
 - [Qt](https://www.qt.io) — LGPL-3.0. Подключается как отдельные DLL; исходный код Qt доступен на qt.io, библиотеки можно заменить своими.
 - [OpenSSL](https://www.openssl.org) — Apache-2.0.
-- Шрифт [Montserrat](https://github.com/google/fonts/tree/main/ofl/montserrat) — SIL Open Font License 1.1. В сборке он называется «Mist Montserrat»; переименование разрешено лицензией.
+- Шрифт [Montserrat](https://github.com/google/fonts/tree/main/ofl/montserrat) — SIL Open Font License 1.1. В сборке он называется «Noctis Montserrat»; переименование разрешено лицензией.
 - Boost, libcommuni, rapidjson, pajlada/settings, pajlada/signals, pajlada/serialize, magic_enum, semver, miniaudio, crashpad, Fluent UI System Icons, expected-lite, certify, date, hunspell, qtkeychain, kimageformats, fmt, lrucache, Lua, Unicode data, emoji-data.
 - Звуки Chatterino — по лицензии из `LICENSES/LicenseRef-fourtf-chatterino-sound-license.txt`.
 

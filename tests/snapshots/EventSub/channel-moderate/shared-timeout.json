@@ -205,6 +205,7 @@
             "searchText": "nerixyz timed out twitchdev for 10m in testaccount_420. ",
             "serverReceivedTime": "2025-02-22T17:54:04Z",
             "timeoutUser": "twitchdev",
+            "timeoutUserID": "141981764",
             "twitchBadgeInfos": {
             },
             "twitchBadges": [

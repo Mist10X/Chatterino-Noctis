@@ -7,6 +7,10 @@
 #include <pajlada/signals/scoped-connection.hpp>
 #include <pajlada/signals/signal.hpp>
 #include <QString>
+#include <QTimer>
+#include <QElapsedTimer>
+#include <QDeadlineTimer>
+#include <QByteArray>
 
 #include <memory>
 #include <vector>
@@ -44,7 +48,7 @@ public:
 
     /// Asks GitHub for the newest release of Chatterino Noctis.
     void checkForUpdates();
-    /// Checks shortly after the start and then every few hours.
+    /// Checks shortly after startup and periodically, with failure backoff.
     void startPeriodicChecks();
     /// Installed with the setup (not a portable copy): the update can be
     /// downloaded and installed from inside the program.
@@ -79,10 +83,25 @@ private:
     QString updateSums_;
     QString releaseNotes_;
     QString releasePage_;
+    QTimer nextCheck_;
+    QElapsedTimer lastRequest_;
+    QDeadlineTimer rateBlockedUntil_;
+    QByteArray listEtag_;
+    bool periodicStarted_ = false;
+    bool checkInFlight_ = false;
+    bool currentCheckWithTests_ = false;
+    bool confirmedRelease_ = false;
+    bool confirmedPrerelease_ = false;
+    bool confirmedWithTests_ = false;
+    unsigned consecutiveFailures_ = 0;
+
+    void checkFinished_(bool success, bool rateLimited = false);
+    void requestRelease_(bool withTests, bool latestFallback);
+    void scheduleCheck_(std::chrono::milliseconds delay);
 
     void updateFailed_(Status status, const QString &reason);
 
-    void setStatus_(Status status);
+    void setStatus_(Status status, bool forceNotify = false);
 
     std::vector<std::unique_ptr<pajlada::Signals::ScopedConnection>>
         managedConnections;

@@ -7,6 +7,7 @@
 #include "controllers/accounts/AccountController.hpp"
 #include "providers/seventv/SeventvBadges.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "messages/Image.hpp"
 #include "providers/seventv/eventapi/Dispatch.hpp"
 #include "providers/seventv/paints/LinearGradientPaint.hpp"
@@ -17,12 +18,12 @@
 #include "singletons/Settings.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/DebugCount.hpp"
-#include "util/PostToThread.hpp"
 #include "util/Variant.hpp"
 
 #include <QDateTime>
 #include <QDir>
 #include <QRegularExpression>
+#include <QSet>
 #include <QFile>
 #include <QJsonDocument>
 #include <QSaveFile>
@@ -189,7 +190,7 @@ void SeventvPaints::ensureLoaded() const
         self->load();
         // Your own paint and badge first, before you write anything.
         self->refreshOwn();
-        postToThread([self] {
+        QMetaObject::invokeMethod(self, [self] {
             self->ownTimer_ = std::make_unique<QTimer>();
             QObject::connect(self->ownTimer_.get(), &QTimer::timeout,
                              [self] {
@@ -293,6 +294,12 @@ void SeventvPaints::load()
         << "Restored" << this->knownPaints_.size() << "7TV paints and"
         << this->twitchPaintMap_.size() + this->kickPaintMap_.size()
         << "assignments from disk";
+    const bool restoredBadges = !this->twitchBadges_.empty();
+    lock.unlock();
+    if (restoredBadges)
+    {
+        notifyGlobalChatBadgesChanged();
+    }
 }
 
 void SeventvPaints::queueSave()
@@ -302,11 +309,9 @@ void SeventvPaints::queueSave()
     {
         return;
     }
-    postToThread([this] {
-        QTimer::singleShot(SAVE_DELAY_MS, [this] {
-            this->saveQueued_ = false;
-            this->save();
-        });
+    QTimer::singleShot(SAVE_DELAY_MS, this, [this] {
+        this->saveQueued_ = false;
+        this->save();
     });
 }
 
@@ -432,8 +437,8 @@ void SeventvPaints::queueLookup(const QString &login, const QString &userID)
         this->lookedUp_.insert(key);
         this->lookupQueue_.emplace_front(key, userID);
     }
-    else if (!this->lookedUp_.insert(key).second ||
-             this->lookupQueue_.size() >= LOOKUP_QUEUE_MAX)
+    else if (this->lookupQueue_.size() >= LOOKUP_QUEUE_MAX ||
+             !this->lookedUp_.insert(key).second)
     {
         return;
     }
@@ -455,10 +460,8 @@ void SeventvPaints::armLookup()
         }
         this->lookupArmed_ = true;
     }
-    postToThread([this] {
-        QTimer::singleShot(LOOKUP_INTERVAL_MS, [this] {
-            this->lookUpChatters();
-        });
+    QTimer::singleShot(LOOKUP_INTERVAL_MS, this, [this] {
+        this->lookUpChatters();
     });
 }
 
@@ -494,6 +497,7 @@ void SeventvPaints::lookUpChatters()
     query += '}';
 
     NetworkRequest(QUrl(LOOKUP_URL), NetworkRequestType::Post)
+        .caller(this)
         .json(QJsonObject{{QStringLiteral("query"), query}})
         // 7TV's GQL doesn't answer POSTs over HTTP/2 from Qt
         .attribute(QNetworkRequest::Http2AllowedAttribute, false)
@@ -531,6 +535,8 @@ void SeventvPaints::applyLookup(
     const std::vector<std::pair<QString, QString>> &batch,
     const QJsonObject &data)
 {
+    auto *badges = getApp()->getSeventvBadges();
+    QSet<QString> changedUsers;
     for (size_t i = 0; i < batch.size(); i++)
     {
         const auto &[login, userID] = batch[i];
@@ -551,7 +557,12 @@ void SeventvPaints::applyLookup(
             this->lookupTimes_[login] = nowSeconds();
         }
         const auto style = user["style"].toObject();
+        const auto previousBadge = badges->getBadge(UserId{userID});
         this->applyBadge(userID, style["badge"].toObject());
+        if (previousBadge != badges->getBadge(UserId{userID}))
+        {
+            changedUsers.insert(userID);
+        }
 
         const auto paint = style["paint"].toObject();
         const auto paintID = paint["id"].toString();
@@ -570,6 +581,10 @@ void SeventvPaints::applyLookup(
         }
     }
     this->queueSave();
+    if (!changedUsers.isEmpty())
+    {
+        notifyChatBadgesChangedForUsers(std::move(changedUsers));
+    }
 }
 
 void SeventvPaints::applyBadge(const QString &userID, const QJsonObject &badge)
@@ -693,7 +708,7 @@ void SeventvPaints::assignPaintToUsers(
 
     if (changed)
     {
-        postToThread([] {
+        QMetaObject::invokeMethod(this, [] {
             getApp()->getWindows()->invalidateChannelViewBuffers();
         });
     }
@@ -736,7 +751,7 @@ void SeventvPaints::clearPaintFromUsers(
     if (nRemoved > 0)
     {
         DebugCount::decrease(DebugObject::SeventvPaintAssignments, nRemoved);
-        postToThread([] {
+        QMetaObject::invokeMethod(this, [] {
             getApp()->getWindows()->invalidateChannelViewBuffers();
         });
         lock.unlock();

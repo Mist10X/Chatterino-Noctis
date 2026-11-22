@@ -82,6 +82,7 @@
             "searchText": "twitchdev has been timed out for 10m. (3 times) ",
             "serverReceivedTime": "2025-01-15T19:22:47Z",
             "timeoutUser": "twitchdev",
+            "timeoutUserID": "141981764",
             "twitchBadgeInfos": {
             },
             "twitchBadges": [
@@ -106,7 +107,7 @@
                     "trailingSpace": true,
                     "type": "TextElement",
                     "words": [
-                        "#pajlada"
+                        "pajlada"
                     ]
                 },
                 {
@@ -151,7 +152,7 @@
                     "flags": "Username",
                     "link": {
                         "type": "UserInfo",
-                        "value": "TwitchDev"
+                        "value": "twitchdev"
                     },
                     "style": "ChatMediumBold",
                     "tooltip": "",

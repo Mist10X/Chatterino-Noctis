@@ -93,22 +93,26 @@ LoggingChannel::LoggingChannel(QString _channelName, QString _platform)
     getSettings()->logPath.connect(
         [this](const QString &logPath, auto) {
             this->baseDirectory = getApp()->getPaths().messageLogsIn(logPath);
-            this->openLogFile();
+            this->openLogFile(generateDateString(QDateTime::currentDateTime()));
+            this->currentStreamFileHandle.close();
+            this->currentStreamID.clear();
         },
         this->settingConnections_);
 }
 
 LoggingChannel::~LoggingChannel()
 {
-    appendLine(this->fileHandle, generateClosingString());
+    if (this->fileHandle.isOpen())
+    {
+        appendLine(this->fileHandle, generateClosingString());
+    }
     this->fileHandle.close();
     this->currentStreamFileHandle.close();
 }
 
-void LoggingChannel::openLogFile()
+void LoggingChannel::openLogFile(const QString &date)
 {
-    QDateTime now = QDateTime::currentDateTime();
-    this->dateString = generateDateString(now);
+    this->dateString = date;
 
     if (this->fileHandle.isOpen())
     {
@@ -138,7 +142,7 @@ void LoggingChannel::openLogFile()
         return;
     }
 
-    appendLine(this->fileHandle, generateOpeningString(now));
+    appendLine(this->fileHandle, generateOpeningString());
 }
 
 void LoggingChannel::openStreamLogFile(const QString &streamID)
@@ -192,10 +196,9 @@ void LoggingChannel::addMessage(const MessagePtr &message,
     }
 
     QString messageDateString = generateDateString(messageTimestamp);
-    if (messageDateString != this->dateString)
+    if (messageDateString != this->dateString || !this->fileHandle.isOpen())
     {
-        this->dateString = messageDateString;
-        this->openLogFile();
+        this->openLogFile(messageDateString);
     }
 
     QString str;
@@ -253,16 +256,22 @@ void LoggingChannel::addMessage(const MessagePtr &message,
     str.append(messageText);
     str.append(ENDLINE);
 
-    appendLine(this->fileHandle, str);
+    if (this->fileHandle.isOpen())
+    {
+        appendLine(this->fileHandle, str);
+    }
 
     if (!streamID.isEmpty() && getSettings()->separatelyStoreStreamLogs)
     {
-        if (this->currentStreamID != streamID)
+        if (this->currentStreamID != streamID || !this->currentStreamFileHandle.isOpen())
         {
             this->openStreamLogFile(streamID);
         }
 
-        appendLine(this->currentStreamFileHandle, str);
+        if (this->currentStreamFileHandle.isOpen())
+        {
+            appendLine(this->currentStreamFileHandle, str);
+        }
     }
 }
 

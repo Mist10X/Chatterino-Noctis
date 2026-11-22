@@ -40,11 +40,11 @@ using User = std::variant<TwitchUser, KickUser>;
 /// The same lookup brings the chatter's 7TV badge; badges learnt this way are
 /// kept on disk too and are in the badge registry before the first message is
 /// built, so a known badge (your own included) shows right after a start.
-class SeventvPaints
+class SeventvPaints : public QObject
 {
 public:
     SeventvPaints();
-    ~SeventvPaints();
+    ~SeventvPaints() override;
 
     void addPaint(const QJsonObject &paintJson);
     void assignPaintToUsers(const QString &paintID,

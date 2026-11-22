@@ -20,12 +20,12 @@ namespace chatterino::publiclogs {
 /// rustlog mirrors (logs.zonian.dev, logs.twitchmetrics.xyz, logs.spanix.team)
 /// by Twitch user ID.
 ///
-/// Requests run one at a time per service with 1.5 s
+/// One request at a time per service and 1.5 s
 /// between two of them; a 429/503 holds that service back; a person or channel
 /// that opted out of logging (HTTP 403) is not asked again this session, on any
 /// mirror.
 ///
-/// The page has fields {identity:{user_id,user}, channel, source:"public_logs",
+/// The usercard receives: {identity:{user_id,user}, channel, source:"public_logs",
 /// status: found|empty|refused|error, rows:[{id,user,user_id,channel,time_utc,
 /// text,display_name,color,badges,first_msg}], more, next_cursor, error}.
 using PageCallback = std::function<void(const QJsonObject &page)>;

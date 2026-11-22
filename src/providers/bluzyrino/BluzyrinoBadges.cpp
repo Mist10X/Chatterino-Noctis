@@ -10,6 +10,7 @@
 #include "common/QLogging.hpp"
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/Paths.hpp"
 
 #include <QFile>
@@ -186,6 +187,8 @@ bool BluzyrinoBadges::applyPayload(const QByteArray &payload)
     }
     this->catalog_ = std::move(catalog);
     this->users_ = std::move(users);
+    lock.unlock();
+    notifyGlobalChatBadgesChanged();
     return true;
 }
 

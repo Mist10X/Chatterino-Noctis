@@ -54,7 +54,8 @@ public:
                              const QString &file);
 
 protected:
-    void scaleChangedEvent(float newDpi) override;
+    void themeChangedEvent() override;
+    void resizeEvent(QResizeEvent *) override;
     void showEvent(QShowEvent *) override;
 
 private:
@@ -68,7 +69,7 @@ private:
                 Qt::Alignment alignment = Qt::AlignTop);
     /// A small heading above a group of tabs in the sidebar.
     void addCaption(const QString &text);
-    void updateSidebarWidth();
+    void updateTypography();
     void selectTab(SettingsDialogTab *tab, const bool byUser = true);
     void selectTab(SettingsTabId id);
     void filterElements(const QString &query);
@@ -96,7 +97,6 @@ private:
     std::vector<SettingsPage *> sourcePages_;
     SettingsDialogTab *selectedTab_{};
     SettingsDialogTab *lastSelectedByUser_{};
-    float dpi_ = 1.0F;
 
     friend class SettingsDialogTab;
 };

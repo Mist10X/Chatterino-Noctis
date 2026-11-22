@@ -47,7 +47,7 @@ bool useKeyring()
 {
     // Never the system keyring: its entries are named "chatterino:<provider>:..."
     // and shared by every Chatterino client of this Windows user. Logins stay
-    // in Settings/credentials.json inside Leafyrino's own profile.
+    // in Settings/credentials.json inside the Chatterino Noctis profile.
     return false;
 }
 

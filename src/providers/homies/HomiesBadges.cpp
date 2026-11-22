@@ -11,6 +11,7 @@
 #include "common/QLogging.hpp"
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/Paths.hpp"
 #include "singletons/WindowManager.hpp"
 
@@ -241,6 +242,7 @@ void HomiesBadges::queueRefresh()
     // may be called off the GUI thread: the redraw runs on it
     QTimer::singleShot(250, QCoreApplication::instance(), [this] {
         this->refreshQueued_.store(false);
+        notifyGlobalChatBadgesChanged();
         if (auto *windows = getApp()->getWindows())
         {
             windows->invalidateChannelViewBuffers();

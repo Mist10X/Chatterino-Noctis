@@ -33,7 +33,9 @@
 #include "providers/twitch/TwitchBadge.hpp"
 #include "providers/twitch/TwitchBadges.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
+#include "singletons/WindowManager.hpp"
 #include "Test.hpp"
+#include "TwitchChannelTestAccess.hpp"
 #include "util/IrcHelpers.hpp"
 #include "util/VectorMessageSink.hpp"
 
@@ -73,6 +75,8 @@ public:
     MockApplication(const QString &settingsData)
         : mock::BaseApplication(settingsData, /*runMigrations*/ true)
         , highlights(this->settings, &this->accounts)
+        , windows(this->args, this->paths_, this->settings, this->theme,
+                  this->fonts)
     {
     }
 
@@ -171,6 +175,11 @@ public:
         return &this->sound;
     }
 
+    WindowManager *getWindows() override
+    {
+        return &this->windows;
+    }
+
     mock::EmptyLogging logging;
     AccountController accounts;
     mock::EmoteController emotes;
@@ -191,6 +200,7 @@ public:
     TwitchBadges twitchBadges;
     mock::EmptyLinkResolver linkResolver;
     NullBackend sound;
+    WindowManager windows;
 };
 
 std::pair<const EmoteName, EmotePtr> makeEmote(Emote &&emote)
@@ -766,9 +776,9 @@ TEST_P(TestIrcMessageHandlerP, CloneElements)
 
 TEST(IrcMessageHandler, DuplicateChannelPointRewardIrcMessageIgnored)
 {
-    MockApplication app;
+    MockApplication app(u"{}"_s);
     auto channel = std::make_shared<TwitchChannel>("pajlada");
-    channel->setRoomId("11148817");
+    TwitchChannelTestAccess::setRoomId(*channel, u"11148817"_s);
 
     const auto rewardRedemption = QJsonObject{{
         {u"channel_id"_s, u"11148817"_s},

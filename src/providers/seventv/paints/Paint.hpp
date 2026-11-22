@@ -19,10 +19,14 @@ public:
     /// With `margin`, the picture has room around the text for the shadow
     /// (a glow cut at the edges shows as a box): it is `*margin` bigger on
     /// every side and is drawn that much up and to the left.
+    /// A compact widget may also supply `shadowClip`, in coordinates relative
+    /// to the text origin. The shadow fades before that boundary, without
+    /// attenuating the actual painted glyphs.
     QPixmap getPixmap(const QString &text, const QFont &font, QColor userColor,
                       QSizeF size, float scale, float dpr,
                       bool centerVertically = false,
-                      qreal *margin = nullptr) const;
+                      qreal *margin = nullptr,
+                      const QRectF *shadowClip = nullptr) const;
 
     Paint(QString id, QString name = {})
         : id(std::move(id))

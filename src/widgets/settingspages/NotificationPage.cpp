@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "common/UiLanguage.hpp"
+#include "widgets/settingspages/UiComboBox.hpp"
 #include "widgets/settingspages/NotificationPage.hpp"
 
 #include "Application.hpp"
@@ -38,7 +39,7 @@ NotificationPage::NotificationPage()
                 settings.emplace<QLabel>(
                     uiText("You can be informed when certain channels go live. You "
                     "must be logged in to receive live notifications."
-                    "\nYou can be informed in multiple ways:"));
+                    "\nYou can be informed in multiple ways:"))->setWordWrap(true);
 
                 settings.append(this->createCheckBox(
                     uiText("Flash taskbar"), getSettings()->notificationFlashTaskbar));
@@ -69,11 +70,11 @@ NotificationPage::NotificationPage()
 #if defined(Q_OS_WIN) || defined(CHATTERINO_WITH_LIBNOTIFY)
                 auto openIn = settings.emplace<QHBoxLayout>().withoutMargin();
                 {
-                    openIn
-                        .emplace<QLabel>(
-                            uiText("Action when clicking on a notification:  "))
-                        ->setSizePolicy(QSizePolicy::Maximum,
-                                        QSizePolicy::Preferred);
+                    auto actionLabel = openIn.emplace<QLabel>(
+                        uiText("Action when clicking on a notification:  "));
+                    actionLabel->setWordWrap(true);
+                    actionLabel->setSizePolicy(QSizePolicy::Preferred,
+                                               QSizePolicy::Preferred);
 
                     openIn.append(this->createToastReactionComboBox())
                         ->setSizePolicy(QSizePolicy::Maximum,
@@ -107,7 +108,7 @@ NotificationPage::NotificationPage()
             {
                 twitchChannels.emplace<QLabel>(
                     uiText("These are the channels for which you will be informed "
-                    "when they go live:"));
+                    "when they go live:"))->setWordWrap(true);
 
                 EditableModelView *view =
                     twitchChannels
@@ -118,15 +119,7 @@ NotificationPage::NotificationPage()
                 view->setTitles({uiText("Twitch channels")});
                 view->setValidationRegexp(twitchUserNameRegexp());
 
-                view->getTableView()->horizontalHeader()->setSectionResizeMode(
-                    QHeaderView::Fixed);
-                view->getTableView()->horizontalHeader()->setSectionResizeMode(
-                    0, QHeaderView::Stretch);
-
-                QTimer::singleShot(1, [view] {
-                    view->getTableView()->resizeColumnsToContents();
-                    view->getTableView()->setColumnWidth(0, 200);
-                });
+                view->setReadableColumns({0});
 
                 std::ignore = view->addButtonPressed.connect([] {
                     getApp()->getNotifications()->addChannelNotification(
@@ -138,7 +131,7 @@ NotificationPage::NotificationPage()
 }
 QComboBox *NotificationPage::createToastReactionComboBox()
 {
-    QComboBox *toastReactionOptions = new QComboBox();
+    QComboBox *toastReactionOptions = new UiComboBox();
 
     for (int i = 0; i <= static_cast<int>(ToastReaction::OpenInCustomPlayer);
          i++)

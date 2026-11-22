@@ -2,6 +2,7 @@
 
 #include "Application.hpp"
 #include "common/QLogging.hpp"
+#include "common/UiLanguage.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "messages/MessageBuilder.hpp"
 #include "providers/kick/KickAccount.hpp"
@@ -341,7 +342,10 @@ void KickChatServer::onPinnedMessageCreatedEvent(KickChannel *channel,
 void KickChatServer::onPinnedMessageDeletedEvent(KickChannel *channel,
                                                  BoostJsonObject)
 {
-    channel->addSystemMessage(u"The pinned message was unpinned."_s);
+    MessageBuilder builder(systemMessage, uiText("Pinned message was removed."));
+    builder->channelNotice = Message::ChannelNotice::Unpinned;
+    builder->platform = MessagePlatform::Kick;
+    channel->addMessage(builder.release(), MessageContext::Original);
 }
 
 void KickChatServer::onStreamHostEvent(KickChannel *channel,

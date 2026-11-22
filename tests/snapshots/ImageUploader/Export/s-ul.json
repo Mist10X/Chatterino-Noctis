@@ -10,7 +10,7 @@
         "Body": "MultipartFormData",
         "DeletionURL": "https://s-ul.eu/delete.php?file={filename}&key=XXXXXXXXXXXXXXX",
         "FileFormName": "file",
-        "Name": "Chatterino Image Uploader Settings",
+        "Name": "Chatterino Noctis Image Uploader Settings",
         "RequestMethod": "POST",
         "RequestURL": "https://s-ul.eu/api/v1/upload?wizard=true&key=XXXXXXXXXXXXXXX",
         "URL": "{url}",

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "providers/twitch/TwitchIrcServer.hpp"
+#include "providers/twitch/WhisperHistory.hpp"
 
 #include "providers/twitch/Mist1XMark.hpp"
 
@@ -12,6 +13,7 @@
 #include "common/Env.hpp"
 #include "common/Literals.hpp"
 #include "common/QLogging.hpp"
+#include "common/UiLanguage.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "messages/Message.hpp"
 #include "messages/Emote.hpp"
@@ -75,6 +77,55 @@ bool isWarningAcknowledgeNotice(const QString &text)
            text.contains("Acknowledge the Warning at", Qt::CaseInsensitive);
 }
 
+void refreshOwnWhisperSpelling(const ChannelPtr &channel)
+{
+    const auto account = getApp()->getAccounts()->twitch.getCurrent();
+    const auto uid = account->getUserId();
+    const auto login = account->getUserName();
+    if (account->isAnon())
+        return;
+    const auto messages = channel->getMessageSnapshot();
+    if (!std::ranges::any_of(messages, [&](const auto &message) {
+            return message->userID == uid &&
+                   message->loginName.compare(login, Qt::CaseInsensitive) == 0 &&
+                   (message->displayName.isEmpty() ||
+                    message->displayName == message->displayName.toLower());
+        }))
+        return;
+    getHelix()->getUserById(uid, [weak = std::weak_ptr(channel), uid, login](const HelixUser &user) {
+        if (user.id != uid || user.login.compare(login, Qt::CaseInsensitive) != 0)
+            return;
+        whisperhistory::rememberDisplayName(uid, uid, login, user.displayName);
+        if (getApp()->getAccounts()->twitch.getCurrent()->getUserId() == uid)
+            if (const auto locked = weak.lock())
+                whisperhistory::applyDisplayName(*locked, uid, login, user.displayName);
+    }, [] {});
+}
+
+void restoreWhispersWithBadges(const ChannelPtr &channel)
+{
+    const auto uid = getApp()->getAccounts()->twitch.getCurrent()->getUserId();
+    whisperhistory::loadPage(uid, channel, true, [uid, channel](QSet<QString> legacy) {
+        refreshOwnWhisperSpelling(channel);
+        if (legacy.isEmpty() || !dynamic_cast<Application *>(tryGetApp()))
+            return;
+        auto keys = std::make_shared<const QSet<QString>>(std::move(legacy));
+        // Global badge providers load asynchronously. Only recover old records
+        // that never stored an actual badge snapshot; keep new records exact.
+        for (int delay : {1000, 5000, 15000, 45000})
+        {
+            QTimer::singleShot(delay, QCoreApplication::instance(),
+                [weak = std::weak_ptr(channel), uid, keys] {
+                    if (isAppAboutToQuit() ||
+                        getApp()->getAccounts()->twitch.getCurrent()->getUserId() != uid)
+                        return;
+                    if (const auto locked = weak.lock())
+                        whisperhistory::refreshLegacyBadges(*locked, *keys);
+                });
+        }
+    });
+}
+
 QString makeWebClientNonce()
 {
     QString nonce;
@@ -121,6 +172,10 @@ QStringList makeIrcTags(QStringList tags = {})
     {
         tags.prepend(QStringLiteral("client-nonce=") + makeWebClientNonce());
     }
+    else
+    {
+        tags.prepend(QStringLiteral("client-nonce=") + makeWebClientNonce());
+    }
 
     return tags;
 }
@@ -150,15 +205,25 @@ void sendHelixMessage(const std::shared_ptr<TwitchChannel> &channel,
         return;
     }
 
+    const auto account = getApp()->getAccounts()->twitch.getCurrent();
+    if (account->isAnon() || account->getOAuthClient().isEmpty() ||
+        account->getOAuthToken().isEmpty())
+    {
+        channel->addSystemMessage(uiText("Your message was not sent."));
+        return;
+    }
+    const auto sender = account->getUserId();
+    channel->watchChatDelivery(sender);
     getHelix()->sendChatMessage(
         {
             .broadcasterID = broadcasterID,
-            .senderID =
-                getApp()->getAccounts()->twitch.getCurrent()->getUserId(),
+            .senderID = sender,
             .message = message,
             .replyParentMessageID = replyParentId,
+            .clientId = account->getOAuthClient(),
+            .oauthToken = account->getOAuthToken(),
         },
-        [weak = std::weak_ptr(channel)](const auto &res) {
+        [weak = std::weak_ptr(channel), sender](const auto &res) {
             auto chan = weak.lock();
             if (!chan)
             {
@@ -167,6 +232,7 @@ void sendHelixMessage(const std::shared_ptr<TwitchChannel> &channel,
 
             if (res.isSent)
             {
+                chan->confirmChatDelivery(sender, res.id);
                 return;
             }
 
@@ -178,11 +244,13 @@ void sendHelixMessage(const std::shared_ptr<TwitchChannel> &channel,
                     return;
                 }
 
-                chan->addSystemMessage(res.dropReason->message);
+                chan->addMessage(makeChatSendDropMessage(res.dropReason->message,
+                                                        res.dropReason->code),
+                                 MessageContext::Original);
             }
             else
             {
-                chan->addSystemMessage("Your message was not sent.");
+                chan->addSystemMessage(uiText("Your message was not sent."));
             }
         },
         [weak = std::weak_ptr(channel)](auto error, auto message) {
@@ -202,15 +270,17 @@ void sendHelixMessage(const std::shared_ptr<TwitchChannel> &channel,
             auto errorMessage = [&]() -> QString {
                 switch (error)
                 {
+                    case Error::DeliveryUnknown:
+                        return uiText("Message delivery to Twitch could not be confirmed. No automatic resend.");
                     case Error::MissingText:
-                        return "You can't send an empty message.";
+                        return uiText("You can't send an empty message.");
                     case Error::BadRequest:
                         return "Failed to send message: " + message;
                     case Error::Forbidden:
                         return "You are not allowed to send messages in this "
                                "channel.";
                     case Error::MessageTooLarge:
-                        return "Your message was too long.";
+                        return uiText("Your message was too long.");
                     case Error::UserMissingScope:
                         return "Missing required scope. Re-login with your "
                                "account and try again.";
@@ -251,20 +321,52 @@ TwitchIrcServer::TwitchIrcServer()
 {
     // Initialize the connections
     // XXX: don't create write connection if there is no separate write connection.
-    this->writeConnection_.reset(new IrcConnection);
-    this->writeConnection_->setDiagnosticsLabel(QStringLiteral("write"));
-    this->writeConnection_->moveToThread(
-        QCoreApplication::instance()->thread());
-
-    QObject::connect(this->writeConnection_.get(),
-                     &Communi::IrcConnection::messageReceived, this,
-                     &TwitchIrcServer::writeConnectionMessageReceived);
-    this->signalHolder.managedConnect(
-        this->writeConnection_->connectionLost, [this](bool timeout) {
+    this->writeLoginTimeout_.setSingleShot(true);
+    this->writeLoginTimeout_.setInterval(20000);
+    this->writeReconnectTimer_.setSingleShot(true);
+    QObject::connect(&this->writeReconnectTimer_, &QTimer::timeout, this,
+                     [this] {
+        if (!isAppAboutToQuit())
+        {
+            TwitchIrcServer::initializeConnection(this->writeConnection_.get(),
+                                                  ConnectionType::Write);
+        }
+    });
+    QObject::connect(&this->writeLoginTimeout_, &QTimer::timeout, this,
+                     [this] {
+        const auto account = getApp()->getAccounts()->twitch.getCurrent();
+        if (this->writeRecovery_.belongsTo(account->getUserId()) &&
+            !this->writeConnection_->isConnected())
+        {
             qCDebug(chatterinoIrc)
-                << "Write connection reconnect requested. Timeout:" << timeout;
-            this->writeConnection_->smartReconnect();
-        });
+                << "Write connection did not finish login; reconnecting";
+            this->reconnectWriteConnection(true);
+        }
+    });
+    this->writeConfirmationWatchdog_.setInterval(1000);
+    QObject::connect(&this->writeConfirmationWatchdog_, &QTimer::timeout,
+                     this, [this] {
+        const auto account = getApp()->getAccounts()->twitch.getCurrent();
+        if (!this->writeRecovery_.belongsTo(account->getUserId()))
+        {
+            this->writeConfirmationWatchdog_.stop();
+            return;
+        }
+        if (this->writeRecovery_.expired(IrcWriteRecovery::Clock::now()))
+        {
+            qCDebug(chatterinoIrc)
+                << "Twitch write confirmation timed out; reconnecting writer";
+            // Reconnect only the write socket. An accepted socket write may
+            // already have been delivered; never replay it automatically.
+            this->reconnectWriteConnection(true);
+        }
+        this->writeRecovery_.pruneConfirmed(IrcWriteRecovery::Clock::now());
+        if (!this->writeRecovery_.hasPending())
+        {
+            this->writeConfirmationWatchdog_.stop();
+        }
+    });
+    this->createWriteConnection();
     this->signalHolder.managedConnect(
         this->readConnection_->messageReceived, [this](auto *msg) {
             // A channel read through the anonymous connection (banned
@@ -284,6 +386,7 @@ TwitchIrcServer::TwitchIrcServer()
             {
                 return;
             }
+            this->observeLiveChatDelivery(msg);
             this->privateMessageReceived(msg);
         });
 
@@ -327,6 +430,7 @@ TwitchIrcServer::TwitchIrcServer()
                      &Communi::IrcConnection::privateMessageReceived, this,
                      [this](auto *msg) {
                          ScopedAnonymousTwitchLookup lookup(true);
+                         this->observeLiveChatDelivery(msg);
                          this->privateMessageReceived(msg);
                      });
     QObject::connect(this->anonymousReadConnection_.get(),
@@ -354,8 +458,21 @@ TwitchIrcServer::TwitchIrcServer()
 
 void TwitchIrcServer::initialize()
 {
+    restoreWhispersWithBadges(this->whispersChannel);
     getApp()->getAccounts()->twitch.currentUserChanged.connect([this]() {
-        postToThread([this] {
+        const auto epoch = ++this->writeAccountEpoch_;
+        this->setLastUserThatWhisperedMe({});
+        this->reportUnconfirmedWrites();
+        this->writeRecovery_.unbindAccount();
+        this->writeLoginTimeout_.stop();
+        this->writeReconnectTimer_.stop();
+        restoreWhispersWithBadges(this->whispersChannel);
+        postToThread([this, epoch] {
+            if (epoch != this->writeAccountEpoch_ || isAppAboutToQuit())
+            {
+                // Ignore queued work from an earlier account change.
+                return;
+            }
             const auto account = getApp()->getAccounts()->twitch.getCurrent();
             if (!account->isAnon())
             {
@@ -380,9 +497,7 @@ void TwitchIrcServer::initialize()
             }
             else
             {
-                this->writeConnection_->close();
-                TwitchIrcServer::initializeConnection(
-                    this->writeConnection_.get(), ConnectionType::Write);
+                this->reconnectWriteConnection();
             }
         });
     });
@@ -579,6 +694,12 @@ void TwitchIrcServer::initialize()
 
 void TwitchIrcServer::aboutToQuit()
 {
+    ++this->writeAccountEpoch_;
+    this->writeLoginTimeout_.stop();
+    this->writeConfirmationWatchdog_.stop();
+    this->writeSignalHolder_.clear();
+    this->writeRecovery_.unbindAccount();
+    this->writeConnection_->close();
     this->signalHolder.clear();
 
     this->channels.clear();
@@ -638,10 +759,9 @@ void TwitchIrcServer::initializeConnection(IrcConnection *connection,
     connection->setNickName(username);
     connection->setRealName(username);
 
-    if (!anon)
-    {
-        connection->setPassword(oauthToken);
-    }
+    // A reused read connection must not keep the previous account's password
+    // when switching to anonymous mode.
+    connection->setPassword(anon ? QString() : oauthToken);
 
     // https://dev.twitch.tv/docs/irc#connecting-to-the-twitch-irc-server
     // SSL disabled: irc://irc.chat.twitch.tv:6667 (or port 80)
@@ -696,6 +816,25 @@ std::shared_ptr<Channel> TwitchIrcServer::createChannel(
         });
 
     return channel;
+}
+
+void TwitchIrcServer::observeLiveChatDelivery(Communi::IrcPrivateMessage *message)
+{
+    ScopedAnonymousTwitchLookup normal(false);
+    QString name;
+    if (!trimChannelName(message->target(), name))
+    {
+        return;
+    }
+    const auto sender = message->tag("user-id").toString();
+    const auto id = message->tag("id").toString();
+    const auto nonce = message->tag("client-nonce").toString();
+    this->writeRecovery_.noteEcho(name, sender, nonce, id);
+    auto channel = this->getChannelOrEmpty(name);
+    if (auto *twitch = dynamic_cast<TwitchChannel *>(channel.get()))
+    {
+        twitch->observeChatDelivery(sender, id);
+    }
 }
 
 void TwitchIrcServer::privateMessageReceived(
@@ -1247,12 +1386,9 @@ bool TwitchIrcServer::prepareToSend(
     // check if you are sending messages too fast
     if (!lastMessage.empty() && lastMessage.back() + minMessageOffset > now)
     {
-        if (this->lastErrorTimeSpeed_ + 30s < now)
-        {
-            channel->addSystemMessage("You are sending messages too quickly.");
-
-            this->lastErrorTimeSpeed_ = now;
-        }
+        // A local rejection must never silently look like a successful send,
+        // even if a previous rejection was reported in another busy tab.
+        channel->addSystemMessage(uiText("You are sending messages too quickly."));
         return false;
     }
 
@@ -1265,12 +1401,7 @@ bool TwitchIrcServer::prepareToSend(
     // check if you are sending too many messages
     if (lastMessage.size() >= maxMessageCount)
     {
-        if (this->lastErrorTimeAmount_ + 30s < now)
-        {
-            channel->addSystemMessage("You are sending too many messages.");
-
-            this->lastErrorTimeAmount_ = now;
-        }
+        channel->addSystemMessage(uiText("You are sending too many messages."));
         return false;
     }
 
@@ -1282,50 +1413,36 @@ void TwitchIrcServer::onMessageSendRequested(
     const std::shared_ptr<TwitchChannel> &channel, const QString &message,
     bool &sent)
 {
-    sent = false;
-
-    bool canSend = this->prepareToSend(channel);
-    if (!canSend)
-    {
-        return;
-    }
-
     if (getSettings()->shouldSendHelixChat())
     {
-        sendHelixMessage(channel, message);
+        sent = this->prepareToSend(channel);
+        if (sent)
+        {
+            sendHelixMessage(channel, message);
+        }
     }
     else
     {
-        this->sendMessage(channel->getName(), message);
+        sent = this->trySendChatMessage(channel, message);
     }
-
-    sent = true;
 }
 
 void TwitchIrcServer::onReplySendRequested(
     const std::shared_ptr<TwitchChannel> &channel, const QString &message,
     const QString &replyId, bool &sent)
 {
-    sent = false;
-
-    bool canSend = this->prepareToSend(channel);
-    if (!canSend)
-    {
-        return;
-    }
-
     if (getSettings()->shouldSendHelixChat())
     {
-        sendHelixMessage(channel, message, replyId);
+        sent = this->prepareToSend(channel);
+        if (sent)
+        {
+            sendHelixMessage(channel, message, replyId);
+        }
     }
     else
     {
-        this->sendRawMessage(makePrivmsg(
-            channel->getName(), message,
-            makeIrcTags(QStringList{QStringLiteral("reply-parent-msg-id=") +
-                                    replyId})));
+        sent = this->trySendChatMessage(channel, message, replyId);
     }
-    sent = true;
 }
 
 const IndirectChannel &TwitchIrcServer::getWatchingChannel() const
@@ -1707,8 +1824,7 @@ void TwitchIrcServer::connect()
 
     this->disconnect();
 
-    TwitchIrcServer::initializeConnection(this->writeConnection_.get(),
-                                          ConnectionType::Write);
+    this->reconnectWriteConnection();
     this->readConnection_->reconnect();
 
     this->refreshModeratedChannels();
@@ -1719,20 +1835,264 @@ void TwitchIrcServer::disconnect()
     std::lock_guard<std::mutex> locker(this->connectionMutex_);
 
     this->readConnection_->close();
+    this->writeLoginTimeout_.stop();
+    this->writeReconnectTimer_.stop();
+    this->writeConfirmationWatchdog_.stop();
     this->writeConnection_->close();
+}
+
+void TwitchIrcServer::createWriteConnection()
+{
+    this->writeConnection_.reset(new IrcConnection);
+    auto *writer = this->writeConnection_.get();
+    writer->setDiagnosticsLabel(QStringLiteral("write"));
+    writer->moveToThread(QCoreApplication::instance()->thread());
+
+    QObject::connect(writer, &Communi::IrcConnection::connecting, this,
+                     [this, writer] {
+        if (this->writeConnection_.get() == writer)
+        {
+            this->writeLoginTimeout_.start();
+        }
+    });
+    QObject::connect(writer, &Communi::IrcConnection::connected, this,
+                     [this, writer] {
+        if (this->writeConnection_.get() == writer)
+        {
+            this->writeLoginTimeout_.stop();
+            this->writeReconnectDelayMs_ = 1000;
+        }
+    });
+    QObject::connect(writer, &Communi::IrcConnection::messageReceived, this,
+                     [this, writer](Communi::IrcMessage *message) {
+        const auto account = getApp()->getAccounts()->twitch.getCurrent();
+        if (this->writeConnection_.get() != writer ||
+            !this->writeRecovery_.belongsTo(account->getUserId()))
+        {
+            return;
+        }
+        const auto &command = message->command();
+        const auto target = message->parameter(0);
+        if (target.startsWith('#'))
+        {
+            const auto name = target.mid(1);
+            const auto id = message->tag("id").toString();
+            const auto notice = message->tag("msg-id").toString();
+            if (command == "USERSTATE" && !id.isEmpty() &&
+                this->writeRecovery_.noteResponse(name, id))
+            {
+                auto channel = this->getChannelOrEmpty(name);
+                if (auto *twitch = dynamic_cast<TwitchChannel *>(channel.get()))
+                {
+                    twitch->confirmChatDelivery(account->getUserId(), id);
+                }
+            }
+            else if (command == "NOTICE" &&
+                     (notice.startsWith("msg_") ||
+                      notice == "automod_rejected"))
+            {
+                this->writeRecovery_.noteResponse(name);
+            }
+            if (!this->writeRecovery_.hasPending())
+            {
+                this->writeConfirmationWatchdog_.stop();
+            }
+        }
+        this->writeConnectionMessageReceived(message);
+    });
+    this->writeSignalHolder_.managedConnect(
+        writer->connectionLost, [this, writer](bool timeout) {
+        if (this->writeConnection_.get() != writer)
+        {
+            return;
+        }
+        this->writeLoginTimeout_.stop();
+        this->reportUnconfirmedWrites();
+        const auto account = getApp()->getAccounts()->twitch.getCurrent();
+        if (!this->writeRecovery_.belongsTo(account->getUserId()))
+        {
+            return;  // this socket is being retired by an account change
+        }
+        qCDebug(chatterinoIrc)
+            << "Write connection reconnect requested. Timeout:" << timeout;
+        this->reconnectWriteConnection(true);
+    });
+}
+
+void TwitchIrcServer::reconnectWriteConnection(bool delayed)
+{
+    assertInGuiThread();
+    this->reportUnconfirmedWrites();
+    this->writeLoginTimeout_.stop();
+    this->writeReconnectTimer_.stop();
+    this->writeRecovery_.unbindAccount();
+    this->writeSignalHolder_.clear();
+    if (this->writeConnection_)
+    {
+        // Communi retains pending raw bytes across close/open. Retire the
+        // entire socket so they cannot leak into a later login.
+        QObject::disconnect(this->writeConnection_.get(), nullptr, this,
+                            nullptr);
+        this->writeConnection_->close();
+    }
+    this->createWriteConnection();
+    const auto account = getApp()->getAccounts()->twitch.getCurrent();
+    this->writeRecovery_.bindAccount(account->getUserId());
+    if (delayed)
+    {
+        this->writeReconnectTimer_.start(this->writeReconnectDelayMs_);
+        this->writeReconnectDelayMs_ = std::min(30000, this->writeReconnectDelayMs_ * 2);
+    }
+    else
+    {
+        this->writeReconnectDelayMs_ = 1000;
+        TwitchIrcServer::initializeConnection(this->writeConnection_.get(),
+                                              ConnectionType::Write);
+    }
+}
+
+bool TwitchIrcServer::ensureWriteConnection()
+{
+    assertInGuiThread();
+    const auto account = getApp()->getAccounts()->twitch.getCurrent();
+    if (account->isAnon() || isAppAboutToQuit())
+    {
+        return false;
+    }
+    if (!this->writeRecovery_.belongsTo(account->getUserId()))
+    {
+        this->reconnectWriteConnection();
+        return false;
+    }
+    if (this->writeReconnectTimer_.isActive())
+    {
+        return false;
+    }
+    if (this->writeRecovery_.canSend(account->getUserId(),
+                                     this->writeConnection_->isConnected()))
+    {
+        return true;
+    }
+    if (!this->writeConnection_->isActive())
+    {
+        this->reconnectWriteConnection(true);
+    }
+    else if (!this->writeLoginTimeout_.isActive())
+    {
+        // Connecting can stall before the socket emits Communi's connecting
+        // signal (e.g. DNS lookup). A user trying to send must still get
+        // automatic recovery rather than waiting indefinitely.
+        this->writeLoginTimeout_.start();
+    }
+    return false;
+}
+
+bool TwitchIrcServer::trySendRawMessage(const QString &rawMessage)
+{
+    if (!this->ensureWriteConnection())
+    {
+        return false;
+    }
+    bool accepted = false;
+    {
+        std::lock_guard<std::mutex> locker(this->connectionMutex_);
+        // Inactive Communi sockets queue raw bytes internally even when the
+        // send call returns false. Only call it after the IRC welcome.
+        if (this->writeConnection_->isConnected())
+        {
+            accepted = this->writeConnection_->sendRaw(rawMessage);
+        }
+    }
+    if (!accepted)
+    {
+        qCDebug(chatterinoIrc)
+            << "Write socket refused command; reconnecting without replay";
+        this->reconnectWriteConnection();
+    }
+    return accepted;
+}
+
+bool TwitchIrcServer::trySendChatMessage(
+    const std::shared_ptr<TwitchChannel> &channel, const QString &message,
+    const QString &replyId)
+{
+    const auto reportNotSent = [&channel] {
+        channel->addSystemMessage(uiText(
+            "Message was not sent: the Twitch send connection is reconnecting. "
+            "Please try again."));
+    };
+    // A disconnected write socket must not consume the normal send quota.
+    if (!this->ensureWriteConnection())
+    {
+        reportNotSent();
+        return false;
+    }
+    if (!this->prepareToSend(channel))
+    {
+        return false;
+    }
+
+    QStringList tags;
+    if (!replyId.isEmpty())
+    {
+        tags.append(QStringLiteral("reply-parent-msg-id=") + replyId);
+    }
+    tags = makeIrcTags(tags);
+    const auto nonce = tags.front().mid(QStringLiteral("client-nonce=").size());
+    channel->watchChatDelivery(
+        getApp()->getAccounts()->twitch.getCurrent()->getUserId());
+    if (!this->trySendRawMessage(makePrivmsg(channel->getName(), message, tags)))
+    {
+        channel->addSystemMessage(uiText(
+            "Message delivery to Twitch could not be confirmed. No automatic resend."));
+        return false;
+    }
+    this->writeRecovery_.noteWrite(channel->getName(),
+                                   IrcWriteRecovery::Clock::now(), nonce);
+    if (!this->writeConfirmationWatchdog_.isActive())
+    {
+        this->writeConfirmationWatchdog_.start();
+    }
+    return true;
+}
+
+void TwitchIrcServer::reportUnconfirmedWrites()
+{
+    this->writeConfirmationWatchdog_.stop();
+    for (const auto &name : this->writeRecovery_.takeUnconfirmedChannels())
+    {
+        auto channel = this->getChannelOrEmpty(name);
+        if (channel && !channel->isEmpty())
+        {
+            channel->addSystemMessage(uiText(
+                "Message delivery to Twitch could not be confirmed. "
+                "No automatic resend."));
+        }
+    }
 }
 
 void TwitchIrcServer::sendMessage(const QString &channelName,
                                   const QString &message)
 {
-    this->sendRawMessage(makePrivmsg(channelName, message, makeIrcTags()));
+    if (!this->trySendRawMessage(
+            makePrivmsg(channelName, message, makeIrcTags())))
+    {
+        auto channel = this->getChannelOrEmpty(channelName);
+        if (channel && !channel->isEmpty())
+        {
+            channel->addSystemMessage(uiText(
+                "Message was not sent: the Twitch send connection is reconnecting. "
+                "Please try again."));
+        }
+    }
 }
 
 void TwitchIrcServer::sendRawMessage(const QString &rawMessage)
 {
-    std::lock_guard<std::mutex> locker(this->connectionMutex_);
-
-    this->writeConnection_->sendRaw(rawMessage);
+    if (!this->trySendRawMessage(rawMessage))
+    {
+        qCDebug(chatterinoIrc) << "Raw command not sent: writer unavailable";
+    }
 }
 
 ChannelPtr TwitchIrcServer::getOrAddChannel(const QString &dirtyChannelName)

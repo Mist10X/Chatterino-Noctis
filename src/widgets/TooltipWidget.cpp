@@ -11,6 +11,7 @@
 
 #include <QPainter>
 
+#include <algorithm>
 #include <utility>
 
 namespace {
@@ -37,19 +38,11 @@ namespace chatterino {
 
 TooltipEntry TooltipEntry::scaled(ImagePtr image, QString text, float scale)
 {
-    auto entry = TooltipEntry{
+    return TooltipEntry{
         .image = std::move(image),
         .text = std::move(text),
+        .previewScale = scale,
     };
-
-    if (entry.image)
-    {
-        auto imgWidth = entry.image->width() / entry.image->scale();
-        auto imgHeight = entry.image->height() / entry.image->scale();
-        entry.customWidth = static_cast<int>(imgWidth * scale);
-        entry.customHeight = static_cast<int>(imgHeight * scale);
-    }
-    return entry;
 }
 
 TooltipWidget::TooltipWidget(BaseWidget *parent)
@@ -60,10 +53,15 @@ TooltipWidget::TooltipWidget(BaseWidget *parent)
     assert(parent != nullptr);
     QObject::connect(parent, &QObject::destroyed, this, &QObject::deleteLater);
 
-    this->setStyleSheet("color: #fff; background: rgba(11, 11, 11, 0.8)");
+    // One translucent, rounded surface is painted below the entries. A
+    // background style on the widget (or its children) would fill the corners
+    // with opaque rectangles again.
+    this->setStyleSheet("color: #fff; background: transparent");
     this->setAttribute(Qt::WA_TranslucentBackground);
+    this->setAutoFillBackground(false);
     this->setAttribute(Qt::WA_TransparentForMouseEvents);
     this->setWindowFlag(Qt::WindowStaysOnTopHint, true);
+    this->setWindowFlag(Qt::WindowTransparentForInput, true);
 
     this->initializeVLayout();
     this->setLayout(this->vLayout_);
@@ -145,6 +143,7 @@ void TooltipWidget::set(const std::vector<TooltipEntry> &entries,
         if (auto *entryWidget = this->entryAt(static_cast<int>(i)))
         {
             const auto &entry = entries[i];
+            entryWidget->setPreviewScale(entry.previewScale);
             entryWidget->setImage(entry.image);
             entryWidget->setText(entry.text);
             entryWidget->setImageScale(entry.customWidth, entry.customHeight);
@@ -283,8 +282,8 @@ void TooltipWidget::initializeVLayout()
 {
     auto *vLayout = new QVBoxLayout(this);
     vLayout->setSizeConstraint(QLayout::SetFixedSize);
-    vLayout->setContentsMargins(10, 5, 10, 5);
-    vLayout->setSpacing(10);
+    vLayout->setContentsMargins(8, 5, 8, 5);
+    vLayout->setSpacing(6);
     this->vLayout_ = vLayout;
 }
 
@@ -292,9 +291,9 @@ void TooltipWidget::initializeGLayout()
 {
     auto *gLayout = new QGridLayout(this);
     gLayout->setSizeConstraint(QLayout::SetFixedSize);
-    gLayout->setContentsMargins(10, 5, 10, 5);
+    gLayout->setContentsMargins(8, 5, 8, 5);
     gLayout->setHorizontalSpacing(8);
-    gLayout->setVerticalSpacing(10);
+    gLayout->setVerticalSpacing(6);
     this->gLayout_ = gLayout;
 }
 
@@ -305,8 +304,17 @@ void TooltipWidget::themeChangedEvent()
 void TooltipWidget::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
-
-    painter.fillRect(this->rect(), QColor(0, 0, 0, int(0.8 * 255)));
+    // Source composition clears every pixel outside the antialiased path,
+    // including previously painted pixels after an entry changes size.
+    painter.setCompositionMode(QPainter::CompositionMode_Source);
+    painter.fillRect(this->rect(), Qt::transparent);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, int(0.8 * 255)));
+    const auto radius = std::min({7.0 * this->scale(), this->width() / 2.0,
+                                  this->height() / 2.0});
+    painter.drawRoundedRect(QRectF(this->rect()), radius, radius);
 }
 
 void TooltipWidget::scaleChangedEvent(float)
@@ -317,7 +325,7 @@ void TooltipWidget::scaleChangedEvent(float)
 void TooltipWidget::updateFont()
 {
     this->setFont(getApp()->getFonts()->getFont(FontStyle::ChatMediumSmall,
-                                                this->scale()));
+        std::clamp(this->scale() * 0.88F, 0.9F, 1.3F)));
 }
 
 void TooltipWidget::setWordWrap(bool wrap)

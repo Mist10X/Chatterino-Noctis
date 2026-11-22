@@ -91,6 +91,8 @@ public:
 
     static ImagePtr fromUrl(const Url &url, qreal scale = 1,
                             QSize expectedSize = {});
+    static ImagePtr fromLinkThumbnail(const Url &url);
+    static ImagePtr fromPixmap(const QPixmap &pixmap, qreal scale = 1);
     static ImagePtr fromResourcePixmap(const QPixmap &pixmap, qreal scale = 1);
     static ImagePtr getEmpty();
 
@@ -119,7 +121,7 @@ private:
 
     void setPixmap(const QPixmap &pixmap);
     void loadIfNeeded();
-    void actuallyLoad();
+    void actuallyLoad(bool refreshCache = false);
     void failLoad(bool retryable);
     void scheduleRetry();
     void expireFrames();
@@ -136,6 +138,7 @@ private:
     std::atomic_bool empty_{false};
 
     bool shouldLoad_{false};
+    bool retryThumbnailGatewayErrors_{false};
     // Accessed only on the GUI thread, including completion callbacks.
     detail::ImageLoadRetry loadRetry_;
     bool retryScheduled_{false};

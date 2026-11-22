@@ -1654,6 +1654,23 @@ NoticeIconLayoutElement::NoticeIconLayoutElement(MessageElement &creator,
 void NoticeIconLayoutElement::paint(QPainter &painter,
                                     const MessageColors & /*messageColors*/)
 {
+    if (this->getLink().type == Link::DeleteUploadedImage)
+    {
+        const auto box = this->getRect().adjusted(0.5, 0.5, -0.5, -0.5);
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing);
+        auto tint = this->color_;
+        tint.setAlpha(22);
+        painter.setBrush(tint);
+        tint.setAlpha(65);
+        painter.setPen(QPen(tint, this->scale_));
+        painter.drawRoundedRect(box, 5 * this->scale_, 5 * this->scale_);
+        painter.restore();
+        const auto pad = 3 * this->scale_;
+        paintIcon(painter, this->icon_, this->color_,
+                  box.adjusted(pad, pad, -pad, -pad));
+        return;
+    }
     paintIcon(painter, this->icon_, this->color_, QRectF(this->getRect()));
 }
 
@@ -1750,6 +1767,129 @@ void NoticeIconLayoutElement::paintIcon(QPainter &painter, Icon icon,
             painter.drawLine(QPointF(8, 5), QPointF(8, 14));
             painter.drawEllipse(QRectF(4, 1.5, 4, 3.5));
             painter.drawEllipse(QRectF(8, 1.5, 4, 3.5));
+            break;
+        case Icon::Subscription:
+            painter.drawPolyline(QPolygonF{{8, 1.8}, {9.8, 6}, {14.2, 6.3},
+                                           {10.8, 9.3}, {12, 13.6}, {8, 11.2},
+                                           {4, 13.6}, {5.2, 9.3}, {1.8, 6.3},
+                                           {6.2, 6}, {8, 1.8}});
+            break;
+        case Icon::Prediction:
+            // An upward trend, rather than a moderation or warning symbol.
+            painter.drawPolyline(
+                QPolygonF{{2.5, 11.5}, {6, 7.5}, {9, 9}, {13.5, 4}});
+            painter.drawPolyline(QPolygonF{{10, 4}, {13.5, 4}, {13.5, 7.5}});
+            break;
+        case Icon::Poll:
+            // Three result bars with a shared baseline.
+            painter.drawLine(QPointF(2.5, 13), QPointF(13.5, 13));
+            painter.drawLine(QPointF(4, 10.5), QPointF(4, 7.5));
+            painter.drawLine(QPointF(8, 10.5), QPointF(8, 3.5));
+            painter.drawLine(QPointF(12, 10.5), QPointF(12, 6));
+            break;
+        case Icon::Pinned:
+        case Icon::Unpinned: {
+            // Move the unpinned glyph left to leave space for the minus.
+            painter.translate(icon == Icon::Unpinned ? -2 : 0, 0);
+            painter.drawLine(QPointF(5, 2.5), QPointF(11, 2.5));
+            painter.drawPolyline(QPolygonF{{6, 2.5}, {6, 6.5}, {4, 9}, {12, 9},
+                                           {10, 6.5}, {10, 2.5}});
+            painter.drawLine(QPointF(8, 9), QPointF(8, 13.7));
+            if (icon == Icon::Unpinned)
+            {
+                painter.drawLine(QPointF(13.1, 5.4), QPointF(16.3, 5.4));
+            }
+            break;
+        }
+        case Icon::StreamLive:
+            painter.drawArc(QRectF(2, 1.7, 12, 12.6), -41 * 16, 82 * 16);
+            painter.drawArc(QRectF(2, 1.7, 12, 12.6), 139 * 16, 82 * 16);
+            painter.setBrush(color);
+            painter.drawPolygon(QPolygonF{{6.5, 5.2}, {10.4, 8}, {6.5, 10.8}});
+            break;
+        case Icon::StreamOffline:
+            painter.drawRoundedRect(QRectF(2, 3.1, 12, 9.8), 2.4, 2.4);
+            painter.setBrush(color);
+            painter.drawRoundedRect(QRectF(6.5, 6.5, 3, 3), 0.4, 0.4);
+            break;
+        case Icon::PredictionWon: {
+            QPainterPath cup;
+            cup.moveTo(4.5, 2.4);
+            cup.lineTo(11.5, 2.4);
+            cup.cubicTo(11.5, 11.8, 4.5, 11.8, 4.5, 2.4);
+            cup.closeSubpath();
+            painter.drawPath(cup);
+            painter.drawArc(QRectF(1.5, 3.6, 4, 4.7), 90 * 16, 155 * 16);
+            painter.drawArc(QRectF(10.5, 3.6, 4, 4.7), -65 * 16, 155 * 16);
+            painter.drawLine(QPointF(8, 9.6), QPointF(8, 13.1));
+            painter.drawLine(QPointF(5.5, 13.4), QPointF(10.5, 13.4));
+            break;
+        }
+        case Icon::PredictionLost:
+            painter.drawPolyline(QPolygonF{{2, 4.4}, {6, 8.5}, {9, 6.5},
+                                           {13.5, 11.7}});
+            painter.drawPolyline(QPolygonF{{9.6, 11.7}, {13.5, 11.7},
+                                           {13.5, 7.8}});
+            break;
+        case Icon::PredictionRefund: {
+            QPainterPath turn;
+            turn.moveTo(3, 5.5);
+            turn.lineTo(9.6, 5.5);
+            turn.cubicTo(15, 5.5, 15, 12.7, 9.6, 12.7);
+            turn.lineTo(7, 12.7);
+            painter.drawPath(turn);
+            painter.drawPolyline(QPolygonF{{6, 2.4}, {2.8, 5.5}, {6, 8.6}});
+            break;
+        }
+        case Icon::Raid:
+            painter.drawLine(QPointF(2, 8), QPointF(9.5, 8));
+            painter.drawPolyline(QPolygonF{{6, 4.5}, {9.5, 8}, {6, 11.5}});
+            painter.drawPolyline(
+                QPolygonF{{9.5, 2.5}, {13.5, 2.5}, {13.5, 13.5}, {9.5, 13.5}});
+            break;
+        case Icon::WatchStreak: {
+            QPainterPath flame;
+            flame.moveTo(8.5, 1.5);
+            flame.cubicTo(11.0, 4.0, 12.8, 6.0, 12.8, 9.6);
+            flame.cubicTo(12.8, 12.7, 10.7, 14.2, 8.1, 14.2);
+            flame.cubicTo(5.4, 14.2, 3.3, 12.4, 3.3, 9.6);
+            flame.cubicTo(3.3, 7.2, 4.5, 5.1, 5.9, 4.0);
+            flame.cubicTo(5.8, 5.8, 6.5, 6.5, 7.2, 6.5);
+            flame.cubicTo(8.7, 5.0, 8.7, 3.3, 8.5, 1.5);
+            painter.drawPath(flame);
+            painter.drawPolyline(QPolygonF{{5.9, 11.0}, {8.0, 8.5}, {10.0, 11.0}});
+            break;
+        }
+        case Icon::AutoModHeld: {
+            QPainterPath shield;
+            shield.moveTo(8, 1.7);
+            shield.lineTo(13.4, 4.0);
+            shield.lineTo(13.4, 7.5);
+            shield.cubicTo(13.4, 10.4, 10.7, 13.1, 8, 14.3);
+            shield.cubicTo(5.3, 13.1, 2.6, 10.4, 2.6, 7.5);
+            shield.lineTo(2.6, 4.0);
+            shield.closeSubpath();
+            painter.drawPath(shield);
+            painter.drawLine(QPointF(8, 5.3), QPointF(8, 8.4));
+            painter.drawPoint(QPointF(8, 10.7));
+            break;
+        }
+        case Icon::ConnectionReady:
+            // A quiet, compact checkmark in an outlined circle.
+            painter.drawEllipse(QPointF(8, 8), 6.1, 6.1);
+            painter.drawPolyline(QPolygonF{{4.7, 8}, {7.1, 10.4}, {11.4, 5.8}});
+            break;
+        case Icon::ConnectionInterrupted:
+            // A small Wi-Fi signal with a disconnected-state cross.
+            painter.drawArc(QRectF(1.4, 3.0, 12.0, 12.0), 38 * 16, 104 * 16);
+            painter.drawArc(QRectF(4.2, 6.0, 6.4, 6.4), 38 * 16, 104 * 16);
+            painter.setBrush(color);
+            painter.setPen(Qt::NoPen);
+            painter.drawEllipse(QPointF(7.4, 11.8), 0.8, 0.8);
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(pen);
+            painter.drawLine(QPointF(11.2, 10.8), QPointF(14.2, 13.8));
+            painter.drawLine(QPointF(14.2, 10.8), QPointF(11.2, 13.8));
             break;
     }
     painter.restore();
@@ -1866,22 +2006,45 @@ void ImagePreviewLayoutElement::paint(QPainter &painter,
         return;
     }
     const auto s = this->scale_;
-    // a little room above the picture, almost none below
-    const QRectF rect = QRectF(this->getRect()).adjusted(0, 4 * s, 0, -1 * s);
-
+    const auto frame = QRectF(this->getRect()).adjusted(0, 4 * s, 0, -s);
+    const auto picture = frame.adjusted(3 * s, 3 * s, -3 * s, -3 * s);
+    if (picture.isEmpty())
+    {
+        return;
+    }
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    QPainterPath rounded;
-    rounded.addRoundedRect(rect, 5 * s, 5 * s);
-    painter.setClipPath(rounded);
-    painter.drawPixmap(rect, *pixmap, QRectF(pixmap->rect()));
-    painter.setClipping(false);
-    const bool light = messageColors.regularBg.lightnessF() > 0.5;
-    painter.setPen(
-        QPen(light ? QColor(0, 0, 0, 40) : QColor(255, 255, 255, 30), 1));
-    painter.setBrush(Qt::NoBrush);
-    painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 5 * s, 5 * s);
+    QColor surface = messageColors.regularText;
+    surface.setAlpha(18);
+    QColor edge = messageColors.linkText;
+    edge.setAlpha(64);
+    painter.setPen(QPen(edge, s));
+    painter.setBrush(surface);
+    painter.drawRoundedRect(frame.adjusted(s / 2, s / 2, -s / 2, -s / 2),
+                            10 * s, 10 * s);
+
+    // Filling an antialiased path with the image also smooths its fractional
+    // corners on high-DPI displays. A raster clip alone gives jagged edges.
+    // Area-filter large screenshots at the physical output resolution. A
+    // bilinear brush alone skips fine strokes and text during minification.
+    const auto physical = (picture.size() * painter.device()->devicePixelRatioF()).toSize();
+    auto texture = *pixmap;
+    if (!physical.isEmpty() && texture.width() > physical.width())
+    {
+        texture = texture.scaled(physical, Qt::IgnoreAspectRatio,
+                                 Qt::SmoothTransformation);
+    }
+    const auto textureSize = texture.deviceIndependentSize();
+    QTransform map;
+    map.translate(picture.left(), picture.top());
+    map.scale(picture.width() / textureSize.width(),
+              picture.height() / textureSize.height());
+    QBrush imageBrush(texture);
+    imageBrush.setTransform(map);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(imageBrush);
+    painter.drawRoundedRect(picture, 7 * s, 7 * s);
     painter.restore();
 }
 

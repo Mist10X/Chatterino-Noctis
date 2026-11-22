@@ -87,7 +87,7 @@ BasicLoginWidget::BasicLoginWidget()
     this->ui_.loginButton.setText(uiText("Log in (Opens in browser)"));
     this->ui_.pasteCodeButton.setText(uiText("Paste login info"));
     this->ui_.unableToOpenBrowserHelper.setWindowTitle(
-        uiText("Leafyrino - unable to open in browser"));
+        uiText("Chatterino Noctis - unable to open in browser"));
     this->ui_.unableToOpenBrowserHelper.setWordWrap(true);
     this->ui_.unableToOpenBrowserHelper.hide();
     this->ui_.unableToOpenBrowserHelper.setText(
@@ -98,7 +98,7 @@ BasicLoginWidget::BasicLoginWidget()
     this->ui_.unableToOpenBrowserHelper.setOpenExternalLinks(true);
 
     this->ui_.channelPointsHint.setText(
-        uiText("The Moltorino tab enables channel points, pinned messages, and "
+        uiText("The Device login tab enables channel points, pinned messages, and "
         "other mod features. The usual login below is enough for chat."));
     this->ui_.channelPointsHint.setWordWrap(true);
     this->ui_.channelPointsHint.setAlignment(Qt::AlignLeft | Qt::AlignTop);
@@ -263,7 +263,7 @@ LoginDialog::LoginDialog(QWidget *parent)
     this->ui_.mainLayout.addWidget(&this->ui_.tabWidget);
 
     this->ui_.tabWidget.addTab(&this->ui_.basic, uiText("Basic"));
-    this->ui_.tabWidget.addTab(createMoltorinoAuthLoginPage(this), uiText("Moltorino"));
+    this->ui_.tabWidget.addTab(createMoltorinoAuthLoginPage(this), uiText("Device login"));
     this->ui_.tabWidget.addTab(&this->ui_.advanced, uiText("Advanced"));
     this->ui_.tabWidget.addTab(&this->ui_.kick, uiText("Kick"));
 

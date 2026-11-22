@@ -18,7 +18,7 @@
                     "trailingSpace": true,
                     "type": "TextElement",
                     "words": [
-                        "#pajlada"
+                        "pajlada"
                     ]
                 },
                 {
@@ -47,6 +47,16 @@
                     "tooltip": "",
                     "trailingSpace": true,
                     "type": "TimestampElement"
+                },
+                {
+                    "flags": "ModeratorTools",
+                    "link": {
+                        "type": "None",
+                        "value": ""
+                    },
+                    "tooltip": "",
+                    "trailingSpace": true,
+                    "type": "TwitchModerationElement"
                 },
                 {
                     "emote": {
@@ -92,7 +102,7 @@
                     "flags": "Username",
                     "link": {
                         "type": "UserInfo",
-                        "value": "JCRouzer"
+                        "value": "jcrouzer"
                     },
                     "style": "ChatMediumBold",
                     "tooltip": "",

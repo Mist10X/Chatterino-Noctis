@@ -13,9 +13,12 @@
 #include "util/AbandonObject.hpp"
 #include "util/DebugCount.hpp"
 
-#include <QFile>
+#include <QSaveFile>
+#include <QIODevice>
 #include <QNetworkReply>
 #include <QtConcurrent>
+#include <algorithm>
+#include <cstring>
 
 #ifndef signals
 #    define signals public
@@ -24,6 +27,44 @@
 #undef signals
 
 namespace {
+
+// QNAM may need to rewind uploads after a connection failure. Never give it
+// rewindable data for a chat POST: the first request may already be delivered.
+class SingleUseUpload : public QIODevice
+{
+public:
+    SingleUseUpload(QByteArray bytes, QObject *parent)
+        : QIODevice(parent)
+        , bytes_(std::move(bytes))
+    {
+        this->open(QIODevice::ReadOnly | QIODevice::Unbuffered);
+    }
+    bool isSequential() const override { return true; }
+    bool reset() override { return false; }
+    qint64 bytesAvailable() const override
+    {
+        return this->bytes_.size() - this->offset_ + QIODevice::bytesAvailable();
+    }
+    bool atEnd() const override { return this->offset_ == this->bytes_.size(); }
+
+protected:
+    qint64 readData(char *data, qint64 maximum) override
+    {
+        const auto count = std::min(maximum, qint64(this->bytes_.size()) - this->offset_);
+        if (count <= 0)
+        {
+            return -1;
+        }
+        std::memcpy(data, this->bytes_.constData() + this->offset_, size_t(count));
+        this->offset_ += count;
+        return count;
+    }
+    qint64 writeData(const char *, qint64) override { return -1; }
+
+private:
+    QByteArray bytes_;
+    qint64 offset_ = 0;
+};
 
 void forceCustomOperation(QNetworkReply *reply)
 {
@@ -166,6 +207,24 @@ QNetworkReply *NetworkTask::createReply()
             }
 
         case NetworkRequestType::Post:
+            if (data->singleUseUpload)
+            {
+                assert(!data->multiPartPayload);
+                auto oneShotRequest = request;
+                oneShotRequest.setAttribute(QNetworkRequest::DoNotBufferUploadDataAttribute, true);
+                oneShotRequest.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                                            QNetworkRequest::ManualRedirectPolicy);
+                oneShotRequest.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+                oneShotRequest.setHeader(QNetworkRequest::ContentLengthHeader,
+                                         data->payload.size());
+                auto *upload = new SingleUseUpload(data->payload, this);
+                auto *reply = accessManager->post(oneShotRequest, upload);
+                if (reply)
+                {
+                    upload->setParent(reply);
+                }
+                return reply;
+            }
             if (data->multiPartPayload)
             {
                 assert(data->payload.isNull());
@@ -208,7 +267,7 @@ void NetworkTask::logReply()
     {
         qCDebug(chatterinoHTTP).noquote()
             << this->data_->typeString() << status
-            << this->data_->request.url().toString();
+            << this->data_->diagnosticUrl();
     }
     else
     {
@@ -226,7 +285,7 @@ void NetworkTask::logReply()
         }
         qCDebug(chatterinoHTTP).noquote()
             << this->data_->typeString()
-            << this->data_->request.url().toString() << status << payload;
+            << this->data_->diagnosticUrl() << status << payload;
     }
 }
 
@@ -236,7 +295,7 @@ void NetworkTask::writeToCache(const QByteArray &bytes) const
         if (isAppAboutToQuit())
         {
             qCDebug(chatterinoHTTP)
-                << "Skipping cache write for" << data->request.url()
+                << "Skipping cache write for" << data->diagnosticUrl()
                 << "because app is about to quit";
             return;
         }
@@ -245,17 +304,19 @@ void NetworkTask::writeToCache(const QByteArray &bytes) const
         if (!app)
         {
             qCDebug(chatterinoHTTP)
-                << "Skipping cache write for" << data->request.url()
+                << "Skipping cache write for" << data->diagnosticUrl()
                 << "because app is null";
             return;
         }
 
-        QFile cachedFile(app->getPaths().cacheDirectory() + "/" +
+        QSaveFile cachedFile(app->getPaths().cacheDirectory() + "/" +
                          data->getHash());
 
-        if (cachedFile.open(QIODevice::WriteOnly))
+        if (!cachedFile.open(QIODevice::WriteOnly) ||
+            cachedFile.write(bytes) != bytes.size() || !cachedFile.commit())
         {
-            cachedFile.write(bytes);
+            qCWarning(chatterinoHTTP) << "Could not save HTTP cache entry:"
+                                      << cachedFile.errorString();
         }
     });
 }

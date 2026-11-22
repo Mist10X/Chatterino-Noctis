@@ -25,6 +25,9 @@ struct TooltipEntry {
     QString text;
     int customWidth = 0;
     int customHeight = 0;
+    // Positive for emote/badge previews, which use compact sizing. Explicit
+    // link and screenshot dimensions remain independent of this setting.
+    float previewScale = 0.F;
 
     static TooltipEntry scaled(ImagePtr image, QString text, float scale);
 };

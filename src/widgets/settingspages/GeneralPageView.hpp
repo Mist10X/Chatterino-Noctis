@@ -82,6 +82,16 @@ class ComboBox : public UiComboBox
 {
     Q_OBJECT
 
+public:
+    void enableCustomChoice();
+    bool isCustomChoice(int index) const;
+    void showSettingValue(const boost::variant<int, QString> &value);
+    void requestCustomValue(const QString &label,
+                            const std::function<void(QString, int)> &apply);
+
+private:
+    int presetCount_ = -1;
+
 protected:
     void wheelEvent(QWheelEvent *event) override
     {
@@ -140,6 +150,7 @@ class GeneralPageView : public QWidget
 
 public:
     static GeneralPageView *withNavigation(QWidget *parent);
+    static GeneralPageView *withSectionPicker(QWidget *parent);
     static GeneralPageView *withoutNavigation(QWidget *parent);
 
     void addWidget(QWidget *widget, const QStringList &keywords = {});
@@ -198,81 +209,64 @@ public:
         const QString &text, const QStringList &items,
         pajlada::Settings::Setting<T> &setting,
         std::function<boost::variant<int, QString>(T)> getValue,
-        std::function<T(DropdownArgs)> setValue, bool editable = true,
+        std::function<T(DropdownArgs)> setValue, bool allowCustomValue = false,
         QString toolTipText = {}, bool listenToActivated = false)
     {
         if (this->route_ != nullptr)
         {
             return this->route_->addDropdown<T>(
                 text, items, setting, std::move(getValue), std::move(setValue),
-                editable, toolTipText, listenToActivated);
+                allowCustomValue, toolTipText, listenToActivated);
         }
-        auto items2 = items;
-        auto selected = getValue(setting.getValue());
-
-        if (selected.which() == 1)
+        auto *combo = this->addDropdown(text, items, toolTipText);
+        if (allowCustomValue)
         {
-            if (!editable && !items2.contains(boost::get<QString>(selected)))
-            {
-                items2.insert(0, boost::get<QString>(selected));
-            }
+            combo->enableCustomChoice();
         }
 
-        auto *combo = this->addDropdown(text, items2, toolTipText);
-        if (editable)
-        {
-            combo->setEditable(true);
-        }
+        auto refresh = [&setting, getValue = std::move(getValue), combo] {
+            combo->showSettingValue(getValue(setting.getValue()));
+        };
+        refresh();
+        setting.connect([refresh](const T &, auto) { refresh(); },
+                        this->managedConnections_);
 
-        if (selected.which() == 0)
-        {
-            auto value = boost::get<int>(selected);
-            if (value >= 0 && value < items2.size())
-            {
-                combo->setCurrentIndex(value);
-            }
-        }
-        else if (selected.which() == 1)
-        {
-            combo->setSourceText(boost::get<QString>(selected));
-        }
-
-        setting.connect(
-            [getValue = std::move(getValue), combo](const T &value, auto) {
-                auto var = getValue(value);
-                if (var.which() == 0)
-                {
-                    combo->setCurrentIndex(boost::get<int>(var));
-                }
-                else
-                {
-                    combo->setSourceText(boost::get<QString>(var));
-                }
-            },
-            this->managedConnections_);
-
-        auto updateSetting = [combo, &setting, setValue = std::move(setValue)](
-                                 const int newIndex) {
+        auto apply = [combo, &setting, setValue = std::move(setValue)](
+                         const QString &value, int index) {
             setting = setValue(DropdownArgs{
-                .value = combo->sourceText(newIndex),
-                .index = combo->currentIndex(),
+                .value = value,
+                .index = index,
                 .combobox = combo,
             });
             getApp()->getWindows()->forceLayoutChannelViews();
         };
-
+        auto selectPreset = [combo, apply](int index) {
+            if (index >= 0 && !combo->isCustomChoice(index))
+            {
+                apply(combo->sourceText(index), index);
+            }
+        };
         if (listenToActivated)
         {
-            QObject::connect(combo, &QComboBox::activated, updateSetting);
+            QObject::connect(combo, &QComboBox::activated, combo, selectPreset);
         }
         else
         {
-            QObject::connect(
-                combo,
-                QOverload<const int>::of(&QComboBox::currentIndexChanged),
-                updateSetting);
+            QObject::connect(combo, &QComboBox::currentIndexChanged, combo,
+                             selectPreset);
         }
-
+        if (allowCustomValue)
+        {
+            QObject::connect(combo, &QComboBox::activated, combo,
+                             [combo, text, refresh, apply](int index) {
+                if (combo->isCustomChoice(index))
+                {
+                    // Opening or cancelling the editor leaves the setting intact.
+                    refresh();
+                    combo->requestCustomValue(text, apply);
+                }
+            });
+        }
         return combo;
     }
 
@@ -289,6 +283,7 @@ protected:
 
 private:
     void updateNavigationHighlighting();
+    void updateSectionPicker();
     void addToolTip(QWidget &widget, QString text) const;
 
     struct Widget {
@@ -320,6 +315,7 @@ private:
     QScrollArea *contentScrollArea_ = nullptr;
     QVBoxLayout *contentLayout_ = nullptr;
     QVBoxLayout *navigationLayout_ = nullptr;
+    QComboBox *sectionPicker_ = nullptr;
 
     std::vector<Group> groups_;
     pajlada::Signals::SignalHolder managedConnections_;

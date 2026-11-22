@@ -10,22 +10,16 @@
 #include "util/LayoutHelper.hpp"
 #include "util/RapidJsonSerializeQString.hpp"
 #include "widgets/helper/Line.hpp"
+#include "widgets/settingspages/CustomWidgets.hpp"
 #include "widgets/settingspages/SettingWidget.hpp"
 
-#include <QRegularExpression>
+#include <QFormLayout>
+#include <QInputDialog>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSignalBlocker>
 
 #include <algorithm>
-
-namespace {
-
-constexpr int MAX_TOOLTIP_LINE_LENGTH = 50;
-const auto MAX_TOOLTIP_LINE_LENGTH_PATTERN =
-    QStringLiteral(R"(.{%1}\S*\K(\s+))").arg(MAX_TOOLTIP_LINE_LENGTH);
-const QRegularExpression MAX_TOOLTIP_LINE_LENGTH_REGEX(
-    MAX_TOOLTIP_LINE_LENGTH_PATTERN);
-}  // namespace
 
 namespace chatterino {
 
@@ -35,6 +29,7 @@ GeneralPageView::GeneralPageView(QWidget *parent)
     , contentLayout_(new QVBoxLayout)
 {
     auto *contentWidget = new QWidget;
+    contentWidget->setObjectName("settingsScrollBody");
     contentWidget->setLayout(this->contentLayout_);
     this->contentScrollArea_->setWidget(contentWidget);
     this->contentScrollArea_->setObjectName("generalSettingsScrollContent");
@@ -49,6 +44,34 @@ GeneralPageView *GeneralPageView::withoutNavigation(QWidget *parent)
         view->contentScrollArea_,
     }));
 
+    return view;
+}
+
+GeneralPageView *GeneralPageView::withSectionPicker(QWidget *parent)
+{
+    auto *view = new GeneralPageView(parent);
+    auto *picker = new ComboBox;
+    view->sectionPicker_ = picker;
+    picker->setObjectName("settingsSectionPicker");
+    // The widest translated control in a different section must not enlarge
+    // every row in the scroll area. Keep vertical height-for-width negotiation.
+    view->contentLayout_->setSizeConstraint(QLayout::SetNoConstraint);
+    view->contentScrollArea_->widget()->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    picker->setAccessibleName(uiText("Category"));
+    picker->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    picker->setFocusPolicy(Qt::StrongFocus);
+    auto *layout = makeLayout<QVBoxLayout>({picker, view->contentScrollArea_});
+    layout->setStretch(1, 1);
+    view->setLayout(layout);
+    QObject::connect(picker, &QComboBox::activated, view, [view, picker](int row) {
+        const int index = picker->itemData(row).toInt();
+        auto *bar = view->contentScrollArea_->verticalScrollBar();
+        bar->setValue(view->groups_.at(index).title->y());
+        // The last headings may share the same clamped scroll position.
+        picker->setCurrentIndex(row);
+    });
+    QObject::connect(view->contentScrollArea_->verticalScrollBar(), &QScrollBar::valueChanged,
+                     view, [view] { view->updateNavigationHighlighting(); });
     return view;
 }
 
@@ -142,6 +165,9 @@ void GeneralPageView::finishTopic()
         });
         if (empty)
         {
+            // Only structural spacer/title entries live here. Keep an empty
+            // section out of subsequent searches and the section picker.
+            group.widgets.clear();
             group.title->hide();
             if (group.space)
             {
@@ -155,6 +181,7 @@ void GeneralPageView::finishTopic()
     }
     this->insertGroup_ = -1;
     this->contentLayout_->addStretch();
+    this->updateSectionPicker();
 }
 
 GeneralPageView::Group &GeneralPageView::currentGroup()
@@ -328,6 +355,68 @@ SubtitleLabel *GeneralPageView::addSubtitle(const QString &title)
     return label;
 }
 
+void ComboBox::enableCustomChoice()
+{
+    this->presetCount_ = this->count();
+    this->addItem(uiText(QStringLiteral("Custom value\u2026")));
+}
+
+bool ComboBox::isCustomChoice(int index) const
+{
+    return this->presetCount_ >= 0 && index == this->count() - 1;
+}
+
+void ComboBox::showSettingValue(const boost::variant<int, QString> &value)
+{
+    const QSignalBlocker blocker(this);
+    if (const auto *row = boost::get<int>(&value))
+    {
+        this->setCurrentIndex(*row);
+        return;
+    }
+
+    const auto &text = boost::get<QString>(value);
+    int row = this->findData(text, SourceRole);
+    if (row < 0)
+    {
+        // Keep one row for a previously saved or newly entered custom value.
+        if (this->presetCount_ >= 0 && this->count() > this->presetCount_ + 1)
+        {
+            this->removeItem(this->presetCount_);
+        }
+        row = this->presetCount_ >= 0 ? this->presetCount_ : this->count();
+        this->insertItem(row, text);
+        this->setItemData(row, text, SourceRole);
+    }
+    this->setCurrentIndex(row);
+}
+
+void ComboBox::requestCustomValue(const QString &label,
+                                  const std::function<void(QString, int)> &apply)
+{
+    bool ok = false;
+    const auto value = QInputDialog::getText(
+        this, label, uiText(QStringLiteral("Custom value\u2026")), QLineEdit::Normal,
+        this->currentText(), &ok);
+    if (ok && !value.trimmed().isEmpty())
+    {
+        // Some settings use the preset index for named sentinel values.
+        int row = this->findData(value, SourceRole);
+        if (row < 0)
+        {
+            row = this->findText(value, Qt::MatchExactly);
+        }
+        if (row >= 0 && !this->isCustomChoice(row))
+        {
+            apply(this->sourceText(row), row);
+        }
+        else
+        {
+            apply(value, -1);
+        }
+    }
+}
+
 ComboBox *GeneralPageView::addDropdown(const QString &text,
                                        const QStringList &list,
                                        QString toolTipText)
@@ -336,7 +425,9 @@ ComboBox *GeneralPageView::addDropdown(const QString &text,
     {
         return this->route_->addDropdown(text, list, toolTipText);
     }
-    auto *layout = new QHBoxLayout;
+    auto *layout = new QFormLayout;
+    layout->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    layout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     auto *combo = new ComboBox;
     combo->setFocusPolicy(Qt::StrongFocus);
     for (const auto &item : list)
@@ -345,10 +436,9 @@ ComboBox *GeneralPageView::addDropdown(const QString &text,
         combo->setItemData(combo->count() - 1, item, UiComboBox::SourceRole);
     }
 
-    auto *label = new QLabel(uiText(text) + ":");
-    layout->addWidget(label);
-    layout->addStretch(1);
-    layout->addWidget(combo);
+    auto *label = new SettingCaption(uiText(text) + ":");
+    layout->addRow(label, combo);
+    layout->setAlignment(combo, Qt::AlignRight);
 
     this->addToolTip(*label, toolTipText);
     this->addLayout(layout);
@@ -407,6 +497,15 @@ bool GeneralPageView::filterElements(const QString &query)
 
     for (auto &&group : this->groups_)
     {
+        if (this->sectionPicker_ && group.widgets.empty())
+        {
+            group.title->hide();
+            if (group.space)
+            {
+                group.space->hide();
+            }
+            continue;
+        }
         bool descriptionMatches{};
         for (auto &&widget : group.widgets)
         {
@@ -516,11 +615,52 @@ bool GeneralPageView::filterElements(const QString &query)
         }
     }
 
+    this->updateSectionPicker();
     return any;
+}
+
+void GeneralPageView::updateSectionPicker()
+{
+    if (!this->sectionPicker_)
+    {
+        return;
+    }
+    this->sectionPicker_->clear();
+    for (size_t i = 0; i < this->groups_.size(); ++i)
+    {
+        const auto &group = this->groups_[i];
+        if (!group.title->isHidden())
+        {
+            this->sectionPicker_->addItem(group.name, static_cast<int>(i));
+        }
+    }
+    this->sectionPicker_->setVisible(this->sectionPicker_->count() > 1);
+    this->updateNavigationHighlighting();
 }
 
 void GeneralPageView::updateNavigationHighlighting()
 {
+    if (this->sectionPicker_)
+    {
+        const auto *bar = this->contentScrollArea_->verticalScrollBar();
+        if (bar->value() == bar->minimum())
+        {
+            this->sectionPicker_->setCurrentIndex(this->sectionPicker_->count() ? 0 : -1);
+            return;
+        }
+        int active = 0;
+        for (int row = 1; row < this->sectionPicker_->count(); ++row)
+        {
+            const int index = this->sectionPicker_->itemData(row).toInt();
+            if (this->groups_[index].title->y() > bar->value())
+            {
+                break;
+            }
+            active = row;
+        }
+        this->sectionPicker_->setCurrentIndex(active);
+        return;
+    }
     if (this->navigationLayout_ == nullptr)
     {
         return;
@@ -553,11 +693,6 @@ void GeneralPageView::addToolTip(QWidget &widget, QString text) const
     }
 
     text = uiText(text);
-
-    if (text.length() > MAX_TOOLTIP_LINE_LENGTH)
-    {
-        text.replace(MAX_TOOLTIP_LINE_LENGTH_REGEX, "\n");
-    }
 
     widget.setToolTip(text);
 }

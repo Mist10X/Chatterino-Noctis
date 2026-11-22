@@ -30,6 +30,7 @@
 #include <vector>
 
 class QMimeData;
+class QPushButton;
 
 namespace chatterino {
 
@@ -110,8 +111,9 @@ public:
     void triggerSelfMessageReceived();
 
 #if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
+    bool acceptsRewardPromptFor(const TwitchChannel *channel) const;
     void showChannelPointRewardPrompt(
-        const QString &title, const QString &placeholder, bool requireText,
+        const QString &title, const QColor &color, const QString &placeholder, bool requireText,
         std::function<void(const QString &)> submitCallback);
     void hideChannelPointRewardPrompt();
 #endif
@@ -212,6 +214,8 @@ protected:
     void clearReplyTarget();
 #if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
     bool submitChannelPointRewardPrompt();
+    bool applyRewardPromptPlaceholder();
+    bool rewardPromptContextMatches() const;
 #endif
 
     void updateCancelReplyButton();
@@ -260,6 +264,8 @@ protected:
 #if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
         QWidget *channelPointRewardPromptWidget;
         QLabel *channelPointRewardPromptTitle;
+        QLabel *channelPointRewardPromptIcon;
+        QPushButton *channelPointRewardPromptCancel;
 #endif
 
         // input widgets
@@ -290,6 +296,7 @@ protected:
     pajlada::Signals::ScopedConnection channelPointSignal_;
     pajlada::Signals::ScopedConnection modStateSignal_;
     pajlada::Signals::ScopedConnection pollStateSignal_;
+    pajlada::Signals::ScopedConnection predictionStateSignal_;
     pajlada::Signals::ScopedConnection focusedPointsConnection_;
     pajlada::Signals::ScopedConnection focusLostPointsConnection_;
     QStringList prevMsg_;
@@ -348,6 +355,14 @@ protected:
 #if MOLTORINO_ENABLE_CHANNEL_POINT_REWARDS
     bool channelPointRewardPromptRequiresText_ = false;
     std::function<void(const QString &)> channelPointRewardPromptSubmit_;
+    std::weak_ptr<Channel> rewardPromptChannel_;
+    QString rewardPromptAccount_;
+    QString rewardPromptDraft_;
+    QColor rewardPromptColor_;
+    void updateRewardPromptStyle();
+    QString rewardPromptPlaceholder_;
+    MessagePtr rewardPromptDraftReply_;
+    std::weak_ptr<Channel> rewardPromptDraftReplyChannel_;
 #endif
 
     // Hidden denotes whether this split input should be hidden or not

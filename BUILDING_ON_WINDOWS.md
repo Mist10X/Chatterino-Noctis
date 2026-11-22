@@ -105,7 +105,7 @@ Then in a terminal, configure conan to use `NMake Makefiles` as its generator:
 
 #### Build
 
-Open up your terminal with the Visual Studio environment variables (e.g. `x64 Native Tools Command Prompt for VS 2022`), cd to the cloned chatterino2 directory and run the following commands:
+Open a terminal with the Visual Studio environment variables (e.g. `x64 Native Tools Command Prompt for VS 2022`), enter the Chatterino Noctis checkout and run these commands:
 
 ```cmd
 mkdir build
@@ -121,7 +121,7 @@ To build with plugins add `-DCHATTERINO_PLUGINS=ON` to `cmake` command.
 #### Deploying Qt libraries
 
 Once Chatterino has finished building, to ensure all .dll's are available you can run this from the build directory:  
-`windeployqt bin/chatterino.exe --release --no-compiler-runtime --no-translations --no-opengl-sw --dir bin/`
+`windeployqt "bin/Chatterino Noctis.exe" --release --no-compiler-runtime --no-translations --no-opengl-sw --dir bin/`
 
 Can't find windeployqt? You forgot to add your Qt bin directory (e.g. `C:\Qt\6.5.3\msvc2019_64\bin`) to your `PATH`
 
@@ -144,23 +144,19 @@ Build results will be placed in a folder at the same level as the "chatterino2" 
 
 #### Producing standalone builds
 
-If you build Chatterino, the result directories will contain a `chatterino.exe` file in the `$OUTPUTDIR\release\` directory. This `.exe` file will not directly run on any given target system, because it will be lacking various Qt runtimes.
+The Chatterino Noctis build produces `Chatterino Noctis.exe` and its category tracking helper, `NoctisCategoryTracker.exe`. Both executables need Qt runtime libraries.
 
 To produce a standalone package, you need to generate all required files using the tool `windeployqt`. This tool can be found in the `bin` directory of your Qt installation, e.g. at `C:\Qt\6.5.3\msvc2019_64\bin\windeployqt.exe`.
 
 To produce all supplement files for a standalone build, follow these steps (adjust paths as required):
 
-1. Navigate to your build output directory with Windows Explorer, e.g. `C:\Users\example\src\build-chatterino-Desktop_Qt_6.5.3_MSVC2019_64bit-Release`
-2. Enter the `release` directory
-3. Delete all files except the `chatterino.exe` file. You should be left with a directory only containing `chatterino.exe`.
-4. Open a command prompt and execute:
+1. Create an empty staging directory.
+2. Copy `Chatterino Noctis.exe`, `NoctisCategoryTracker.exe` and the compatibility launcher `Leafyrino.exe` from your build output into that directory. Existing shortcuts can use the launcher.
+3. Open a command prompt in the staging directory and run:
    ```cmd
-   cd C:\Users\example\src\build-chatterino-Desktop_Qt_6.5.3_MSVC2019_64bit-Release\release
-   windeployqt bin/chatterino.exe --release --no-compiler-runtime --no-translations --no-opengl-sw --dir bin/
+   windeployqt "Chatterino Noctis.exe" NoctisCategoryTracker.exe --release --no-compiler-runtime --no-translations --no-opengl-sw --dir .
    ```
-5. The `releases` directory will now be populated with all the required files to make the Chatterino build standalone.
-
-You can now create a zip archive of all the contents in `releases` and distribute the program as is, without requiring any development tools to be present on the target system. (However, the CRT must be present, as usual - see the [README](README.md)).
+4. To package a release with the rest of the runtime dependencies, follow the [packaging instructions](README.md#сборка-из-исходников).
 
 #### Formatting
 

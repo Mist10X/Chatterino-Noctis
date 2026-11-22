@@ -148,12 +148,13 @@ KeyboardSettingsPage::KeyboardSettingsPage()
         }
         warningMessage.append('.');
         auto deprecatedWarning = layout.emplace<QLabel>(warningMessage);
-        deprecatedWarning->setStyleSheet("color: yellow");
+        deprecatedWarning->setObjectName("settingsWarning");
         deprecatedWarning->setWordWrap(true);
         auto deprecatedWarning2 = layout.emplace<QLabel>(
             uiText("You can ignore this warning after you have removed or edited the "
             "above-mentioned hotkeys."));
-        deprecatedWarning2->setStyleSheet("color: yellow");
+        deprecatedWarning2->setObjectName("settingsWarning");
+        deprecatedWarning2->setWordWrap(true);
     }
 }
 

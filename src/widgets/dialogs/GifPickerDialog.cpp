@@ -593,9 +593,13 @@ void GifPickerDialog::updateCaption()
     {
         title = this->gifs_.at(row).title;
     }
-    this->caption_->setText(this->caption_->fontMetrics().elidedText(
-        title, Qt::ElideRight, this->caption_->width()));
-    this->caption_->setToolTip(title.toHtmlEscaped());
+    const auto visible = this->caption_->fontMetrics().elidedText(
+        title, Qt::ElideRight, this->caption_->width());
+    this->caption_->setText(visible);
+    this->caption_->setToolTip(visible == title
+                                   ? QString{}
+                                   : QStringLiteral("<span>%1</span>")
+                                         .arg(title.toHtmlEscaped()));
     this->caption_->setAccessibleName(title);
 }
 
@@ -625,7 +629,7 @@ void GifPickerDialog::refreshAccount()
     {
         this->setStatus(error.isEmpty()
                             ? uiText("Sign in with Twitch device login in Settings > "
-                              "Moltorino to send GIFs with the selected "
+                              "Sign-in for extra features to send GIFs with the selected "
                               "account.")
                             : error);
         return;

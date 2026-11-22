@@ -2,11 +2,14 @@
 //
 // SPDX-License-Identifier: MIT
 
+#include "common/network/ServiceHealth.hpp"
 #include "providers/ffz/FfzEmotes.hpp"
+#include "providers/ffz/FfzRoomBatch.hpp"
 
 #include "common/network/NetworkRequest.hpp"
 #include "common/network/NetworkResult.hpp"
 #include "common/network/RetryingGet.hpp"
+#include "Application.hpp"
 #include "common/QLogging.hpp"
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
@@ -17,6 +20,12 @@
 #include "util/Helpers.hpp"
 
 #include <limits>
+#include <QCoreApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QTimer>
+#include <QThread>
+#include <QStringList>
 
 namespace {
 
@@ -28,6 +37,86 @@ const QString CHANNEL_HAS_NO_EMOTES(
     "This channel has no FrankerFaceZ channel emotes.");
 
 constexpr QSize BASE_BADGE_SIZE(18, 18);
+
+struct RoomRequest {
+    QString id;
+    QString login;
+    std::function<void(QJsonObject)> success;
+    std::function<void(QString)> error;
+};
+
+using RoomBatch = std::shared_ptr<std::vector<RoomRequest>>;
+
+void fetchRoomBatch(const RoomBatch &batch, bool byLogin)
+{
+    if (isAppAboutToQuit()) return;
+    QStringList keys;
+    for (const auto &request : *batch)
+    {
+        const auto key = byLogin ? request.login : request.id;
+        if (!keys.contains(key)) keys.push_back(key);
+    }
+    const auto prefix = byLogin ? QStringLiteral("https://api.frankerfacez.com/v1/multi_room/")
+                                : QStringLiteral("https://api.frankerfacez.com/v1/multi_room/id/");
+    network::fetchWithBackoff(QUrl(prefix + keys.join(',')),
+        [batch](const NetworkResult &result) {
+            servicehealth::success(servicehealth::FFZ);
+            const auto root = result.parseJson();
+            for (auto &request : *batch)
+            {
+                if (auto room = ffz::detail::roomFromBatch(root, request.id))
+                    request.success(std::move(*room));
+                else request.error(QStringLiteral("FFZ room missing from response"));
+            }
+        }, [batch, byLogin, prefix, keys](const NetworkResult &result) {
+            // Two documented paths. A stalled login batch may still work by
+            // numeric ID. Do not retry repeatedly or bypass rate limits.
+            if (byLogin && result.status() != 429)
+            {
+                fetchRoomBatch(batch, false);
+                return;
+            }
+            servicehealth::failed(servicehealth::FFZ, QUrl(prefix + keys.join(',')), result);
+            for (auto &request : *batch) request.error(result.formatError());
+        }, 15000);
+}
+
+// Individual room requests can stall even when FFZ's official multi-room
+// endpoint works. Coalesce startup requests and keep each room's set isolated.
+void requestRoom(RoomRequest request)
+{
+    auto *app = QCoreApplication::instance();
+    if (!app || isAppAboutToQuit()) return;
+    if (QThread::currentThread() != app->thread())
+    {
+        QMetaObject::invokeMethod(app, [request = std::move(request)]() mutable {
+            requestRoom(std::move(request));
+        }, Qt::QueuedConnection);
+        return;
+    }
+    static std::vector<RoomRequest> pending;
+    const bool schedule = pending.empty();
+    pending.push_back(std::move(request));
+    if (!schedule) return;
+    QTimer::singleShot(100, QCoreApplication::instance(), [] {
+        auto requests = std::exchange(pending, {});
+        if (isAppAboutToQuit()) return;
+        while (!requests.empty())
+        {
+            auto batch = std::make_shared<std::vector<RoomRequest>>();
+            QStringList ids;
+            while (!requests.empty() && ids.size() < 8)
+            {
+                auto next = std::move(requests.back());
+                requests.pop_back();
+                if (!ids.contains(next.id)) ids.push_back(next.id);
+                batch->push_back(std::move(next));
+            }
+            const bool hasNames = std::all_of(batch->begin(), batch->end(), [](const auto &r) { return !r.login.isEmpty(); });
+            fetchRoomBatch(batch, hasNames);
+        }
+    });
+}
 
 Url getEmoteLink(const QJsonObject &urls, const QString &emoteScale)
 {
@@ -331,16 +420,16 @@ void FfzEmotes::loadChannel(
 {
     qCDebug(LOG) << "Reload FFZ Channel Emotes for channel" << channelID;
 
-    network::fetchWithBackoff(
-        "https://api.frankerfacez.com/v1/room/id/" + channelID,
+    const auto sharedChannel = channel.lock();
+    requestRoom({channelID, sharedChannel ? sharedChannel->getName() : QString{},
         [emoteCallback = std::move(emoteCallback),
          modBadgeCallback = std::move(modBadgeCallback),
          vipBadgeCallback = std::move(vipBadgeCallback),
          channelBadgesCallback = std::move(channelBadgesCallback), channel,
-         channelID, manualRefresh](const auto &result) {
+         channelID, manualRefresh](const QJsonObject json) {
+            if (channel.expired() || isAppAboutToQuit()) return;
             writeProviderEmotesCache(channelID, "frankerfacez",
-                                     result.getData());
-            const auto json = result.parseJson();
+                                     QJsonDocument(json).toJson(QJsonDocument::Compact));
 
             auto emoteMap = parseChannelEmotes(json);
             auto modBadge = parseAuthorityBadge(
@@ -356,7 +445,7 @@ void FfzEmotes::loadChannel(
             modBadgeCallback(std::move(modBadge));
             vipBadgeCallback(std::move(vipBadge));
             channelBadgesCallback(std::move(channelBadges));
-            if (auto shared = channel.lock(); manualRefresh)
+            if (auto shared = channel.lock(); manualRefresh && shared)
             {
                 if (hasEmotes)
                 {
@@ -369,27 +458,17 @@ void FfzEmotes::loadChannel(
                 }
             }
         },
-        [channelID, channel, manualRefresh, cacheHit](const auto &result) {
+        [channelID, channel, manualRefresh, cacheHit](const QString &errorString) {
             auto shared = channel.lock();
             if (!shared)
             {
                 return;
             }
 
-            if (result.status() == 404)
+            qCWarning(LOG) << "Error fetching FFZ emotes for channel"
+                           << channelID << ", error" << errorString << ", cached:" << cacheHit;
+            if (manualRefresh)
             {
-                // User does not have any FFZ emotes
-                if (manualRefresh)
-                {
-                    shared->addSystemMessage(CHANNEL_HAS_NO_EMOTES);
-                }
-            }
-            else
-            {
-                // TODO: Auto retry in case of a timeout, with a delay
-                auto errorString = result.formatError();
-                qCWarning(LOG) << "Error fetching FFZ emotes for channel"
-                               << channelID << ", error" << errorString;
                 shared->addSystemMessage(
                     QStringLiteral("Failed to fetch FrankerFaceZ channel "
                                    "emotes. (Error: %1)")
@@ -400,8 +479,7 @@ void FfzEmotes::loadChannel(
                         "Using cached FrankerFaceZ emotes as fallback.");
                 }
             }
-        },
-        20000);
+        }});
 }
 
 }  // namespace chatterino

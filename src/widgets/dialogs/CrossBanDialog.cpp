@@ -159,8 +159,10 @@ CrossBanDialog::CrossBanDialog(CrossChannelAction action, QString targetId,
         const bool isCurrent = channel.id == currentChannelId;
         item->setToolTip(
             0, isCurrent
-                   ? uiText(QStringLiteral("#%1\nCurrent channel")).arg(channel.login)
-                   : QStringLiteral("#%1").arg(channel.login));
+                   ? uiText(QStringLiteral("%1\nCurrent channel")).arg(channel.login)
+                   : item->text(0).compare(channel.login, Qt::CaseInsensitive) == 0
+                       ? item->text(0)
+                       : channel.login);
         if (isCurrent)
         {
             auto font = item->font(0);

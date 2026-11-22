@@ -20,6 +20,7 @@
 #include <QSaveFile>
 #include <QTimer>
 
+#include <algorithm>
 #include <array>
 
 namespace chatterino {
@@ -82,6 +83,7 @@ void SeventvPersonalLookup::setStorePath(const QString &path)
     this->loaded_ = false;
     this->known_.clear();
     this->asked_.clear();
+    this->retryAfter_.clear();
     this->queue_.clear();
     this->load();
 }
@@ -145,13 +147,18 @@ void SeventvPersonalLookup::save()
     {
         return;
     }
+    // QJsonObject keeps keys sorted. Appending in that order avoids shifting
+    // the existing entries on every insertion from the hash table.
+    auto userIDs = this->known_.keys();
+    std::sort(userIDs.begin(), userIDs.end());
     QJsonObject users;
-    for (auto it = this->known_.begin(); it != this->known_.end(); ++it)
+    for (const auto &userID : userIDs)
     {
-        if (fresh(it->emoteSetID, it->at))
+        const auto &known = *this->known_.constFind(userID);
+        if (fresh(known.emoteSetID, known.at))
         {
-            users.insert(it.key(), QJsonObject{{"set", it->emoteSetID},
-                                               {"at", double(it->at)}});
+            users.insert(userID, QJsonObject{{"set", known.emoteSetID},
+                                            {"at", double(known.at)}});
         }
     }
     QSaveFile file(this->path_);
@@ -181,10 +188,17 @@ void SeventvPersonalLookup::remember(const QString &userID,
         this);
 }
 
+void SeventvPersonalLookup::allowRetryAfterFailure(const QString &userID)
+{
+    this->asked_.remove(userID);
+    this->retryAfter_.insert(userID, nowMs() + 60000);
+}
+
 void SeventvPersonalLookup::noteChatter(const QString &userID,
                                         const QString &login)
 {
     if (userID.isEmpty() || this->asked_.contains(userID) ||
+        this->retryAfter_.value(userID) > nowMs() ||
         !getSettings()->enableSevenTVPersonalEmotes)
     {
         return;
@@ -197,6 +211,7 @@ void SeventvPersonalLookup::noteChatter(const QString &userID,
         return;
     }
     this->load();
+    this->retryAfter_.remove(userID);
     this->asked_.insert(userID);
 
     const auto known = this->known_.find(userID);
@@ -236,6 +251,7 @@ void SeventvPersonalLookup::lookUpNext()
     auto *api = app ? app->getSeventvAPI() : nullptr;
     if (!api)
     {
+        this->allowRetryAfterFailure(userID);
         return;
     }
     api->getUserByTwitchID(
@@ -265,6 +281,10 @@ void SeventvPersonalLookup::lookUpNext()
             if (result.status() == std::optional<int>(404))
             {
                 this->store(userID, QString());
+            }
+            else
+            {
+                this->allowRetryAfterFailure(userID);
             }
         });
 }
@@ -306,7 +326,8 @@ void SeventvPersonalLookup::loadSet(const QString &userID,
                 .emoteSet = *set,
             });
         },
-        [emoteSetID](const QString &error) {
+        [this, userID, emoteSetID](const QString &error) {
+            this->allowRetryAfterFailure(userID);
             qCDebug(chatterinoSeventv)
                 << "Failed to load a looked-up personal emote set"
                 << emoteSetID << error;

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "common/UiLanguage.hpp"
-#include "widgets/settingspages/LeafyrinoPage.hpp"
+#include "widgets/settingspages/NoctisPage.hpp"
 
 #include "singletons/Settings.hpp"
 #include "widgets/BaseWindow.hpp"
@@ -16,7 +16,7 @@
 
 namespace chatterino {
 
-LeafyrinoPage::LeafyrinoPage()
+NoctisPage::NoctisPage()
 {
     auto *outer = new QVBoxLayout;
     auto *inner = new QHBoxLayout;
@@ -32,7 +32,7 @@ LeafyrinoPage::LeafyrinoPage()
     this->initLayout(*view);
 }
 
-bool LeafyrinoPage::filterElements(const QString &query)
+bool NoctisPage::filterElements(const QString &query)
 {
     if (this->view_)
     {
@@ -42,7 +42,7 @@ bool LeafyrinoPage::filterElements(const QString &query)
     return false;
 }
 
-void LeafyrinoPage::initLayout(GeneralPageView &layout)
+void NoctisPage::initLayout(GeneralPageView &layout)
 {
     auto &s = *getSettings();
 
@@ -190,7 +190,7 @@ void LeafyrinoPage::initLayout(GeneralPageView &layout)
         ->addTo(layout);
     SettingWidget::checkbox(uiText("Show follow button"), s.showFollowButtonInUsercard)
         ->setTooltip(uiText("Show a follow/unfollow button on usercards. Requires "
-                     "Moltorino auth (Settings → Moltorino → Authentication)."))
+                     "Twitch device login (Settings → Sign-in for extra features → Authentication)."))
         ->addKeywords({"usercard", "follow", "button"})
         ->addTo(layout);
     SettingWidget::checkbox(uiText("Confirm before unfollowing from usercard"),
@@ -232,9 +232,9 @@ void LeafyrinoPage::initLayout(GeneralPageView &layout)
     routeSetting(layout, QStringLiteral("Chat"),
                  QStringLiteral("What to show in chat"));
     layout.addDescription(
-        uiText("Channel event messages in chat. Requires Moltorino auth "
-        "(Settings → Moltorino → Authentication), experimental EventSub "
-        "enabled under Settings → General, and an app restart after turning "
+        uiText("Channel event messages in chat. Requires Twitch device login "
+        "(Settings → Sign-in for extra features → Authentication), experimental EventSub "
+        "enabled under Settings → System settings, and an app restart after turning "
         "EventSub on."));
 
     SettingWidget::checkbox(uiText("Show follow notifications in chat"),

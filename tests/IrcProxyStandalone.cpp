@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 #include "providers/irc/IrcProxy.hpp"
+#include "providers/twitch/IrcWriteRecovery.hpp"
+#include "providers/twitch/ChatDeliveryEvidence.hpp"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -56,16 +58,117 @@ bool spinUntil(const std::function<bool()> &done, int timeoutMs = 2500)
     return done();
 }
 
+void writeRecoveryTests()
+{
+    using chatterino::IrcWriteRecovery;
+    using namespace std::chrono_literals;
+    IrcWriteRecovery recovery;
+    const auto now = IrcWriteRecovery::Clock::now();
+    check("unbound writer refuses every account",
+          !recovery.canSend("100", true));
+    recovery.bindAccount("100");
+    check("writer refuses sends until IRC login",
+          !recovery.canSend("100", false));
+    check("writer only serves the selected account",
+          recovery.canSend("100", true) &&
+              !recovery.canSend("200", true));
+    recovery.noteWrite("first", now);
+    recovery.noteWrite("first", now + 1s);
+    recovery.noteWrite("other", now + 2s);
+    recovery.noteResponse("OTHER");
+    check("another channel cannot confirm pending messages",
+          recovery.expired(now + IrcWriteRecovery::CONFIRMATION_TIMEOUT));
+    recovery.noteResponse("first");
+    check("one confirmation consumes one pending write",
+          recovery.hasPending() &&
+              !recovery.expired(now + IrcWriteRecovery::CONFIRMATION_TIMEOUT));
+    recovery.noteResponse("first");
+    check("ordinary send acknowledgements/rejections stop watchdog",
+          !recovery.hasPending() && !recovery.expired(now + 30s));
+    recovery.noteWrite("first", now);
+    recovery.noteWrite("first", now);
+    recovery.noteWrite("other", now);
+    check("ambiguous socket writes generate once-per-channel warnings, never replay",
+          recovery.takeUnconfirmedChannels() ==
+                  QStringList({"first", "other"}) &&
+              !recovery.hasPending());
+    recovery.noteWrite("first", now);
+    recovery.unbindAccount();
+    check("account transition invalidates previous socket and its pending writes",
+          !recovery.canSend("100", true) && !recovery.hasPending());
+    recovery.bindAccount("200");
+    check("new socket cannot send as previous account",
+          recovery.canSend("200", true) &&
+              !recovery.canSend("100", true));
+    recovery.bindAccount("");
+    check("anonymous account may never send", !recovery.canSend("", true));
+    recovery.bindAccount("100");
+    recovery.noteWrite("first", now, "nonce-1");
+    recovery.noteWrite("first", now, "nonce-2");
+    recovery.noteEcho("other", "100", "nonce-1", "id-1");
+    recovery.noteEcho("first", "200", "nonce-1", "id-1");
+    check("wrong channel/account cannot confirm nonce",
+          recovery.expired(now + 12s));
+    recovery.noteEcho("first", "100", "nonce-1", "id-1");
+    recovery.noteResponse("first", "id-2");
+    check("ack for another send does not consume confirmed nonce",
+          !recovery.expired(now + 12s) && recovery.hasPending());
+    recovery.pruneConfirmed(now + 12s);
+    check("confirmed echo never causes reconnect or unknown warning",
+          !recovery.hasPending() && recovery.takeUnconfirmedChannels().isEmpty());
+    recovery.noteWrite("first", now, "lost");
+    recovery.noteWrite("first", now, "received");
+    recovery.noteResponse("first", "chat-id");
+    recovery.noteEcho("first", "100", "received", "chat-id");
+    check("ACK preceding echo cannot falsely confirm an earlier lost message",
+          recovery.expired(now + 12s) &&
+              recovery.takeUnconfirmedChannels() == QStringList{"first"});
+
+    // Acceptance followed by a later, independent rejected attempt (the
+    // IRC NOTICE msg_duplicate has no outgoing message ID). The accepted
+    // nonce stays confirmed; the refusal must not create an unknown write,
+    // make the watchdog reconnect, or schedule any replay.
+    recovery.noteWrite("first", now, "accepted-reply");
+    recovery.noteEcho("first", "100", "accepted-reply", "echoed-id");
+    recovery.noteResponse("first", "echoed-id");
+    recovery.noteWrite("first", now + 7s, "later-attempt");
+    check("explicit later duplicate rejection is distinct from accepted reply",
+          recovery.noteResponse("first") && !recovery.expired(now + 20s));
+    recovery.pruneConfirmed(now + 20s);
+    check("accepted reply plus duplicate refusal leaves no unconfirmed writes",
+          !recovery.hasPending() && recovery.takeUnconfirmedChannels().isEmpty());
+
+    chatterino::ChatDeliveryEvidence evidence;
+    evidence.watch("100", now);
+    evidence.observe("200", "id-1", now);
+    check("unwatched sender cannot confirm send", !evidence.seen("100", "id-1", now));
+    evidence.observe("100", "id-1", now);
+    check("live echo before ACK is retained for exact ID",
+          evidence.seen("100", "id-1", now + 12s) &&
+              !evidence.seen("100", "id-2", now + 12s) &&
+              !evidence.seen("200", "id-1", now + 12s));
+    for (int i = 0; i < 2400; ++i)
+    {
+        // 80 incoming messages/second for 30 simulated seconds, without
+        // expelling the exact acknowledgement of our own send.
+        evidence.observe("200", QString::number(i),
+                         now + std::chrono::milliseconds(1000 * i / 80));
+    }
+    check("busy chat cannot evict the watched user's echo",
+          evidence.seen("100", "id-1", now + 30s));
+    check("old live echo expires", !evidence.seen("100", "id-1", now + 61s));
+}
+
 bool isOurDirect(QAbstractSocket &socket)
 {
     return socket.proxy().type() == QNetworkProxy::NoProxy &&
-           socket.property("leafyrinoLiveSystemProxy").toBool();
+           socket.property("noctisLiveSystemProxy").toBool();
 }
 
 bool isDefault(QAbstractSocket &socket)
 {
     return socket.proxy().type() == QNetworkProxy::DefaultProxy &&
-           !socket.property("leafyrinoLiveSystemProxy").toBool();
+           !socket.property("noctisLiveSystemProxy").toBool();
 }
 
 void policyTests()
@@ -153,7 +256,7 @@ void policyTests()
                                   SystemProxyState{1, 1}) ==
                       IrcProxyRefresh::Unchanged &&
                   configured.proxy() == before);
-        configured.setProperty("leafyrinoLiveSystemProxy", true);
+        configured.setProperty("noctisLiveSystemProxy", true);
         if (type != QNetworkProxy::NoProxy)
             check(QString("foreign explicit proxy %1 wins stale marker")
                       .arg(int(type)),
@@ -415,6 +518,7 @@ int main(int argc, char **argv)
     QElapsedTimer elapsed;
     elapsed.start();
     policyTests();
+    writeRecoveryTests();
     networkTests();
     const auto native = chatterino::currentSystemProxyState();
     QJsonObject nativeState{{"available", bool(native)}};

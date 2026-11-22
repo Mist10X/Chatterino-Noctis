@@ -5,6 +5,10 @@
 #include "common/UiLanguage.hpp"
 #include "widgets/dialogs/UserInfoPopup.hpp"
 
+#ifdef Q_OS_WIN
+#    include <Windows.h>
+#endif
+
 #include "Application.hpp"
 #include "common/Channel.hpp"
 #include "common/Literals.hpp"
@@ -61,9 +65,16 @@
 #include "widgets/buttons/PixmapButton.hpp"
 #include "widgets/buttons/SvgButton.hpp"
 #include "widgets/dialogs/EditUserNotesDialog.hpp"
-#include "widgets/dialogs/UserBadgesDialog.hpp"
+#include "widgets/helper/ChannelAvatarLabel.hpp"
+#include "widgets/helper/RoundAvatar.hpp"
 #include "widgets/helper/ChannelView.hpp"
-#include "widgets/helper/InvisibleSizeGrip.hpp"
+#include "widgets/helper/MenuStyle.hpp"
+#include "widgets/helper/NoctisTooltip.hpp"
+#include "widgets/helper/UsercardActivity.hpp"
+#include "widgets/helper/UsercardChrome.hpp"
+#include "widgets/helper/UsercardRolesPage.hpp"
+#include "widgets/helper/UsercardMotionViewport.hpp"
+#include "widgets/helper/UsercardResizeGrip.hpp"
 #include "widgets/helper/Line.hpp"
 #include "widgets/helper/LiveIndicator.hpp"
 #include "widgets/helper/ScalingSpacerItem.hpp"
@@ -71,7 +82,9 @@
 #include "widgets/MarkdownLabel.hpp"
 #include "widgets/Notebook.hpp"
 #include "widgets/Scrollbar.hpp"
+#include "widgets/TooltipWidget.hpp"
 #include "widgets/splits/Split.hpp"
+#include "widgets/splits/SplitContainer.hpp"
 #include "widgets/Window.hpp"
 
 #include <IrcMessage>
@@ -83,12 +96,14 @@
 #include <QDesktopServices>
 #include <QFile>
 #include <QFontMetrics>
+#include <QHelpEvent>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGuiApplication>
 #include <QHash>
 #include <QHBoxLayout>
 #include <QImageReader>
+#include <QImage>
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QLabel>
@@ -105,20 +120,25 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QPainter>
+#include <QPaintEvent>
 #include <QPainterPath>
 #include <QPointer>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QRegion>
 #include <QSaveFile>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QScreen>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStringBuilder>
 #include <QSvgRenderer>
 #include <QTabWidget>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QToolButton>
-#include <QToolTip>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QVBoxLayout>
@@ -126,6 +146,8 @@
 #include <QWidgetAction>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -158,7 +180,7 @@ protected:
 };
 constexpr QStringView TEXT_FOLLOWERS = u"Фолловеров %1";
 constexpr QStringView TEXT_CREATED = u"Создан %1";
-constexpr QStringView TEXT_TITLE = u"%1 — карточка в #%2";
+constexpr QStringView TEXT_TITLE = u"%1 — карточка в %2";
 constexpr QStringView TEXT_USER_ID = u"ID: ";
 constexpr QStringView TEXT_UNAVAILABLE = u"нет данных";
 constexpr QStringView TEXT_PRONOUNS = u"Местоимения: %1";
@@ -200,27 +222,113 @@ protected:
                                QPainter::SmoothPixmapTransform);
         painter.setOpacity(this->currentContentOpacity());
         const auto bounds = QRectF(this->rect()).adjusted(2, 2, -2, -2);
-        QPainterPath clip;
-        clip.addEllipse(bounds);
-        painter.setClipPath(clip);
-        const auto side = std::min(image.width(), image.height());
-        const QRectF source((image.width() - side) / 2.,
-                            (image.height() - side) / 2., side, side);
-        painter.drawPixmap(bounds, image, source);
-        painter.setClipping(false);
+        const qreal ring = this->ringColor_.isValid() ? std::max(2.0, this->width() / 29.0) : 0;
+        const auto inner = bounds.adjusted(ring, ring, -ring, -ring);
         if (this->ringColor_.isValid())
         {
-            const qreal ring = std::max(2.0, this->width() / 22.0);
-            painter.setPen(QPen(this->ringColor_, ring));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawEllipse(
-                bounds.adjusted(ring / 2, ring / 2, -ring / 2, -ring / 2));
+            painter.setPen(QPen(this->ringColor_.lighter(145), 0.8));
+            painter.setBrush(this->ringColor_);
+            painter.drawEllipse(bounds.adjusted(.4, .4, -.4, -.4));
         }
+        const auto pixels = avatarPixelSize(inner.width(), this->devicePixelRatioF());
+        if (this->roundCache_.isNull() || this->cacheKey_ != image.cacheKey() ||
+            this->roundCache_.width() != pixels)
+        {
+            this->roundCache_ = roundAvatarPixmap(image, pixels);
+            this->cacheKey_ = image.cacheKey();
+        }
+        painter.drawPixmap(inner, this->roundCache_, QRectF(this->roundCache_.rect()));
         painter.restore();
     }
 
 private:
     QColor ringColor_;
+    QPixmap roundCache_;
+    qint64 cacheKey_ = 0;
+};
+
+// The profile cover is painted as part of the same palette, with an AA upper
+// contour even when a real wide cover image is supplied by the platform.
+class UsercardCoverLabel final : public QLabel
+{
+public:
+    explicit UsercardCoverLabel(QWidget *parent) : QLabel(parent) {}
+
+    void setCover(const QPixmap &source, float scale, const usercardChrome::Palette &colors)
+    {
+        const auto key = source.cacheKey();
+        if (this->sourceKey_ != key || this->scale_ != scale || this->colors_.cover != colors.cover ||
+            this->colors_.profile != colors.profile)
+        {
+            this->source_ = source;
+            this->sourceKey_ = key;
+            this->scale_ = scale;
+            this->colors_ = colors;
+            this->cache_ = {};
+            this->update();
+        }
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        const auto ratio = this->devicePixelRatioF();
+        const QSize pixels(qRound(this->width() * ratio), qRound(this->height() * ratio));
+        if (pixels.isEmpty())
+            return;
+        if (this->cache_.size() != pixels)
+        {
+            QImage result(pixels, QImage::Format_ARGB32_Premultiplied);
+            result.fill(Qt::transparent);
+            QPainter p(&result);
+            p.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+            const QRectF area(0, 0, pixels.width(), pixels.height());
+            if (this->source_.isNull())
+            {
+                QLinearGradient gradient(area.topLeft(), area.bottomLeft());
+                gradient.setColorAt(0, QColor(this->colors_.profile));
+                gradient.setColorAt(.24, QColor(this->colors_.cover));
+                gradient.setColorAt(1, QColor(this->colors_.profile));
+                p.fillRect(area, gradient);
+            }
+            else
+            {
+                auto image = this->source_.toImage();
+                image.setDevicePixelRatio(1.0);
+                image = image.scaled(pixels, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+                p.drawImage(QPointF((pixels.width() - image.width()) / 2., (pixels.height() - image.height()) / 2.), image);
+            }
+            // Feather the inset cover into the actual profile surface. Both
+            // dimensions fade to zero alpha at the outside edge, rather than
+            // revealing a second, separately rounded rectangular panel.
+            p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            const auto feather = usercardChrome::coverFeather(this->scale_) * ratio;
+            auto fadeEdges = [&](QPointF end, qreal fraction) {
+                QLinearGradient alpha(area.topLeft(), end);
+                const auto edge = std::min(.33, fraction);
+                alpha.setColorAt(0, QColor(0,0,0,0));
+                alpha.setColorAt(edge * .35, QColor(0,0,0,72));
+                alpha.setColorAt(edge, Qt::black);
+                alpha.setColorAt(1 - edge, Qt::black);
+                alpha.setColorAt(1 - edge * .35, QColor(0,0,0,72));
+                alpha.setColorAt(1, QColor(0,0,0,0));
+                p.fillRect(area, alpha);
+            };
+            fadeEdges(area.topRight(), feather / area.width());
+            fadeEdges(area.bottomLeft(), feather / area.height());
+            p.end();
+            this->cache_ = QPixmap::fromImage(result);
+        }
+        QPainter p(this);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        p.drawPixmap(QRectF(this->rect()), this->cache_, QRectF(this->cache_.rect()));
+    }
+
+private:
+    QPixmap source_, cache_;
+    qint64 sourceKey_ = 0;
+    float scale_ = 1.F;
+    usercardChrome::Palette colors_ = usercardChrome::palette(false);
 };
 
 /// Retains Label's copy text, elision and sizing. Only the existing 7TV paint
@@ -270,11 +378,16 @@ protected:
         const auto size =
             QSizeF(std::min(bounds.width(), metrics.horizontalAdvance(text)),
                    bounds.height());
+        qreal margin = 0;
+        // Name labels are deliberately compact. Keep room for the paint's
+        // shadow in its own bitmap and feather any part that would otherwise
+        // be cut by the widget edge, leaving the painted glyphs intact.
+        const auto shadowClip = QRectF(this->rect()).translated(-bounds.topLeft());
         const auto pixmap = this->paint_->getPixmap(
             text, font, this->color_, size, this->scale(),
-            this->devicePixelRatioF(), true);
+            this->devicePixelRatioF(), true, &margin, &shadowClip);
         QPainter painter(this);
-        painter.drawPixmap(bounds.topLeft(), pixmap);
+        painter.drawPixmap(bounds.topLeft() - QPointF(margin, margin), pixmap);
     }
 
 private:
@@ -356,113 +469,664 @@ class UsercardBadgeStrip final : public QWidget
 public:
     explicit UsercardBadgeStrip(QWidget *parent)
         : QWidget(parent)
+        , motionTimer_(this)
     {
-        auto policy =
-            QSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-        policy.setHeightForWidth(true);
-        this->setSizePolicy(policy);
-        this->setCursor(Qt::PointingHandCursor);
+        this->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        this->setMouseTracking(true);
+        // Use a precise local frame clock: the shared Qt animation timer may
+        // produce ~33 ms gaps on Windows. Derive progress from elapsed time
+        // so a delayed event cannot prolong the animation or jump endpoints.
+        this->motionTimer_.setTimerType(Qt::PreciseTimer);
+        // A 16 ms request can miss the 15.625 ms Windows timer tick and
+        // regularly land on the next one. Wake slightly earlier, but only
+        // produce a frame when enough monotonic time has passed.
+        this->motionTimer_.setInterval(8);
+        QObject::connect(&this->motionTimer_, &QTimer::timeout, this,
+                         [this] { this->motionTick(); });
         this->connections_.managedConnect(
             getApp()->getWindows()->layoutRequested, [this](Channel *) {
-                this->update();
+                if (!this->motionTimer_.isActive() && this->isVisible())
+                    this->update();
             });
+    }
+
+    ~UsercardBadgeStrip() override
+    {
+        // On Windows TooltipWidget deliberately has no QWidget parent.
+        // Delete it with the strip, not only when the whole card closes.
+        if (this->badgePreview_)
+            delete this->badgePreview_.data();
     }
 
     void setBadges(std::vector<EmotePtr> badges, float scale)
     {
+        if (this->frozenLayout_ && this->motionTimer_.isActive())
+        {
+            // Earned badges may arrive while the user is closing the list.
+            // Keep the current layout until the transition has ended.
+            this->pendingBadges_ = std::make_pair(std::move(badges), scale);
+            return;
+        }
+        if (this->preserveOrder_ && this->badges_ != badges)
+        {
+            // A later fetch must not reshuffle the already visible prefix.
+            // Match by the same stable identity used to deduplicate the list.
+            auto key = [](const EmotePtr &badge) {
+                const auto url = badge->images.getImage1()->url().string;
+                return url.isEmpty() ? badge->id.string : url;
+            };
+            QHash<QString, qsizetype> byKey;
+            for (qsizetype i = 0; i < qsizetype(badges.size()); ++i)
+            {
+                const auto id = key(badges[size_t(i)]);
+                if (!id.isEmpty())
+                    byKey.insert(id, i);
+            }
+            std::vector<bool> used(badges.size());
+            std::vector<EmotePtr> ordered;
+            ordered.reserve(badges.size());
+            for (const auto &old : this->badges_)
+            {
+                const auto id = key(old);
+                const auto it = byKey.constFind(id);
+                if (it != byKey.constEnd() && !used[size_t(*it)])
+                {
+                    used[size_t(*it)] = true;
+                    ordered.push_back(badges[size_t(*it)]);
+                }
+            }
+            for (size_t i = 0; i < badges.size(); ++i)
+                if (!used[i]) ordered.push_back(std::move(badges[i]));
+            badges = std::move(ordered);
+        }
+        this->preserveOrder_ = true;
+        if (this->badges_ == badges && this->scale_ == scale)
+            return;
+        this->hideBadgePreview();
         this->badges_ = std::move(badges);
         this->scale_ = scale;
+        this->layoutCache_.reset();
+        this->frameCache_.clear();
+        this->frameCache_.resize(this->badges_.size());
         this->setVisible(!this->badges_.empty());
-        this->setToolTip(uiText(QStringLiteral("Значки: %1 · нажмите, чтобы открыть все"))
-                             .arg(this->badges_.size()));
-        this->updateGeometry();
+        this->setProperty("badgeCount", int(this->badges_.size()));
+        this->updateHeight();
         this->update();
     }
 
-    std::function<void()> onClicked;
-
     QSize sizeHint() const override
     {
-        return {int(200 * this->scale_), this->heightForWidth(this->width())};
+        return {int(200 * this->scale_), this->currentHeight()};
     }
 
     QSize minimumSizeHint() const override
     {
-        return {0, this->badges_.empty() ? 0 : int(22 * this->scale_)};
+        return {0, this->currentHeight()};
     }
 
-    int heightForWidth(int /*width*/) const override
+    void setBadgeScale(float scale)
     {
-        return this->badges_.empty() ? 0 : std::max(1, int(24 * this->scale_));
+        if (this->scale_ == scale)
+            return;
+        this->hideBadgePreview();
+        this->scale_ = scale;
+        this->layoutCache_.reset();
+        this->frozenLayout_.reset();
+        this->frameCache_.clear();
+        this->frameCache_.resize(this->badges_.size());
+        this->updateHeight();
+        this->update();
+    }
+
+    void resetExpansion()
+    {
+        this->hideBadgePreview();
+        this->motionTimer_.stop();
+        this->frozenLayout_.reset();
+        this->layoutCache_.reset();
+        this->pendingBadges_.reset();
+        this->preserveOrder_ = false;
+        this->expanded_ = false;
+        this->progress_ = 0;
+        this->chipPressed_ = false;
+        this->setProperty("expanded", false);
+        this->updateHeight();
+        this->update();
+        if (this->onFinished)
+            this->onFinished(false);
+    }
+
+    std::function<void(bool, int)> onStarted;
+    std::function<void(qreal)> onHeightChanged;
+    std::function<void(bool)> onFinished;
+
+    bool hasOverflow() const
+    {
+        return this->firstRowCount() < this->badges_.size();
+    }
+
+    void toggleExpansion()
+    {
+        if (!this->hasOverflow())
+            return;
+        this->hideBadgePreview();
+        this->expanded_ = !this->expanded_;
+        this->setProperty("expanded", this->expanded_);
+        this->updateAccessibility();
+        const auto destination = this->expanded_ ? 1.0 : 0.0;
+        const auto from = this->progress_;
+        // Reverse from the visible progress, retaining the same layout.
+        this->motionTimer_.stop();
+        if (!this->frozenLayout_)
+            this->frozenLayout_ = this->layoutPlan();
+        const int duration = this->expanded_ ? this->timelineMs() : std::max(1300, this->timelineMs());
+        this->motionDuration_ = std::max(60, int(duration * std::abs(destination - from)));
+        this->motionStart_ = from;
+        this->motionEnd_ = destination;
+        if (this->onStarted)
+            this->onStarted(this->expanded_, this->stride() * (1 + this->extraRows()));
+        this->progress_ = from;
+        this->lastMotionFrame_ = 0;
+        this->motionElapsed_.start();
+        this->motionTimer_.start();
+    }
+
+    QRectF chipRect() const
+    {
+        if (!this->hasOverflow())
+            return {};
+        return QRectF(int(this->firstRowCount()) * this->stride() + 0.5,
+                      (this->stride() - this->iconSize()) / 2.0 + 0.5,
+                      this->chipWidth() - 1, this->iconSize() - 1);
     }
 
 protected:
-    // Accepting the press is what makes Qt deliver the release here.
     void mousePressEvent(QMouseEvent *event) override
     {
-        event->setAccepted(event->button() == Qt::LeftButton);
+        this->hideBadgePreview();
+        this->chipPressed_ = event->button() == Qt::LeftButton &&
+                             this->chipRect().contains(event->position());
+        event->setAccepted(this->chipPressed_);
     }
 
     void mouseReleaseEvent(QMouseEvent *event) override
     {
-        if (event->button() == Qt::LeftButton && this->onClicked &&
-            this->rect().contains(event->position().toPoint()))
+        if (event->button() == Qt::LeftButton && this->chipPressed_ &&
+            this->chipRect().contains(event->position()))
         {
-            this->onClicked();
+            this->toggleExpansion();
+            event->accept();
+        }
+        this->chipPressed_ = false;
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        this->setCursor(this->chipRect().contains(event->position())
+                            ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        this->updateBadgePreview(event->position(), event->globalPosition().toPoint());
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        this->hideBadgePreview();
+        QWidget::leaveEvent(event);
+    }
+
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == this->badgePreviewOwner_.data() &&
+            (event->type() == QEvent::Move || event->type() == QEvent::Resize ||
+             event->type() == QEvent::Hide || event->type() == QEvent::Close ||
+             event->type() == QEvent::WindowDeactivate))
+            this->hideBadgePreview();
+        return QWidget::eventFilter(watched, event);
+    }
+
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (event->key() == Qt::Key_Space || event->key() == Qt::Key_Return)
+        {
+            this->toggleExpansion();
+            event->accept();
+            return;
+        }
+        QWidget::keyPressEvent(event);
+    }
+
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QWidget::resizeEvent(event);
+        if (event->size() != event->oldSize())
+            this->hideBadgePreview();
+        if (event->size().width() != event->oldSize().width() && !this->frozenLayout_)
+        {
+            this->layoutCache_.reset();
+            this->updateHeight();
         }
     }
 
-    void paintEvent(QPaintEvent *) override
+    bool event(QEvent *event) override
+    {
+        if (event->type() == QEvent::ToolTip)
+        {
+            auto *help = static_cast<QHelpEvent *>(event);
+            // Handle Qt's delayed tooltip event as well as ordinary mouse
+            // movement. Never allow the native text-only tooltip to appear.
+            this->updateBadgePreview(help->pos(), help->globalPos());
+            return true;
+        }
+        if (event->type() == QEvent::Hide || event->type() == QEvent::Move)
+            this->hideBadgePreview();
+        return QWidget::event(event);
+    }
+
+    void paintEvent(QPaintEvent *event) override
     {
         QPainter painter(this);
         painter.setRenderHints(QPainter::SmoothPixmapTransform |
                                QPainter::Antialiasing);
-        const int size = std::max(1, int(20 * this->scale_));
-        const int stride = std::max(1, int(24 * this->scale_));
+        const int size = this->iconSize();
+        const int stride = this->stride();
         const auto total = this->badges_.size();
-
-        // One row, like Chatterino+: when they don't all fit, the last slot
-        // shows how many there are in total.
-        auto font = this->font();
-        font.setPixelSize(std::max(1, int(11 * this->scale_)));
-        const QFontMetrics metrics(font);
+        const auto shown = this->firstRowCount();
+        const auto columns = this->columns();
+        auto font = this->chipFont();
         const auto countText = QString::number(total);
-        const int chipWidth =
-            metrics.horizontalAdvance(countText) + int(10 * this->scale_);
-        auto shown = size_t(std::max(1, this->width() / stride));
-        const bool overflow = shown < total;
-        if (overflow)
+        auto drawBadge = [&](size_t i, int row, int col, qreal reveal = 1.0)
         {
-            shown = size_t(std::max(0, (this->width() - chipWidth) / stride));
-        }
-        for (size_t i = 0; i < std::min(shown, total); ++i)
-        {
-            const auto &image =
-                this->badges_[i]->images.getImageOrLoaded(this->scale_);
-            if (auto pixmap = image->pixmapOrLoad())
+            const auto &pixmap = this->badgePixmap(i);
+            if (!pixmap.isNull())
             {
-                painter.drawPixmap(
-                    QRect(int(i) * stride, (stride - size) / 2, size, size),
-                    *pixmap, pixmap->rect());
+                const qreal eased = smoothStep(reveal);
+                const qreal actualSize = size * (0.78 + 0.22 * eased);
+                const qreal inset = (size - actualSize) / 2;
+                painter.setOpacity(eased);
+                painter.drawPixmap(QRectF(col * stride + inset,
+                    row * stride + (stride - size) / 2.0 + inset +
+                        (1 - eased) * 4 * this->scale_, actualSize, actualSize),
+                    pixmap, QRectF(pixmap.rect()));
             }
-        }
-        if (overflow)
+        };
+        for (size_t i = 0; i < shown; ++i)
         {
-            const QRectF chip(int(shown) * stride + 0.5,
-                              (stride - size) / 2 + 0.5, chipWidth - 1,
-                              size - 1);
-            painter.setPen(QColor(0x4a, 0x46, 0x55));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawRoundedRect(chip, 3 * this->scale_, 3 * this->scale_);
-            painter.setPen(QColor(0xa9, 0xa5, 0xb6));
+            if (event->region().intersects(QRect(int(i) * stride, 0, stride, stride)))
+                drawBadge(i, 0, int(i));
+        }
+        // The first row never changes during the animation. The remaining
+        // distinct badges reveal and fade into rows immediately below it.
+        if (shown < total)
+        {
+            const auto chip = this->chipRect();
+            const bool light = getTheme()->isLightTheme();
+            painter.setPen(QColor(light ? "#bcb1ce" : "#5b516e"));
+            painter.setBrush(QColor(light ? "#ece6f4" : "#2a2635"));
+            painter.drawRoundedRect(chip, 5 * this->scale_, 5 * this->scale_);
+            painter.setPen(QColor(light ? "#634c84" : "#c8b7eb"));
             painter.setFont(font);
-            painter.drawText(chip, Qt::AlignCenter, countText);
+            auto numberRect = chip.adjusted(4 * this->scale_, 0, -10 * this->scale_, 0);
+            painter.drawText(numberRect, Qt::AlignCenter, countText);
+            const auto center = QPointF(chip.right() - 6 * this->scale_, chip.center().y());
+            const qreal h = (1 - 2 * smoothStep(this->progress_)) * 2 * this->scale_;
+            painter.setPen(QPen(QColor(light ? "#634c84" : "#c8b7eb"), 1.25));
+            painter.drawPolyline(QPolygonF{center + QPointF(-2.5 * this->scale_, -h / 2),
+                                            center + QPointF(0, h / 2),
+                                            center + QPointF(2.5 * this->scale_, -h / 2)});
+            for (size_t i = shown; i < total && this->progress_ > 0; ++i)
+            {
+                const auto offset = i - shown;
+                const auto row = int(offset / columns);
+                const auto reveal = this->badgeProgress(offset, total - shown);
+                if (reveal <= 0)
+                    break;
+                const auto col = int(offset % columns);
+                if (event->region().intersects(QRect(col * stride, (row+1) * stride, stride, stride)))
+                    drawBadge(i, row + 1, col, reveal);
+            }
         }
     }
 
 private:
+    struct BadgeLayout {
+        int width = 0;
+        int chipWidth = 0;
+        size_t columns = 1;
+        size_t firstRow = 0;
+        int extraRows = 0;
+    };
+    struct BadgeFrame {
+        ImagePtr image;
+        QPixmap pixmap;
+        qint64 cacheKey = 0;
+        int physicalSize = 0;
+    };
+
+    const QPixmap &badgePixmap(size_t index)
+    {
+        auto &frame = this->frameCache_[index];
+        // Keep the selected source and scaled static raster throughout a
+        // transition. Animated badges still receive their current frame.
+        if (!frame.image || !this->frozenLayout_ || frame.pixmap.isNull())
+        {
+            const auto selected = this->badges_[index]->images.getImageOrLoaded(this->scale_);
+            if (selected != frame.image)
+            {
+                frame = {};
+                frame.image = selected;
+            }
+        }
+        const auto pixels = avatarPixelSize(this->iconSize(), this->devicePixelRatioF());
+        if (frame.image && (frame.pixmap.isNull() || frame.physicalSize != pixels || frame.image->animated()))
+        {
+            if (auto source = frame.image->pixmapOrLoad())
+            {
+                if (frame.cacheKey != source->cacheKey() || frame.physicalSize != pixels || frame.pixmap.isNull())
+                {
+                    frame.cacheKey = source->cacheKey();
+                    frame.physicalSize = pixels;
+                    frame.pixmap = source->scaled(pixels, pixels, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+                    frame.pixmap.setDevicePixelRatio(1.0);
+                }
+            }
+        }
+        return frame.pixmap;
+    }
+
+    void hideBadgePreview()
+    {
+        this->hoveredBadge_.reset();
+        if (this->badgePreview_ && this->badgePreview_->isVisible())
+            this->badgePreview_->hide();
+    }
+
+    void updateBadgePreview(const QPointF &position, const QPoint &globalPosition)
+    {
+        if (this->motionTimer_.isActive() ||
+            (this->progress_ > 0 && this->progress_ < 1) ||
+            !QRectF(this->rect()).contains(position) ||
+            this->chipRect().contains(position))
+        {
+            this->hideBadgePreview();
+            return;
+        }
+
+        const auto stride = this->stride();
+        const auto size = this->iconSize();
+        const int row = int(position.y() / stride);
+        const int col = int(position.x() / stride);
+        const auto prefix = this->firstRowCount();
+        if ((row == 0 && size_t(col) >= prefix) ||
+            (row > 0 && (this->progress_ < 1 || size_t(col) >= this->columns())))
+        {
+            this->hideBadgePreview();
+            return;
+        }
+        const auto index = row == 0 ? size_t(col) :
+            prefix + size_t(row - 1) * this->columns() + size_t(col);
+        const QRectF iconRect(col * stride, row * stride + (stride - size) / 2., size, size);
+        if (index >= this->badges_.size() || !iconRect.contains(position))
+        {
+            this->hideBadgePreview();
+            return;
+        }
+        // The chat's preview explicitly selects the high-resolution source,
+        // letting TooltipEntryWidget request it on demand. Do not magnify
+        // the cached 1x badge that is used for painting the row.
+        const auto &badge = this->badges_[index];
+        const auto &image = badge->images.getImage(3.F);
+        if (!image || image->isEmpty() || image->scale() <= 0)
+        {
+            this->hideBadgePreview();
+            return;
+        }
+        if (!this->badgePreview_)
+        {
+            auto *owner = dynamic_cast<BaseWidget *>(this->window());
+            if (!owner)
+                return;
+            this->badgePreviewOwner_ = owner;
+            this->badgePreview_ = new TooltipWidget(owner);
+            this->badgePreview_->setObjectName(QStringLiteral("UsercardBadgeHoverPreview"));
+            // Preserve the isolated preview's invisible native-window mode.
+            if (owner->testAttribute(Qt::WA_DontShowOnScreen))
+                this->badgePreview_->setAttribute(Qt::WA_DontShowOnScreen);
+            owner->installEventFilter(this);
+        }
+
+        if (this->hoveredBadge_ != index || !this->badgePreview_->isVisible())
+        {
+            float zoom = 1.F;
+            switch (getSettings()->emoteTooltipScale.getEnum())
+            {
+                case EmoteTooltipScale::Small: zoom = .5F; break;
+                case EmoteTooltipScale::Large: zoom = 1.5F; break;
+                case EmoteTooltipScale::Huge: zoom = 2.F; break;
+                default: break;
+            }
+
+            // Earned badges already provide a separate, concise title in
+            // name; their tooltip adds the acquisition instructions after
+            // <br>. Observed chat badges may have no name, so use only the
+            // first line of their existing tooltip.
+            auto caption = badge->name.string.trimmed();
+            if (!caption.isEmpty())
+            {
+                const auto escaped = caption.toHtmlEscaped();
+                if (escaped != caption)
+                    caption = QStringLiteral("<span>") + escaped + QStringLiteral("</span>");
+            }
+            else
+            {
+                caption = badge->tooltip.string;
+                const auto br = caption.indexOf(QStringLiteral("<br"), 0, Qt::CaseInsensitive);
+                const auto nl = caption.indexOf(u'\n');
+                const auto end = br < 0 ? nl : nl < 0 ? br : std::min(br, nl);
+                if (end >= 0)
+                    caption.truncate(end);
+                caption = caption.trimmed();
+            }
+            this->badgePreview_->setOne(TooltipEntry::scaled(image, caption, zoom));
+            this->badgePreview_->setWordWrap(false);
+        }
+        // Match ChannelView's placement. Movement within the same icon only
+        // moves the window: its image, caption and layout are unchanged.
+        this->badgePreview_->moveTo(globalPosition + QPoint(16, 16),
+                                   widgets::BoundsChecking::CursorPosition);
+        this->hoveredBadge_ = index;
+        this->badgePreview_->show();
+    }
+
+    int stride() const { return std::max(1, int(24 * this->scale_)); }
+    int iconSize() const { return std::max(1, int(20 * this->scale_)); }
+    // Reserve the scrollbar's layout width, even when it is hidden. Its
+    // appearance during a resize must never move badges into a different row.
+    int stableWidth() const
+    {
+        int margins = 0;
+        for (auto *p = this->parentWidget(); p; p = p->parentWidget())
+        {
+            if (auto *area = qobject_cast<QScrollArea *>(p))
+            {
+                const int available = area->contentsRect().width() - margins -
+                    area->verticalScrollBar()->sizeHint().width();
+                return std::max(1, available);
+            }
+            if (p->layout())
+            {
+                const auto m = p->layout()->contentsMargins();
+                margins += m.left() + m.right();
+            }
+        }
+        return this->width();
+    }
+    const BadgeLayout &layoutPlan() const
+    {
+        if (this->frozenLayout_)
+            return *this->frozenLayout_;
+        const int width = this->stableWidth();
+        if (!this->layoutCache_ || this->layoutCache_->width != width)
+        {
+            BadgeLayout layout;
+            layout.width = width;
+            layout.chipWidth = QFontMetrics(this->chipFont()).horizontalAdvance(QString::number(this->badges_.size())) + int(20 * this->scale_);
+            layout.columns = size_t(std::max(1, width / this->stride()));
+            layout.firstRow = layout.columns >= this->badges_.size() ? this->badges_.size() :
+                size_t(std::max(0, (width - layout.chipWidth) / this->stride()));
+            const auto extra = this->badges_.size() - layout.firstRow;
+            layout.extraRows = int((extra + layout.columns - 1) / layout.columns);
+            this->layoutCache_ = layout;
+        }
+        return *this->layoutCache_;
+    }
+    size_t columns() const { return this->layoutPlan().columns; }
+    QFont chipFont() const
+    {
+        auto font = this->font();
+        font.setPixelSize(std::max(1, int(11 * this->scale_)));
+        return font;
+    }
+    int chipWidth() const
+    {
+        return this->layoutPlan().chipWidth;
+    }
+    size_t firstRowCount() const
+    {
+        return this->layoutPlan().firstRow;
+    }
+    int extraRows() const
+    {
+        return this->layoutPlan().extraRows;
+    }
+    int currentHeight() const
+    {
+        if (this->badges_.empty())
+            return 0;
+        return this->stride() + qRound(this->heightFraction() * this->extraRows() * this->stride());
+    }
+    int timelineMs() const
+    {
+        return std::clamp(290 + 38 * int(this->badges_.size() - this->firstRowCount()), 460, 1850);
+    }
+    static qreal smoothStep(qreal value)
+    {
+        const auto t = std::clamp(value, 0.0, 1.0);
+        return t * t * t * (t * (t * 6 - 15) + 10);
+    }
+    qreal badgeProgress(size_t offset) const
+    {
+        return this->badgeProgress(offset, this->badges_.size() - this->firstRowCount());
+    }
+    qreal badgeProgress(size_t offset, size_t extra) const
+    {
+        const auto duration = std::clamp(290 + 38 * int(extra), 460, 1850);
+        // Make room for the rows before the first badge becomes visible;
+        // when reversing the same timeline, fade badges before closing.
+        const qreal lead = duration * 0.40;
+        const qreal reveal = std::min(255.0, duration * 0.35);
+        const qreal stagger = extra > 1 ? (duration - lead - reveal) / (extra - 1) : 0;
+        return std::clamp((this->progress_ * duration - lead - stagger * offset) / reveal, 0.0, 1.0);
+    }
+    qreal heightFraction() const
+    {
+        return smoothStep(this->progress_ / 0.45);
+    }
+    void updateAccessibility()
+    {
+        this->setAccessibleName(uiText(this->expanded_ ? "Collapse badges (%1)" :
+                                                         "Show all badges (%1)")
+                                    .arg(this->badges_.size()));
+        this->setFocusPolicy(this->hasOverflow() ? Qt::StrongFocus : Qt::NoFocus);
+    }
+    void motionTick()
+    {
+        const auto elapsed = this->motionElapsed_.nsecsElapsed();
+        const auto fraction = std::min(1.0, elapsed / (this->motionDuration_ * 1e6));
+        if (fraction < 1.0 && elapsed - this->lastMotionFrame_ < 11'000'000)
+            return;
+        this->lastMotionFrame_ = elapsed;
+        this->progress_ = fraction >= 1.0 ? this->motionEnd_
+            : this->motionStart_ + (this->motionEnd_ - this->motionStart_) * fraction;
+        this->updateHeight();
+        // Only repaint the moving rows and chip, not the stable first row.
+        this->update(this->chipRect().toAlignedRect());
+        if (this->height() > this->stride())
+            this->update(QRect(0, this->stride(), this->width(), this->height() - this->stride()));
+        if (fraction < 1.0 || !this->motionTimer_.isActive())
+            return;
+        this->motionTimer_.stop();
+        if (this->onFinished)
+            this->onFinished(this->expanded_);
+        this->frozenLayout_.reset();
+        this->updateHeight();
+        if (auto pending = std::exchange(this->pendingBadges_, std::nullopt))
+            this->setBadges(std::move(pending->first), pending->second);
+        this->update();
+    }
+
+    void updateHeight()
+    {
+        const bool wasExpanded = this->expanded_ || this->progress_ > 0;
+        if (!this->hasOverflow())
+        {
+            this->motionTimer_.stop();
+            this->progress_ = 0;
+            this->expanded_ = false;
+            this->setProperty("expanded", false);
+        }
+        this->setProperty("firstRowBadgeCount", int(this->firstRowCount()));
+        this->setProperty("badgeRevealProgress", this->progress_);
+        const auto extra = this->badges_.size() - this->firstRowCount();
+        this->setProperty("badgeFirstExtraProgress", extra ? this->badgeProgress(0) : 0.0);
+        this->setProperty("badgeLastExtraProgress", extra ? this->badgeProgress(extra - 1) : 0.0);
+        const auto height = this->currentHeight();
+        if (this->minimumHeight() != height || this->maximumHeight() != height)
+        {
+            const bool shrinking = height < this->height();
+            // During collapse release the inner height before the window
+            // shrinks; during expansion do the opposite. Never require a
+            // one-frame overflow just because the two layouts update apart.
+            if (shrinking)
+                this->setFixedHeight(height);
+            if (this->onHeightChanged)
+                this->onHeightChanged(this->heightFraction());
+            if (!shrinking)
+                this->setFixedHeight(height);
+        }
+        else if (this->motionTimer_.isActive() && this->onHeightChanged)
+        {
+            // The outer window may still have an integer-pixel step even
+            // when the strip's rounded height hasn't changed. Complete it
+            // now, not in a catch-up resize after the animation ends.
+            this->onHeightChanged(this->heightFraction());
+        }
+        // Only the label/focus state changes when the badge count or toggle
+        // changes; avoid generating accessibility events on animation frames.
+        if (this->property("badgeRevealProgress").toDouble() == 0 ||
+            this->progress_ >= 1)
+            this->updateAccessibility();
+        if (wasExpanded && !this->hasOverflow() && this->onFinished)
+            this->onFinished(false);
+    }
+
     std::vector<EmotePtr> badges_;
+    std::vector<BadgeFrame> frameCache_;
+    mutable std::optional<BadgeLayout> layoutCache_;
+    std::optional<BadgeLayout> frozenLayout_;
+    std::optional<std::pair<std::vector<EmotePtr>, float>> pendingBadges_;
+    bool preserveOrder_ = false;
     float scale_ = 1.F;
+    qreal progress_ = 0;
+    bool expanded_ = false;
+    bool chipPressed_ = false;
+    std::optional<size_t> hoveredBadge_;
+    QPointer<BaseWidget> badgePreviewOwner_;
+    QPointer<TooltipWidget> badgePreview_;
+    QTimer motionTimer_;
+    QElapsedTimer motionElapsed_;
+    qint64 lastMotionFrame_ = 0;
+    qreal motionStart_ = 0;
+    qreal motionEnd_ = 0;
+    int motionDuration_ = 1;
     pajlada::Signals::SignalHolder connections_;
 };
 
@@ -501,6 +1165,15 @@ public:
         this->setCursor(Qt::PointingHandCursor);
         this->setMouseTracking(true);
         this->setToolTip(uiText("Click to copy ") + this->login_);
+        if (parent)
+        {
+            this->setFont(parent->font());
+        }
+        auto palette = this->palette();
+        palette.setColor(QPalette::WindowText,
+                         QColor(getTheme()->isLightTheme() ? "#1b1a22"
+                                                          : "#e8e6f0"));
+        this->setPalette(palette);
 
         const auto metrics = this->fontMetrics();
         const auto loginWidth = std::max(
@@ -517,7 +1190,6 @@ public:
             metrics.elidedText(this->login_, Qt::ElideRight, loginWidth), this);
         loginLabel->setFixedWidth(loginWidth);
         loginLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
-        loginLabel->setToolTip(this->login_);
         layout->addWidget(loginLabel, 0, 0, Qt::AlignVCenter);
 
         auto *leftLabel = new QLabel(std::move(leftText), this);
@@ -564,9 +1236,13 @@ protected:
         if (this->hovered_)
         {
             QPainter painter(this);
-            auto highlight = this->palette().color(QPalette::Highlight);
-            highlight.setAlpha(70);
-            painter.fillRect(this->rect(), highlight);
+            painter.setRenderHint(QPainter::Antialiasing);
+            auto highlight = getTheme()->accent;
+            highlight.setAlphaF(getTheme()->isLightTheme() ? 0.18F : 0.28F);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(highlight);
+            painter.drawRoundedRect(QRectF(this->rect()).adjusted(1, 0, -1, 0),
+                                    6, 6);
         }
 
         QWidget::paintEvent(event);
@@ -581,14 +1257,14 @@ protected:
         }
 
         crossPlatformCopy(this->login_);
-        QToolTip::showText(event->globalPosition().toPoint(),
-                           uiText(QString("Copied %1")).arg(this->login_), this);
-
         for (auto *widget = this->parentWidget(); widget != nullptr;
              widget = widget->parentWidget())
         {
             if (auto *menu = qobject_cast<QMenu *>(widget))
             {
+                noctistooltip::showText(event->globalPosition().toPoint(),
+                    uiText(QString("Copied %1")).arg(this->login_),
+                    menu->parentWidget(), {}, 1600);
                 menu->close();
                 break;
             }
@@ -759,7 +1435,6 @@ void createUsercardColorRow(LayoutCreator<QVBoxLayout> &vbox, QWidget **rowOut,
     auto *label = new Label("");
     label->setPadding({});
     label->setCursor(Qt::PointingHandCursor);
-    label->setToolTip(row->toolTip());
     label->setAttribute(Qt::WA_TransparentForMouseEvents);
     layout->addWidget(label, 0, Qt::AlignVCenter);
     layout->addStretch(1);
@@ -1175,7 +1850,9 @@ MessagePtr makeUsercardModLogMessage(const GqlUsercardMessage &message,
     const auto userId =
         message.senderId.isEmpty() ? fallbackUserId : message.senderId;
     auto displayName = message.senderDisplayName.trimmed();
-    if (displayName.isEmpty())
+    if (displayName.isEmpty() ||
+        (displayName == message.senderLogin &&
+         displayName == displayName.toLower()))
     {
         // Keep historical logins after a rename. A profile can only restore
         // capitalization for the same login and Twitch identity.
@@ -1608,6 +2285,14 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
     , closeAutomatically_(closeAutomatically)
     , offlinePreview_(offlinePreview)
 {
+    if (this->closeAutomatically_)
+    {
+        // A translucent antialiased shell instead of a binary QRegion mask.
+        // Set this before the first native show to keep Windows layered bounds
+        // and the inner widgets consistent for the lifetime of the popup.
+        this->setAttribute(Qt::WA_TranslucentBackground, true);
+        this->setAutoFillBackground(false);
+    }
     registerActiveUsercard(this);
 
     this->followingStatusChangedConnection_ =
@@ -1738,11 +2423,18 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
     auto layers = LayoutCreator<QWidget>(this->getLayoutContainer())
                       .setLayoutType<QGridLayout>()
                       .withoutMargin();
+    const int shadow = this->closeAutomatically_ ? usercardChrome::shadowInset(this->scale()) : 0;
+    const int edge = this->closeAutomatically_
+        ? usercardChrome::contentInset(this->scale(), UsercardResizeGrip::edgeBand(this->scale()))
+        : UsercardResizeGrip::edgeBand(this->scale());
+    layers->setContentsMargins(edge, edge, edge, edge);
     this->ui_.columns = new QSplitter(Qt::Horizontal, this);
     this->ui_.columns->setObjectName("UsercardColumns");
     this->ui_.columns->setChildrenCollapsible(false);
     this->ui_.columns->setOpaqueResize(false);
     layers->addWidget(this->ui_.columns, 0, 0);
+    QObject::connect(this->ui_.columns, &QSplitter::splitterMoved, this,
+                     [this] { this->update(); this->scheduleExpandedBadgeFit(); });
 
     this->ui_.profileScroll = new QScrollArea(this->ui_.columns);
     this->ui_.profileScroll->setObjectName("UsercardProfileScroll");
@@ -1750,12 +2442,24 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
     // client controls rather than caption drag targets.
     this->ui_.profileScroll->setMouseTracking(true);
     this->ui_.profileScroll->setWidgetResizable(true);
+    this->ui_.profileScroll->viewport()->setObjectName("UsercardProfileViewport");
+    this->ui_.profileScroll->viewport()->setAutoFillBackground(false);
+    this->ui_.profileScroll->viewport()->installEventFilter(this);
     this->ui_.profileScroll->setFrameShape(QFrame::NoFrame);
     this->ui_.profileScroll->setHorizontalScrollBarPolicy(
         Qt::ScrollBarAlwaysOff);
+    this->ui_.profileScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    this->badgeFitTimer_ = new QTimer(this);
+    this->badgeFitTimer_->setSingleShot(true);
+    this->badgeFitTimer_->setInterval(30);
+    QObject::connect(this->badgeFitTimer_, &QTimer::timeout, this,
+                     &UserInfoPopup::ensureExpandedBadgeFit);
+    QObject::connect(this->ui_.profileScroll->verticalScrollBar(), &QScrollBar::rangeChanged,
+                     this, [this] { this->scheduleExpandedBadgeFit(); });
     this->ui_.profile = new QWidget;
     this->ui_.profile->setObjectName("UsercardProfile");
     this->ui_.profileScroll->setWidget(this->ui_.profile);
+    this->ui_.profile->setAutoFillBackground(false);
     auto layout =
         LayoutCreator<QWidget>(this->ui_.profile).setLayoutType<QVBoxLayout>();
     layout->setContentsMargins(0, 0, 0, 0);
@@ -1775,8 +2479,11 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
     auto *rightLayout = new QVBoxLayout(this->ui_.rightColumn);
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(0);
-    this->ui_.contentTabs = new QTabWidget(this->ui_.rightColumn);
-    rightLayout->addWidget(this->ui_.contentTabs, 1);
+    this->ui_.rightMotionViewport = new UsercardMotionViewport(this->ui_.rightColumn);
+    this->ui_.rightMotionViewport->setMouseTracking(true);
+    this->ui_.contentTabs = new QTabWidget(this->ui_.rightMotionViewport);
+    this->ui_.rightMotionViewport->setContent(this->ui_.contentTabs);
+    rightLayout->addWidget(this->ui_.rightMotionViewport, 1);
     this->ui_.contentTabs->setObjectName("UsercardContent");
     this->ui_.contentTabs->setMouseTracking(true);
     this->ui_.contentTabs->setDocumentMode(true);
@@ -1784,12 +2491,24 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
     this->ui_.contentTabs->setUsesScrollButtons(true);
     this->ui_.messagesPage = new QWidget(this->ui_.contentTabs);
     this->ui_.messagesPage->setObjectName("UsercardMessages");
+    this->ui_.messagesPage->installEventFilter(this);
     this->ui_.contentTabs->addTab(this->ui_.messagesPage, tr("Сообщения"));
+    this->ui_.rolesPage = new UsercardRolesPage(this->ui_.contentTabs);
+    this->ui_.rolesPage->setNetworkEnabled(!this->offlinePreview_);
+    this->ui_.contentTabs->addTab(this->ui_.rolesPage, uiText("Roles"));
     // Pages are switched from the header line, not by a tab bar.
     this->ui_.contentTabs->tabBar()->hide();
     QObject::connect(this->ui_.contentTabs, &QTabWidget::currentChanged, this,
                      [this] {
+                         // Tabs are interactive even during badge animation;
+                         // a deliberate page switch immediately resumes normal layout.
+                         if (this->ui_.rightMotionViewport)
+                             this->ui_.rightMotionViewport->endMotion();
                          this->updateMessagesHeader();
+                         this->ui_.rolesPage->setActive(
+                             this->ui_.contentTabs->currentWidget() ==
+                                 this->ui_.rolesPage &&
+                             !this->isKick_ && !this->isYouTube_);
                      });
     this->ui_.columns->setStretchFactor(0, 1);
     this->ui_.columns->setStretchFactor(1, 1);
@@ -1802,7 +2521,7 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
     layout->addWidget(this->ui_.profileHeader);
     // A neutral cover is styling, not a claimed profile image. A real Twitch
     // offline image, when supplied, is drawn over it.
-    this->ui_.banner = new QLabel(this->ui_.profileHeader);
+    this->ui_.banner = new UsercardCoverLabel(this->ui_.profileHeader);
     this->ui_.banner->setObjectName("UsercardBanner");
     this->ui_.banner->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     this->ui_.banner->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -1970,11 +2689,11 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
                     identityActions
                         .emplace<LabelButton>("badges", this, QSize{4, 0})
                         .assign(&this->ui_.badgesLabel);
-                badges->setToolTip(uiText("View earned Twitch badges"));
+                badges->setAccessibleDescription(uiText("View earned Twitch badges"));
                 badges->hide();
                 QObject::connect(badges.getElement(), &Button::leftClicked,
                                  [this] {
-                                     this->openBadgesDialog();
+                                     this->toggleInlineBadges();
                                  });
                 identityActions->addStretch(1);
 
@@ -2021,7 +2740,6 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
                 this->ui_.actions = new QToolButton(this->ui_.profile);
                 this->ui_.actions->setText(QString::fromUtf8("⋮"));
                 this->ui_.actions->setObjectName("UsercardActions");
-                this->ui_.actions->setToolTip(tr("Действия с пользователем"));
                 this->ui_.actions->setAccessibleName(
                     tr("Действия с пользователем"));
                 this->ui_.actions->setAutoRaise(true);
@@ -2108,7 +2826,7 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
                     crossPlatformCopy(color);
                     const auto message =
                         uiText(QString("Copied user color %1")).arg(color);
-                    QToolTip::showText(QCursor::pos(), message, this);
+                    noctistooltip::showText(QCursor::pos(), message, this, {}, 1600);
                     if (this->channel_)
                     {
                         this->channel_->addSystemMessage(message);
@@ -2191,16 +2909,18 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
     }
 
     this->ui_.badgeStrip = new UsercardBadgeStrip(this->ui_.profile);
+    auto *badgeStrip = static_cast<UsercardBadgeStrip *>(this->ui_.badgeStrip);
+    badgeStrip->onStarted = [this](bool expanded, int height) { this->beginBadgeFit(expanded, height); };
+    badgeStrip->onHeightChanged = [this](qreal fraction) { this->applyBadgeFit(fraction); };
+    badgeStrip->onFinished = [this](bool expanded) { this->finishBadgeFit(expanded); };
     this->ui_.badgeStrip->setObjectName("UsercardObservedBadges");
     this->ui_.badgeStrip->hide();
     auto *badgesHost = new QWidget(this->ui_.profile);
-    auto *badgesLayout = new QVBoxLayout(badgesHost);
+    // The strip shrinks before the host receives its layout event. Leave any
+    // temporary spare height below the badges so the first row never shifts.
+    auto *badgesLayout = new QHBoxLayout(badgesHost);
     badgesLayout->setContentsMargins(14, 4, 14, 8);
-    static_cast<UsercardBadgeStrip *>(this->ui_.badgeStrip)->onClicked =
-        [this] {
-            this->openBadgesDialog();
-        };
-    badgesLayout->addWidget(this->ui_.badgeStrip);
+    badgesLayout->addWidget(badgeStrip, 1, Qt::AlignTop);
     layout->addWidget(badgesHost);
     auto *facts = new QWidget(this->ui_.profile);
     this->ui_.profileFacts = facts;
@@ -2229,6 +2949,102 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
     factsHostLayout->addWidget(facts);
     facts->setAttribute(Qt::WA_StyledBackground, true);
     layout->addWidget(factsHost);
+
+    auto *quick = new QWidget(this->ui_.profile);
+    this->ui_.quickActions = quick;
+    quick->setObjectName("UsercardQuickActions");
+    auto *quickLayout = new QHBoxLayout(quick);
+    quickLayout->setContentsMargins(10, 0, 10, 8);
+    quickLayout->setSpacing(6);
+    auto addQuick = [&](const QString &objectName, const QString &text,
+                        const QString &tooltip) {
+        auto *button = new QToolButton(quick);
+        button->setObjectName(objectName);
+        button->setProperty("usercardQuickAction", true);
+        button->setText(text);
+        button->setAccessibleName(tooltip);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        button->setMinimumWidth(0);
+        button->setMouseTracking(true);
+        button->setCursor(Qt::PointingHandCursor);
+        quickLayout->addWidget(button, 1);
+        return button;
+    };
+    this->ui_.quickWhisper = addQuick("UsercardQuickWhisper", uiText("DM"),
+                                     uiText("Write a private message"));
+    this->ui_.quickProfile = addQuick("UsercardQuickProfile", uiText("Profile"),
+                                     uiText("Open profile in browser"));
+    this->ui_.quickCopyId = addQuick("UsercardQuickCopyId", QStringLiteral("ID"),
+                                    uiText("Copy user ID"));
+    QObject::connect(this->ui_.quickWhisper, &QToolButton::clicked, this,
+                     [this] { this->openWhisperConversation(); });
+    QObject::connect(this->ui_.quickProfile, &QToolButton::clicked, this, [this] {
+        if (this->offlinePreview_)
+            return;
+        QString url;
+        if (this->isYouTube_ && !this->youtubeChannelId_.isEmpty())
+            url = "https://www.youtube.com/channel/" + this->youtubeChannelId_;
+        else if (!this->userId_.isEmpty() && !this->userName_.isEmpty())
+            url = this->isKick_ ? QStringLiteral("https://kick.com/") +
+                                     KickApi::slugify(this->userName_)
+                                : QStringLiteral("https://www.twitch.tv/") +
+                                     this->userName_.toLower();
+        if (url.isEmpty())
+            return;
+        if (getSettings()->openLinksIncognito && supportsIncognitoLinks())
+            openLinkIncognito(url);
+        else
+            QDesktopServices::openUrl(QUrl(url));
+    });
+    QObject::connect(this->ui_.quickCopyId, &QToolButton::clicked, this, [this] {
+        const auto id = this->isYouTube_ ? this->youtubeChannelId_ : this->userId_;
+        if (this->offlinePreview_ || id.isEmpty())
+            return;
+        crossPlatformCopy(id.startsWith("kick:") ? id.mid(5) : id);
+        noctistooltip::showText(this->ui_.quickCopyId->mapToGlobal(
+                               QPoint(0, this->ui_.quickCopyId->height())),
+                           uiText("ID copied"), this->ui_.quickCopyId, {}, 1600);
+    });
+    layout->addWidget(quick);
+    auto *activityHost = new QWidget(this->ui_.profile);
+    auto *activityHostLayout = new QVBoxLayout(activityHost);
+    activityHostLayout->setContentsMargins(10, 0, 10, 8);
+    this->ui_.activity = new QWidget(activityHost);
+    this->ui_.activity->setObjectName("UsercardActivity");
+    this->ui_.activity->setAttribute(Qt::WA_StyledBackground);
+    auto *activityLayout = new QGridLayout(this->ui_.activity);
+    activityLayout->setContentsMargins(14, 8, 14, 8);
+    activityLayout->setHorizontalSpacing(8);
+    activityLayout->setVerticalSpacing(5);
+    auto *activityTitle = new QLabel(uiText("Channel activity"), this->ui_.activity);
+    activityTitle->setObjectName("UsercardActivityTitle");
+    activityLayout->addWidget(activityTitle, 0, 0, 1, 2);
+    auto addActivityRow = [&](int row, const QString &title, const QString &name) {
+        auto *label = new QLabel(title, this->ui_.activity);
+        label->setObjectName("UsercardActivityLabel");
+        label->setWordWrap(true);
+        auto *value = new QLabel(QStringLiteral("—"), this->ui_.activity);
+        value->setObjectName(name);
+        value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        activityLayout->addWidget(label, row, 0);
+        activityLayout->addWidget(value, row, 1);
+        return value;
+    };
+    this->ui_.activityCount = addActivityRow(1, uiText("Messages in loaded history"), "UsercardActivityCount");
+    this->ui_.activityLatest = addActivityRow(2, uiText("Last message"), "UsercardActivityLatest");
+    activityLayout->setColumnStretch(0, 1);
+    activityHostLayout->addWidget(this->ui_.activity);
+    layout->addWidget(activityHost);
+    this->activityRefreshTimer_ = new QTimer(this);
+    this->activityRefreshTimer_->setSingleShot(true);
+    this->activityRefreshTimer_->setInterval(120);
+    QObject::connect(this->activityRefreshTimer_, &QTimer::timeout, this, &UserInfoPopup::refreshUsercardActivity);
+    QObject::connect(this->ui_.columns, &QSplitter::splitterMoved, this,
+                     [this] { this->updateQuickActionLayout(); });
+    std::ignore = this->userStateChanged_.connect([this] {
+        this->updateQuickActions();
+    });
 
     // second line
     // Keep the original action widgets and all their permissions/handlers.
@@ -2477,30 +3293,74 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
     logs->setSpacing(0);
     {
         auto *messagesHeader = new QWidget(this->ui_.rightColumn);
+        this->ui_.messagesHeader = messagesHeader;
         messagesHeader->setObjectName("UsercardMessagesHeader");
         messagesHeader->setMouseTracking(true);
+        messagesHeader->installEventFilter(this);
         auto *headerLayout = new QHBoxLayout(messagesHeader);
         headerLayout->setContentsMargins(10, 6, 10, 6);
         headerLayout->setSpacing(8);
         this->ui_.messagesHeading =
             new QLabel(tr("Сообщения в текущем канале"));
         this->ui_.messagesHeading->setObjectName("UsercardMessagesHeading");
-        this->ui_.messagesHeading->setTextFormat(Qt::RichText);
+        this->ui_.messagesHeading->setTextFormat(Qt::PlainText);
         this->ui_.messagesHeading->setWordWrap(false);
         this->ui_.messagesHeading->setSizePolicy(QSizePolicy::Ignored,
                                                  QSizePolicy::Preferred);
-        headerLayout->addWidget(this->ui_.messagesHeading, 1);
+        auto *headingGroup = new QWidget(messagesHeader);
+        this->ui_.headingGroup = headingGroup;
+        headingGroup->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        auto *headingLayout = new QHBoxLayout(headingGroup);
+        headingLayout->setContentsMargins(0, 0, 0, 0);
+        headingLayout->setSpacing(5);
+        this->ui_.messagesHeading->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        headingLayout->addWidget(this->ui_.messagesHeading);
+        this->ui_.headingChannelName = new QLabel(headingGroup);
+        this->ui_.headingChannelName->setObjectName("UsercardHeadingChannel");
+        this->ui_.headingChannelName->setTextFormat(Qt::PlainText);
+        this->ui_.headingChannelName->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        this->ui_.headingAvatar = new ChannelAvatarLabel(this->ui_.headingChannelName, headingGroup);
+        headingLayout->addWidget(this->ui_.headingAvatar);
+        headingLayout->addWidget(this->ui_.headingChannelName, 1);
+        headerLayout->addWidget(headingGroup, 1);
+        this->ui_.headingActions = new QWidget(messagesHeader);
+        auto *actionsLayout = new QHBoxLayout(this->ui_.headingActions);
+        actionsLayout->setContentsMargins(0, 0, 0, 0);
+        actionsLayout->setSpacing(8);
+        actionsLayout->addStretch(1);
+        this->ui_.headingActions->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        headerLayout->addWidget(this->ui_.headingActions);
+        this->ui_.rolesToggle =
+            new LabelButton(uiText("Roles"), this, QSize{2, 0});
+        this->ui_.rolesToggle->setObjectName("UsercardRolesToggle");
+        actionsLayout->addWidget(this->ui_.rolesToggle);
+        QObject::connect(this->ui_.rolesToggle, &Button::leftClicked, this,
+                         [this] {
+                             this->ui_.contentTabs->setCurrentWidget(
+                                 this->ui_.rolesPage);
+                         });
+        this->ui_.messagesToggle =
+            new LabelButton(tr("Сообщения"), this, QSize{2, 0});
+        this->ui_.messagesToggle->setObjectName("UsercardMessagesToggle");
+        this->ui_.messagesToggle->setAccessibleDescription(tr("Вернуться к сообщениям"));
+        this->ui_.messagesToggle->hide();
+        actionsLayout->addWidget(this->ui_.messagesToggle);
+        QObject::connect(this->ui_.messagesToggle, &Button::leftClicked, this,
+                         [this] {
+                             this->ui_.contentTabs->setCurrentWidget(
+                                 this->ui_.messagesPage);
+                         });
         this->ui_.historyButton =
             new LabelButton(tr("История"), this, QSize{2, 0});
         this->ui_.historyButton->setObjectName("UsercardHistory");
-        this->ui_.historyButton->setToolTip(
+        this->ui_.historyButton->setAccessibleDescription(
             tr("Открыть доступную историю сообщений"));
-        headerLayout->addWidget(this->ui_.historyButton);
+        actionsLayout->addWidget(this->ui_.historyButton);
         QObject::connect(this->ui_.historyButton, &Button::leftClicked, this,
                          [this] {
                              if (this->canUsePublicHistory())
                              {
-                                 this->requestPublicHistory();
+                                 this->requestPublicHistory(HistoryRequest::Manual);
                              }
                              else if (!this->offlinePreview_ &&
                                       this->canLoadMoreUsercardMessages())
@@ -2547,12 +3407,10 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
         logs->setAlignment(this->ui_.loadMoreMessages, Qt::AlignHCenter);
     }
 
-    // size grip
-    if (closeAutomatically)
-    {
-        layers->addWidget(new InvisibleSizeGrip(this), 0, 0, 2, 1,
-                          Qt::AlignRight | Qt::AlignBottom);
-    }
+    // The masked ring does not intercept any central controls or scrolling.
+    this->ui_.resizeGrip = new UsercardResizeGrip(this);
+    this->ui_.resizeGrip->setObjectName("UsercardResizeGrip");
+    this->ui_.resizeGrip->syncGeometry(this->scale(), shadow);
 
     if (!this->offlinePreview_)
     {
@@ -2584,12 +3442,17 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
         this->ui_.timeoutWidget->hide();
         this->ui_.latestMessages->setContextMenuPolicy(Qt::NoContextMenu);
     }
-    // ~870×405 px at 130 % UI scale, the size of Chatterino+'s card
-    this->setScaleIndependentSize(QSize(670, 312));
+    // This is an initial size, not a fixed size. BaseWidget's
+    // setScaleIndependentSize() applies fixed min/max constraints on every DPI
+    // change, preventing both interactive resizing and expanding badge rows.
+    this->setMinimumSize(qRound(300 * this->scale()), qRound(240 * this->scale()));
+    this->resize(qRound(670 * this->scale()), qRound(370 * this->scale()));
     this->ui_.nameLabel->setOverrideScale(this->scale() * 1.6F);
     this->themeChangedEvent();
     this->updateResponsiveLayout();
     this->updateObservedBadges();
+    this->updateQuickActions();
+    this->updateUsercardCorners();
 }
 
 void UserInfoPopup::themeChangedEvent()
@@ -2609,28 +3472,67 @@ void UserInfoPopup::themeChangedEvent()
     if (this->ui_.profileScroll && this->ui_.contentTabs)
     {
         const bool light = this->theme->isLightTheme();
-        const QString profile = light ? "#f0f0f4" : "#1b1c21";
-        const QString messages = light ? "#ffffff" : "#131318";
-        const QString foreground = light ? "#292631" : "#ded9ee";
-        const QString border = light ? "#d7d3de" : "#333039";
-        const QString accent = light ? "#684aa0" : "#b59be5";
+        const auto colors = usercardChrome::palette(light);
+        const auto &profile = colors.profile;
+        const auto &messages = colors.messages;
+        const auto &foreground = colors.foreground;
+        const auto &border = colors.border;
+        const auto &accent = colors.accent;
         this->ui_.profileScroll->setStyleSheet(
-            QString("QScrollArea#UsercardProfileScroll { background: %1; "
+            QString("QScrollArea#UsercardProfileScroll, QWidget#UsercardProfileViewport { background: transparent; "
                     "border: 0; }"
+                    "QScrollArea#UsercardProfileScroll QScrollBar:vertical { "
+                    "background: transparent; width: 7px; margin: 2px 0; border: 0; }"
+                    "QScrollArea#UsercardProfileScroll QScrollBar::handle:vertical { "
+                    "background: %8; min-height: 24px; border-radius: 3px; }"
+                    "QScrollArea#UsercardProfileScroll QScrollBar::handle:vertical:hover { "
+                    "background: %6; }"
+                    "QScrollArea#UsercardProfileScroll QScrollBar::add-line:vertical, "
+                    "QScrollArea#UsercardProfileScroll QScrollBar::sub-line:vertical { height: 0; }"
+                    "QScrollArea#UsercardProfileScroll QScrollBar::add-page:vertical, "
+                    "QScrollArea#UsercardProfileScroll QScrollBar::sub-page:vertical { background: none; }"
                     "QWidget#UsercardProfile { background: %1; color: %2; }"
                     "QWidget#UsercardIdentity, QWidget#UsercardProfileHeader, "
                     "QWidget#UsercardPinHost { background: transparent; }"
-                    "QLabel#UsercardBanner { background: qlineargradient("
-                    "x1:0,y1:0,x2:1,y2:1,stop:0 %4,stop:1 %1); }"
+                    "QLabel#UsercardBanner { background: transparent; }"
                     "QWidget#UsercardFacts { background: %5; "
                     "border: 1px solid %3; border-radius: 8px; }"
+                    "QWidget#UsercardFacts * { color: %2; }"
+                    "QWidget#UsercardActivity { background: %5; "
+                    "border: 1px solid %3; border-radius: 8px; }"
+                    "QWidget#UsercardActivity QLabel { color: %2; background: transparent; }"
+                    "QWidget#UsercardActivity QLabel#UsercardActivityTitle { color: %6; }"
+                    "QWidget#UsercardActivity QLabel#UsercardActivityLabel { color: %9; }"
                     "QToolButton#UsercardActions { color: %2; border: 0; "
                     "padding: 2px 6px; }"
                     "QToolButton#UsercardActions:hover { background: %3; "
-                    "border-radius: 3px; }")
-                .arg(profile, foreground, border,
-                     light ? "#e1d9ef" : "#30263f",
-                     light ? "#ffffff" : "#212229"));
+                    "border-radius: 3px; }"
+                    "QWidget#UsercardQuickActions { background: transparent; }"
+                    "QToolButton[usercardQuickAction=\"true\"] { color: %2; "
+                    "background: %5; border: 1px solid %3; border-radius: 7px; "
+                    "padding: 3px 4px; }"
+                    "QToolButton[usercardQuickAction=\"true\"]:hover { "
+                    "background: %4; border-color: %6; }"
+                    "QToolButton[usercardQuickAction=\"true\"]:pressed { "
+                    "background: %3; }"
+                    "QToolButton[usercardQuickAction=\"true\"]:disabled { "
+                    "color: %7; background: transparent; border-color: %3; }")
+                .arg(profile, foreground, border, colors.cover,
+                     colors.panel, accent, colors.disabled, colors.scroll, colors.muted));
+        // These are custom-painted Labels rather than QLabels; give them an
+        // explicit foreground palette so the card does not depend on the
+        // operating system's (possibly light) default palette.
+        for (auto *label : {this->ui_.createdDateLabel, this->ui_.followerCountLabel,
+                            this->ui_.followageLabel, this->ui_.subageLabel,
+                            this->ui_.subGiftLabel})
+        {
+            if (!label)
+                continue;
+            auto palette = label->palette();
+            palette.setColor(QPalette::WindowText, QColor(foreground));
+            palette.setColor(QPalette::Text, QColor(foreground));
+            label->setPalette(palette);
+        }
         if (auto *avatar =
                 dynamic_cast<UsercardAvatarButton *>(this->ui_.avatarButton))
         {
@@ -2653,9 +3555,20 @@ void UserInfoPopup::themeChangedEvent()
         const auto font =
             getApp()->getFonts()->getFont(FontStyle::UiMedium, this->scale());
         this->ui_.contentTabs->setFont(font);
+        if (this->ui_.activity)
+        {
+            for (auto *label : this->ui_.activity->findChildren<QLabel *>())
+                label->setFont(getApp()->getFonts()->getFont(
+                    label->objectName() == "UsercardActivityTitle" ? FontStyle::ChatMediumBold : FontStyle::ChatMedium,
+                    this->scale()));
+        }
         this->ui_.messagesHeading->setFont(font);
+        this->ui_.headingChannelName->setFont(font);
         this->ui_.actions->setFont(font);
-
+        this->ui_.rolesPage->setScale(this->scale());
+        this->updateMessagesHeader();
+        this->updateProfileBanner();
+        this->updateQuickActionLayout();
     }
 
     for (auto &&child : this->findChildren<QCheckBox *>())
@@ -2689,29 +3602,485 @@ void UserInfoPopup::scaleChangedEvent(float scale)
     }
 
     this->setMinimumSize(int(300 * scale), int(240 * scale));
+    if (this->ui_.resizeGrip && !this->isVisible())
+        this->resize(qRound(670 * scale), qRound(370 * scale));
+    if (this->ui_.resizeGrip)
+    {
+        const auto shadow = this->closeAutomatically_ ? usercardChrome::shadowInset(scale) : 0;
+        const auto edge = this->closeAutomatically_
+            ? usercardChrome::contentInset(scale, UsercardResizeGrip::edgeBand(scale))
+            : UsercardResizeGrip::edgeBand(scale);
+        this->getLayoutContainer()->layout()->setContentsMargins(edge, edge, edge, edge);
+        this->ui_.resizeGrip->syncGeometry(scale, shadow);
+    }
     if (this->ui_.latestMessages)
     {
         this->ui_.latestMessages->setMinimumHeight(int(110 * scale));
     }
     this->updateResponsiveLayout();
+    if (this->ui_.badgeStrip)
+        static_cast<UsercardBadgeStrip *>(this->ui_.badgeStrip)->setBadgeScale(scale);
+    this->updateUsercardCorners();
+}
+
+#ifdef Q_OS_WIN
+bool UserInfoPopup::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+    const bool handled = DraggablePopup::nativeEvent(eventType, message, result);
+    if (handled && static_cast<MSG *>(message)->message == WM_NCHITTEST &&
+        *result == HTCAPTION && this->badgeFitInProgress_)
+        *result = HTCLIENT;
+    return handled;
+}
+#endif
+
+void UserInfoPopup::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && this->badgeFitInProgress_)
+    {
+        this->badgeDragOffset_ = event->globalPosition().toPoint() - this->pos();
+        this->grabMouse();
+        event->accept();
+        return;
+    }
+    DraggablePopup::mousePressEvent(event);
+}
+
+void UserInfoPopup::mouseMoveEvent(QMouseEvent *event)
+{
+    if (this->badgeDragOffset_ && event->buttons().testFlag(Qt::LeftButton))
+    {
+        this->badgeFitMoved_ = true;
+        this->move(event->globalPosition().toPoint() - *this->badgeDragOffset_);
+        event->accept();
+        return;
+    }
+    DraggablePopup::mouseMoveEvent(event);
+}
+
+void UserInfoPopup::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && this->badgeDragOffset_)
+    {
+        this->badgeDragOffset_.reset();
+        if (QWidget::mouseGrabber() == this)
+            this->releaseMouse();
+        event->accept();
+        return;
+    }
+    DraggablePopup::mouseReleaseEvent(event);
 }
 
 void UserInfoPopup::resizeEvent(QResizeEvent *event)
 {
     DraggablePopup::resizeEvent(event);
-    this->updateResponsiveLayout();
+    if (!this->badgeFitApplying_)
+    {
+        if (this->ui_.resizeGrip && this->ui_.resizeGrip->isResizing())
+            this->manualProfileSize_ = true;
+        if (this->badgeFitBase_ && event->oldSize().isValid() &&
+            ((this->ui_.resizeGrip && this->ui_.resizeGrip->isResizing()) ||
+             ((!this->badgeFitExpectedSize_ || event->size() != *this->badgeFitExpectedSize_) &&
+              (!this->badgeFitInProgress_ || event->size().width() != event->oldSize().width()))))
+        {
+            // A deliberate manual resize supersedes automatic badge sizing.
+            this->badgeFitBase_.reset();
+            this->badgeFitInProgress_ = false;
+            this->badgeFitExpectedSize_.reset();
+            this->setBadgeScrollbarSuppressed(false);
+            if (this->ui_.rightMotionViewport)
+                this->ui_.rightMotionViewport->endMotion();
+        }
+        this->updateResponsiveLayout();
+        this->scheduleExpandedBadgeFit();
+    }
+    this->updateUsercardCorners();
+    if (this->ui_.resizeGrip)
+        this->ui_.resizeGrip->syncGeometry(this->scale(),
+            this->closeAutomatically_ ? usercardChrome::shadowInset(this->scale()) : 0);
+}
+
+void UserInfoPopup::showEvent(QShowEvent *event)
+{
+    DraggablePopup::showEvent(event);
+    // Fit the real profile on the first show, then repeat after Qt has
+    // delivered deferred layout requests or remote profile facts.
+    if (this->getLayoutContainer()->layout())
+        this->getLayoutContainer()->layout()->activate();
+    this->ensureExpandedBadgeFit();
+    this->scheduleExpandedBadgeFit();
+}
+
+void UserInfoPopup::beginBadgeFit(bool expanded, int expandedBadgeHeight)
+{
+    auto *strip = this->ui_.badgeStrip;
+    auto *scroll = this->ui_.profileScroll;
+    if (!strip || !scroll || !this->ui_.profile || this->badgeFitApplying_)
+        return;
+    if (!expanded && !this->badgeFitBase_)
+        return;
+    if (!this->badgeFitBase_)
+    {
+        this->badgeFitBase_ = this->geometry();
+        this->badgeFitBaseProfileHeight_ = scroll->height();
+    }
+    this->badgeFitMoved_ = this->badgeDragOffset_.has_value();
+    this->badgeFitInProgress_ = true;
+    this->ui_.profile->layout()->activate();
+    const auto *profileLayout = this->ui_.profile->layout();
+    const int natural = std::max({profileLayout->minimumSize().height(),
+        profileLayout->totalHeightForWidth(scroll->viewport()->width()),
+        scroll->verticalScrollBar()->maximum() > 0
+            ? scroll->viewport()->height() + scroll->verticalScrollBar()->maximum() : 0});
+    bool predictedFits = false;
+    if (expanded)
+    {
+        // A wrapped activity label adds height at the actual viewport width;
+        // the width-independent minimum size alone would underestimate this.
+        const int required = natural -
+                             strip->height() + expandedBadgeHeight + 2;
+        this->badgeFitTargetProfileHeight_ = std::max(required, this->badgeFitBaseProfileHeight_);
+        int overhead = this->height() - scroll->viewport()->height();
+        if (this->ui_.columns->orientation() == Qt::Vertical)
+        {
+            // Keep room for the message/punishment pane, but allow the profile
+            // to take all space needed for its contents when the monitor fits it.
+            const int right = std::max(this->ui_.rightColumn->minimumSizeHint().height(), int(110 * this->scale()));
+            overhead = this->height() - this->ui_.columns->height() +
+                       this->ui_.columns->handleWidth() + right;
+        }
+        const auto available = this->screen()->availableGeometry();
+        this->badgeFitTargetHeight_ = std::clamp(required + overhead,
+            this->badgeFitBase_->height(), std::max(this->badgeFitBase_->height(), available.height()));
+        predictedFits = required + overhead <= available.height();
+    }
+    else
+    {
+        const int collapsed = std::max(1, int(24 * this->scale()));
+        predictedFits = natural - strip->height() + collapsed <= this->badgeFitBaseProfileHeight_ + 2;
+    }
+    // AsNeeded can see the transient mismatch between geometry and content
+    // even when both endpoints fit. Keep the policy stable until the final
+    // deferred layout has settled. Do not conceal genuinely clipped cards.
+    this->setBadgeScrollbarSuppressed(predictedFits &&
+        (this->badgeScrollbarSuppressed_ || !scroll->verticalScrollBar()->isVisible()));
+    if (this->ui_.rightMotionViewport && this->ui_.columns->orientation() == Qt::Horizontal)
+    {
+        // Lay out the messages/roles pane once at the largest height, then
+        // clip that real, already laid-out page while the native card grows
+        // or shrinks. Never walk and reflow thousands of messages per frame.
+        const int delta = expanded ? std::max(0, this->badgeFitTargetHeight_ - this->height()) : 0;
+        const bool atBottom = this->ui_.latestMessages && this->ui_.latestMessages->isVisible() &&
+                              this->ui_.latestMessages->getScrollBar().isAtBottom();
+        this->ui_.rightMotionViewport->beginMotion(this->ui_.rightMotionViewport->height() + delta, atBottom);
+    }
+}
+
+void UserInfoPopup::setBadgeScrollbarSuppressed(bool suppressed)
+{
+    if (!this->ui_.profileScroll || this->badgeScrollbarSuppressed_ == suppressed)
+        return;
+    this->badgeScrollbarSuppressed_ = suppressed;
+    this->ui_.profileScroll->setVerticalScrollBarPolicy(suppressed ? Qt::ScrollBarAlwaysOff
+                                                                  : Qt::ScrollBarAsNeeded);
+}
+
+void UserInfoPopup::applyBadgeFit(qreal fraction)
+{
+    if (!this->badgeFitInProgress_ || !this->badgeFitBase_ || this->badgeFitApplying_)
+        return;
+    this->badgeFitApplying_ = true;
+    const auto base = *this->badgeFitBase_;
+    const auto available = this->screen()->availableGeometry();
+    const int interpolated = qRound(base.height() + (this->badgeFitTargetHeight_ - base.height()) * fraction);
+    const bool opening = this->ui_.badgeStrip->property("expanded").toBool();
+    const int h = opening ? std::max(this->height(), interpolated) : interpolated;
+    const int y = this->badgeFitMoved_ || this->badgeDragOffset_ ? this->y() : std::clamp(this->y(), available.top(), std::max(available.top(), available.bottom() - h + 1));
+    const QRect desired(this->x(), y, this->width(), h);
+    if (desired != this->geometry())
+    {
+        this->badgeFitExpectedSize_ = desired.size();
+        this->setGeometry(desired);
+    }
+    if (this->ui_.columns->orientation() == Qt::Vertical)
+    {
+        const int profileHeight = qRound(this->badgeFitBaseProfileHeight_ +
+            (this->badgeFitTargetProfileHeight_ - this->badgeFitBaseProfileHeight_) * fraction);
+        const int total = this->ui_.columns->height() - this->ui_.columns->handleWidth();
+        if (this->ui_.profileScroll->height() != profileHeight)
+            this->ui_.columns->setSizes({profileHeight, std::max(1, total - profileHeight)});
+    }
+    this->badgeFitApplying_ = false;
+}
+
+void UserInfoPopup::finishBadgeFit(bool expanded)
+{
+    if (this->badgeFitBase_)
+    {
+        // On an identity reset, we may not have started a closing animation.
+        if (!expanded)
+        {
+            this->badgeFitInProgress_ = true;
+            this->applyBadgeFit(0);
+        }
+        else
+            this->applyBadgeFit(1);
+    }
+    this->badgeFitInProgress_ = false;
+    if (this->ui_.rightMotionViewport)
+        this->ui_.rightMotionViewport->endMotion();
+    if (!expanded)
+    {
+        this->badgeFitBase_.reset();
+        this->badgeFitExpectedSize_.reset();
+    }
+    if (!this->isVisible())
+        this->setBadgeScrollbarSuppressed(false);
+    this->fitVerticalProfile();
+    this->scheduleExpandedBadgeFit();
+}
+
+void UserInfoPopup::scheduleExpandedBadgeFit()
+{
+    const bool expanded = this->badgeFitBase_ && this->ui_.badgeStrip && this->ui_.badgeStrip->property("expanded").toBool();
+    if (this->badgeFitTimer_ && !this->badgeFitInProgress_ && !this->badgeFitApplying_ &&
+        this->isVisible() && (expanded || !this->manualProfileSize_ || this->badgeScrollbarSuppressed_) &&
+        !this->badgeFitTimer_->isActive())
+        this->badgeFitTimer_->start();
+}
+
+void UserInfoPopup::ensureExpandedBadgeFit()
+{
+    const bool expanded = this->badgeFitBase_ && this->ui_.badgeStrip && this->ui_.badgeStrip->property("expanded").toBool();
+    if (this->badgeFitInProgress_ || this->badgeFitApplying_ || !this->ui_.profileScroll || !this->ui_.profile)
+        return;
+    if (!this->isVisible() || (!expanded && this->manualProfileSize_))
+    {
+        this->setBadgeScrollbarSuppressed(false);
+        return;
+    }
+    this->fitVerticalProfile();
+    auto *scroll = this->ui_.profileScroll;
+    auto *profileLayout = this->ui_.profile->layout();
+    profileLayout->activate();
+    const int desired = std::max(profileLayout->minimumSize().height(),
+        profileLayout->totalHeightForWidth(scroll->viewport()->width()));
+    const int extra = std::max(scroll->verticalScrollBar()->maximum(), desired - scroll->viewport()->height());
+    const auto available = this->screen()->availableGeometry();
+    const int cap = available.height();
+    if (extra <= 0 || this->height() >= cap)
+    {
+        this->setBadgeScrollbarSuppressed(false);
+        return;
+    }
+    const int newHeight = std::min(cap, this->height() + extra + 2);
+    const int newProfileHeight = scroll->height() + extra + 2;
+    if (expanded)
+    {
+        this->badgeFitTargetHeight_ = newHeight;
+        this->badgeFitTargetProfileHeight_ = newProfileHeight;
+        this->badgeFitInProgress_ = true;
+        this->applyBadgeFit(1);
+        this->badgeFitInProgress_ = false;
+    }
+    else
+    {
+        this->badgeFitApplying_ = true;
+        const int y = std::clamp(this->y(), available.top(), std::max(available.top(), available.bottom() - newHeight + 1));
+        this->setGeometry(this->x(), y, this->width(), newHeight);
+        if (this->ui_.columns->orientation() == Qt::Vertical)
+        {
+            const int total = this->ui_.columns->height() - this->ui_.columns->handleWidth();
+            this->ui_.columns->setSizes({newProfileHeight, std::max(1, total - newProfileHeight)});
+        }
+        this->badgeFitApplying_ = false;
+    }
+    // Layout may have been recomputed while the fit guard suppressed the
+    // rangeChanged callback. Recheck only when a resize really happened.
+    this->scheduleExpandedBadgeFit();
+}
+
+void UserInfoPopup::fitVerticalProfile()
+{
+    if (!this->ui_.columns || this->ui_.columns->orientation() != Qt::Vertical ||
+        !this->ui_.profile || this->badgeFitInProgress_)
+        return;
+    auto *scroll = this->ui_.profileScroll;
+    auto *columns = this->ui_.columns;
+    this->ui_.profile->layout()->activate();
+    const auto *profileLayout = this->ui_.profile->layout();
+    const int desired = std::max(profileLayout->minimumSize().height(),
+        profileLayout->totalHeightForWidth(scroll->viewport()->width())) + 2;
+    const int total = columns->height() - columns->handleWidth();
+    const int right = std::max(this->ui_.rightColumn->minimumSizeHint().height(), int(110 * this->scale()));
+    if (scroll->height() < desired && total >= desired + right)
+        columns->setSizes({desired, total - desired});
+}
+
+void UserInfoPopup::updateUsercardCorners()
+{
+    if (!this->closeAutomatically_ || this->width() < 2 || this->height() < 2)
+        return;
+    if (!this->mask().isEmpty())
+        this->clearMask();
+    this->update();
+}
+
+void UserInfoPopup::drawOutline(QPainter &painter)
+{
+    if (!this->closeAutomatically_)
+    {
+        BaseWindow::drawOutline(painter);
+        return;
+    }
+    const auto orientation = this->ui_.columns ? this->ui_.columns->orientation() : Qt::Horizontal;
+    qreal partition = orientation == Qt::Horizontal ? this->width() / 2. : this->height() / 2.;
+    if (this->ui_.profileScroll && this->ui_.columns)
+    {
+        const auto origin = this->ui_.profileScroll->mapTo(this, QPoint(0, 0));
+        partition = orientation == Qt::Horizontal ? origin.x() + this->ui_.profileScroll->width()
+                                                     : origin.y() + this->ui_.profileScroll->height();
+        partition += this->ui_.columns->handleWidth() / 2.;
+    }
+    const bool light = this->theme->isLightTheme();
+    usercardChrome::paint(painter, this->rect(), this->scale(), usercardChrome::palette(light), light, orientation, partition);
+}
+
+void UserInfoPopup::updateQuickActionLayout()
+{
+    if (!this->ui_.quickActions || !this->ui_.profileScroll)
+        return;
+    const auto scale = std::max(0.75F, this->scale());
+    const auto iconOnly = this->ui_.profileScroll->viewport()->width() < int(250 * scale);
+    const auto font = getApp()->getFonts()->getFont(FontStyle::ChatMedium, scale);
+    const bool light = this->theme->isLightTheme();
+    const QColor color(light ? "#67557e" : "#b4a4d5");
+    const auto iconSize = std::max(12, int(15 * scale));
+    const auto dpr = this->devicePixelRatioF();
+    const auto key = color.name() + QString::number(iconSize) + QString::number(dpr);
+    const auto buttons = std::array{this->ui_.quickWhisper, this->ui_.quickProfile,
+                                    this->ui_.quickCopyId};
+    for (size_t i = 0; i < buttons.size(); ++i)
+    {
+        auto *button = buttons[i];
+        button->setFont(font);
+        button->setFixedHeight(int(30 * scale));
+        button->setToolButtonStyle(iconOnly ? Qt::ToolButtonIconOnly :
+                                             Qt::ToolButtonTextBesideIcon);
+        button->setIconSize(QSize(iconSize, iconSize));
+        if (button->property("quickIconKey").toString() == key)
+            continue;
+        QPixmap pixmap(QSize(qRound(iconSize * dpr), qRound(iconSize * dpr)));
+        pixmap.setDevicePixelRatio(dpr);
+        pixmap.fill(Qt::transparent);
+        QPainter p(&pixmap);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.scale(iconSize / 16.0, iconSize / 16.0);
+        QPen pen(color, 1.5);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        if (i == 0)
+        {
+            p.drawRoundedRect(QRectF(2, 3.5, 12, 9), 1.6, 1.6);
+            p.drawPolyline(QPolygonF{{2.8, 4.5}, {8, 8.6}, {13.2, 4.5}});
+        }
+        else if (i == 1)
+        {
+            p.drawEllipse(QPointF(6.3, 4.6), 2.6, 2.6);
+            p.drawArc(QRectF(1.5, 8, 9.6, 9), 0, 180 * 16);
+            p.drawPolyline(QPolygonF{{10.0, 2.0}, {14.2, 2.0}, {14.2, 6.2}});
+            p.drawLine(QPointF(14.2, 2.0), QPointF(10.2, 6.0));
+        }
+        else
+        {
+            p.drawRoundedRect(QRectF(5, 5, 8.5, 9.5), 1.4, 1.4);
+            p.drawPolyline(QPolygonF{{3, 11}, {2, 11}, {2, 2.5},
+                                     {10.5, 2.5}, {10.5, 3.5}});
+        }
+        p.end();
+        button->setIcon(QIcon(pixmap));
+        button->setProperty("quickIconKey", key);
+    }
+}
+
+void UserInfoPopup::updateQuickActions()
+{
+    if (!this->ui_.quickActions)
+        return;
+    const bool twitch = !this->isYouTube_ && !this->isKick_;
+    const bool verified = !this->userId_.isEmpty() && !this->userName_.isEmpty();
+    const auto current = getApp()->getAccounts()->twitch.getCurrent();
+    this->ui_.quickWhisper->setVisible(twitch);
+    this->ui_.quickWhisper->setEnabled(this->offlinePreview_ ||
+        (verified && !current->isAnon() && current->getUserId() != this->userId_));
+    this->ui_.quickProfile->setEnabled(this->offlinePreview_ ||
+        (this->isYouTube_ ? !this->youtubeChannelId_.isEmpty() : verified));
+    this->ui_.quickCopyId->setEnabled(this->offlinePreview_ ||
+        (this->isYouTube_ ? !this->youtubeChannelId_.isEmpty() : !this->userId_.isEmpty()));
+    this->updateQuickActionLayout();
+}
+
+void UserInfoPopup::openWhisperConversation()
+{
+    if (this->offlinePreview_ || this->isKick_ || this->isYouTube_ ||
+        this->userId_.isEmpty() || this->userName_.isEmpty())
+        return;
+    const auto account = getApp()->getAccounts()->twitch.getCurrent();
+    if (account->isAnon() || account->getUserId() == this->userId_)
+        return;
+    auto &window = getApp()->getWindows()->getMainWindow();
+    auto &notebook = window.getNotebook();
+    notebook.ensureWhispersTab();
+    for (int index = 0; index < notebook.getPageCount(); ++index)
+    {
+        auto *page = dynamic_cast<SplitContainer *>(notebook.getPageAt(index));
+        if (!page || !page->isPermanentWhispersTab())
+            continue;
+        for (auto *split : page->getSplits())
+        {
+            if (split->getChannel()->getType() != Channel::Type::TwitchWhispers)
+                continue;
+            const auto login = this->userName_;
+            // Select the existing local DM conversation; nothing is sent.
+            const bool selected = split->selectWhisperPeer(login);
+            notebook.select(page);
+            window.raise();
+            window.activateWindow();
+            split->setFocus(Qt::OtherFocusReason);
+            if (!selected)
+                noctistooltip::showText(split->mapToGlobal(QPoint(12, split->height() - 30)),
+                    uiText("Finish the existing whisper draft before changing conversations."), split, {}, 2400);
+            return;
+        }
+    }
 }
 
 bool UserInfoPopup::eventFilter(QObject *watched, QEvent *event)
 {
+    if ((watched == this->ui_.messagesPage || watched == this->ui_.latestMessages) &&
+        (event->type() == QEvent::Resize || event->type() == QEvent::Show))
+        this->scheduleHistoryViewportFill();
+    if (this->ui_.rightMotionViewport && this->ui_.rightMotionViewport->motionActive() && this->ui_.latestMessages &&
+        (watched == this->ui_.latestMessages || watched == &this->ui_.latestMessages->getScrollBar()) &&
+        (event->type() == QEvent::Wheel || event->type() == QEvent::MouseButtonPress))
+        this->ui_.rightMotionViewport->endMotion();
+    if (watched == this->ui_.messagesHeader && event->type() == QEvent::Resize &&
+        static_cast<QResizeEvent *>(event)->size().width() != static_cast<QResizeEvent *>(event)->oldSize().width())
+        this->updateMessagesHeadingLayout();
+    if (this->ui_.profileScroll &&
+        watched == this->ui_.profileScroll->viewport() &&
+        event->type() == QEvent::Resize &&
+        static_cast<QResizeEvent *>(event)->size().width() != static_cast<QResizeEvent *>(event)->oldSize().width())
+        this->updateQuickActionLayout();
     if (this->ui_.latestMessages &&
         (watched == this->ui_.latestMessages ||
          watched == &this->ui_.latestMessages->getScrollBar()) &&
         event->type() == QEvent::Wheel &&
         static_cast<QWheelEvent *>(event)->angleDelta().y() > 0)
     {
-        // Only an actual user scroll can start public-log work. Layout-driven
-        // scrollbar changes and the first local snapshot never do so.
+        // A deliberate up-scroll may request more even when the viewport is full.
         const auto generation = this->usercardMessagesRequestGeneration_;
         QTimer::singleShot(0, this, [this, generation] {
             if (generation != this->usercardMessagesRequestGeneration_)
@@ -2723,7 +4092,7 @@ bool UserInfoPopup::eventFilter(QObject *watched, QEvent *event)
                 scrollbar.getMinimum() +
                     usercardMessagePreloadDistance(scrollbar))
             {
-                this->requestPublicHistory();
+                this->requestPublicHistory(HistoryRequest::Manual);
             }
         });
     }
@@ -2772,9 +4141,7 @@ void UserInfoPopup::updateResponsiveLayout()
     this->ui_.columns->setHandleWidth(std::max(1, int(2 * scale)));
     this->ui_.profileScroll->setMinimumWidth(narrow ? 0 : int(195 * scale));
     this->ui_.profileScroll->setMinimumHeight(int(125 * scale));
-    this->ui_.profileScroll->setMaximumHeight(
-        narrow ? std::max(int(140 * scale), this->height() * 2 / 5)
-               : QWIDGETSIZE_MAX);
+    this->ui_.profileScroll->setMaximumHeight(QWIDGETSIZE_MAX);
     this->ui_.rightColumn->setMinimumWidth(narrow ? 0 : int(195 * scale));
     // Two equal columns, like Chatterino+ (until the user drags the handle).
     if (orientationChanged || (!narrow && !this->columnsBalanced_))
@@ -2783,12 +4150,16 @@ void UserInfoPopup::updateResponsiveLayout()
                                            : QList<int>{1, 1});
         this->columnsBalanced_ = !narrow && this->ui_.columns->width() > 0;
     }
+    this->updateQuickActionLayout();
     this->updateProfileBanner();
+    this->fitVerticalProfile();
 }
 
 void UserInfoPopup::setMessagesHeading(const QString &channel)
 {
     this->headingChannel_ = channel;
+    if (this->headingChannel_.startsWith(u'#'))
+        this->headingChannel_.remove(0, 1);
     this->updateMessagesHeader();
 }
 
@@ -2798,120 +4169,249 @@ void UserInfoPopup::updateMessagesHeader()
     {
         return;
     }
+    const bool onRoles =
+        this->ui_.contentTabs->currentWidget() == this->ui_.rolesPage;
+    const bool twitchRolesAvailable = !this->isKick_ && !this->isYouTube_;
     const bool light = this->theme && this->theme->isLightTheme();
     const QString muted = light ? "#6b6577" : "#a19dad";
     const QString channel = light ? "#3d2a6b" : "#ddd3f7";
-    auto text = QStringLiteral("<span style='color:%1'>%2</span>")
-                    .arg(muted, tr("Сообщения в чате"));
-    if (!this->headingChannel_.isEmpty())
+    if (onRoles)
     {
-        text += QStringLiteral(" <span style='color:%1'>#%2</span>")
-                    .arg(channel, this->headingChannel_.toHtmlEscaped());
+        this->ui_.messagesHeading->setText(
+            uiText("Roles on Twitch"));
+        this->ui_.headingAvatar->setChannel({});
+        this->ui_.headingChannelName->hide();
     }
-    this->ui_.messagesHeading->setText(text);
+    else
+    {
+        this->ui_.messagesHeading->setText(tr("Сообщения в чате"));
+        this->ui_.headingChannelName->setText(this->headingChannel_);
+        this->ui_.headingChannelName->setStyleSheet(QStringLiteral("color: %1; background: transparent;").arg(channel));
+        this->ui_.headingChannelName->setVisible(!this->headingChannel_.isEmpty());
+        this->ui_.headingAvatar->setChannel(this->headingChannel_, !this->offlinePreview_ && !this->isYouTube_, this->isKick_);
+    }
+    if (this->ui_.messagesToggle)
+    {
+        this->ui_.messagesToggle->setVisible(onRoles);
+    }
+    if (this->ui_.rolesToggle)
+    {
+        this->ui_.rolesToggle->setVisible(twitchRolesAvailable && !onRoles);
+    }
+    if (this->ui_.historyButton)
+    {
+        this->ui_.historyButton->setVisible(!onRoles);
+    }
+    this->ui_.messagesHeading->setStyleSheet(QStringLiteral("color: %1; background: transparent;").arg(muted));
+    this->updateMessagesHeadingLayout();
+}
+
+void UserInfoPopup::updateMessagesHeadingLayout()
+{
+    if (!this->ui_.messagesHeader || !this->ui_.headingGroup || !this->ui_.headingActions ||
+        !this->ui_.messagesHeading || !this->ui_.headingChannelName || !this->ui_.headingAvatar)
+        return;
+    auto *outer = static_cast<QBoxLayout *>(this->ui_.messagesHeader->layout());
+    auto *heading = this->ui_.messagesHeading;
+    auto *channel = this->ui_.headingChannelName;
+    const bool showChannel = !channel->isHidden() && !this->headingChannel_.isEmpty();
+    const auto margins = outer->contentsMargins();
+    const int width = this->ui_.messagesHeader->width() - margins.left() - margins.right();
+    if (width <= 0)
+        return;
+    const int actions = this->ui_.headingActions->layout()->sizeHint().width();
+    const int gap = this->ui_.headingGroup->layout()->spacing();
+    const int iconWidth = showChannel ? this->ui_.headingAvatar->width() + gap : 0;
+    const auto channelMetrics = QFontMetrics(channel->font());
+    const int identity = showChannel ? channelMetrics.horizontalAdvance(this->headingChannel_) + iconWidth + 3 : 0;
+    const auto headingMetrics = QFontMetrics(heading->font());
+    const bool roles = this->ui_.contentTabs->currentWidget() == this->ui_.rolesPage;
+    const auto full = roles ? uiText("Roles on Twitch")
+                            : tr("Сообщения в чате");
+    const auto compact = roles ? uiText("Roles") : tr("Чат");
+    const int minimumTitle = showChannel ? identity : headingMetrics.horizontalAdvance(compact) + 3;
+    const bool stack = actions > 0 && width < minimumTitle + actions + outer->spacing();
+    const auto direction = stack ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight;
+    if (outer->direction() != direction)
+        outer->setDirection(direction);
+    const int available = std::max(0, width - (stack || actions == 0 ? 0 : actions + outer->spacing()));
+    const int prefixRoom = available - identity - (showChannel ? gap : 0);
+    QString prefix = full;
+    if (headingMetrics.horizontalAdvance(full) + 3 > prefixRoom)
+        prefix = compact;
+    if (showChannel && headingMetrics.horizontalAdvance(prefix) + 3 > prefixRoom)
+        prefix.clear();
+    if (heading->text() != prefix)
+        heading->setText(prefix);
+    heading->setVisible(!prefix.isEmpty());
+    if (showChannel)
+    {
+        const int nameAvailable = std::max(0, available - iconWidth -
+            (prefix.isEmpty() ? 0 : headingMetrics.horizontalAdvance(prefix) + gap + 4));
+        const auto shown = channelMetrics.elidedText(this->headingChannel_, Qt::ElideRight, nameAvailable);
+        if (channel->text() != shown)
+            channel->setText(shown);
+        channel->setAccessibleName(this->headingChannel_);
+    }
 }
 
 void UserInfoPopup::showActionsMenu()
 {
     auto *menu = new QMenu(this);
+    menu->setObjectName("UsercardActionsMenu");
     menu->setAttribute(Qt::WA_DeleteOnClose);
-    this->showProfileDetails(menu);
-    for (auto *button : {this->ui_.nameHistoryButton, this->ui_.badgesLabel})
-    {
+    const auto menuFont = getApp()->getFonts()->getFont(FontStyle::UiMedium,
+                                                        this->scale());
+    menu->setFont(menuFont);
+    const auto addButton = [this](QMenu *target, Button *button,
+                                  const QString &caption) {
+        // Only the hidden controls' own visibility reflects permissions.
+        // The synthetic preview uses inert placeholders for visual QA.
+        if (this->offlinePreview_)
+        {
+            target->addAction(caption)->setEnabled(false);
+            return;
+        }
         if (!button || button->isHidden())
         {
-            continue;
+            return;
         }
-        auto *action = menu->addAction(button == this->ui_.nameHistoryButton
-                                           ? tr("История имён")
-                                           : tr("Значки Twitch"));
+        auto *action = target->addAction(caption);
         action->setEnabled(button->enabled());
-        QObject::connect(action, &QAction::triggered, button, [button] {
-            Q_EMIT button->leftClicked();
-        });
-    }
-    menu->addSeparator();
-    for (const auto &[caption, button] : this->actionMenuButtons_)
-    {
-        // The controls' container is deliberately hidden. Test each control's
-        // own visibility so permission-driven hiding still works.
-        if (!button || button->isHidden())
-        {
-            continue;
-        }
-        const auto *label = dynamic_cast<LabelButton *>(button.data());
-        auto *action = menu->addAction(
-            caption.isEmpty() && label ? label->text() : caption);
-        action->setEnabled(button->enabled());
-        QObject::connect(action, &QAction::triggered, this, [button] {
+        QObject::connect(action, &QAction::triggered, this,
+                         [button = QPointer<Button>(button)] {
             if (button && button->enabled() && !button->isHidden())
             {
                 Q_EMIT button->leftClicked();
                 Q_EMIT button->clicked(Qt::LeftButton);
             }
         });
-    }
-    menu->addSeparator();
-    for (auto *checkbox : {this->ui_.block, this->ui_.ignoreHighlights})
+    };
+
+    // The card already has the profile link, copy-ID button, copyable name,
+    // badges and roles tab. No second copy of those controls in this menu.
+    addButton(menu, this->ui_.nameHistoryButton, tr("История имён"));
+    addButton(menu, this->ui_.userlogsLabel, uiText("Logs"));
+    addButton(menu, this->ui_.notesAdd, uiText("Notes"));
+
+    auto *management = new QMenu(tr("Действия с пользователем"), menu);
+    management->setObjectName("UsercardManagementMenu");
+    management->setFont(menuFont);
+    if (this->offlinePreview_)
     {
-        if (checkbox->isHidden())
+        for (const auto &caption : {uiText("Block"), uiText("Ignore highlights")})
         {
-            continue;
+            management->addAction(caption)->setEnabled(false);
         }
-        auto *action = menu->addAction(checkbox->text());
-        action->setCheckable(true);
-        action->setChecked(checkbox->isChecked());
-        action->setEnabled(checkbox->isEnabled());
-        QObject::connect(action, &QAction::triggered, checkbox,
-                         [checkbox](bool checked) {
-                             checkbox->setChecked(checked);
-                         });
     }
-    menu->addSeparator();
-    if (this->ui_.followButton && !this->ui_.followButton->isHidden())
+    else
     {
-        const bool following =
-            this->isFollowingStatusKnown() && this->isFollowing();
-        auto *follow = menu->addAction(following ? tr("Перестать отслеживать")
-                                                 : tr("Отслеживать"));
-        QObject::connect(follow, &QAction::triggered, this, [this] {
-            this->toggleUsercardFollow();
-        });
+        for (auto *checkbox : {this->ui_.block, this->ui_.ignoreHighlights})
+        {
+            if (checkbox->isHidden())
+            {
+                continue;
+            }
+            auto *action = management->addAction(checkbox->text());
+            action->setCheckable(true);
+            action->setChecked(checkbox->isChecked());
+            action->setEnabled(checkbox->isEnabled());
+            QObject::connect(action, &QAction::triggered, checkbox,
+                             [checkbox](bool checked) {
+                                 checkbox->setChecked(checked);
+                             });
+        }
+        if (this->ui_.followButton && !this->ui_.followButton->isHidden())
+        {
+            const bool following =
+                this->isFollowingStatusKnown() && this->isFollowing();
+            auto *follow = management->addAction(
+                following ? tr("Перестать отслеживать") : tr("Отслеживать"));
+            follow->setEnabled(this->ui_.followButton->enabled());
+            QObject::connect(follow, &QAction::triggered, this, [this] {
+                this->toggleUsercardFollow();
+            });
+        }
+        // Only role management entries from the old action list; do not
+        // repeat ordinary profile, log, note or service actions here.
+        for (const auto &[caption, button] : this->actionMenuButtons_)
+        {
+            if (button == this->ui_.rolesLabel)
+            {
+                addButton(management, button, uiText("Roles"));
+            }
+            else if (!caption.isEmpty())
+            {
+                addButton(management, button, caption);
+            }
+        }
     }
-    if (this->ui_.switchAvatars && !this->ui_.switchAvatars->isHidden())
+    if (!management->isEmpty())
     {
-        auto *avatar = menu->addAction(this->ui_.switchAvatars->text());
-        QObject::connect(avatar, &QAction::triggered, this, [this] {
-            Q_EMIT this->ui_.switchAvatars->leftClicked();
-        });
+        if (!menu->isEmpty())
+        {
+            menu->addSeparator();
+        }
+        menu->addMenu(management);
     }
-    if (!this->userId_.isEmpty())
+    else
+        management->deleteLater();
+
+    // Rarely used profile metadata and external services sit behind one
+    // compact menu instead of competing with the usual actions.
+    auto *extras = new QMenu(uiText("Advanced"), menu);
+    extras->setObjectName("UsercardExtrasMenu");
+    extras->setFont(menuFont);
+    this->showProfileDetails(extras);
+    if (this->offlinePreview_ ||
+        (!this->isKick_ && !this->isYouTube_ && !this->userName_.isEmpty()))
     {
-        auto *copyId = menu->addAction(tr("Скопировать %1").arg(this->userId_));
-        QObject::connect(copyId, &QAction::triggered, this,
-                         [id = this->userId_] {
-                             crossPlatformCopy(id);
-                         });
+        if (!extras->isEmpty())
+        {
+            extras->addSeparator();
+        }
+        auto addLink = [this, extras](const QString &caption, const QUrl &url) {
+            auto *action = extras->addAction(caption);
+            action->setEnabled(!this->offlinePreview_);
+            if (!this->offlinePreview_)
+            {
+                QObject::connect(action, &QAction::triggered, extras,
+                                 [url] { QDesktopServices::openUrl(url); });
+            }
+        };
+        addLink(QStringLiteral("ChatVault"),
+                QUrl(chatVaultTwitchChannelUrl(this->userName_)));
+        addLink(QStringLiteral("Lurkology"),
+                QUrl(lurkologyTwitchProfileUrl(this->userName_)));
+        addButton(extras, this->ui_.sevenTVUserLabel, uiText("7TV"));
     }
-    if (!this->userName_.isEmpty())
+    else if (!this->isYouTube_)
     {
-        auto *copyName =
-            menu->addAction(tr("Скопировать %1").arg(this->userName_));
-        QObject::connect(copyName, &QAction::triggered, this,
-                         [name = this->userName_] {
-                             crossPlatformCopy(name);
-                         });
+        addButton(extras, this->ui_.sevenTVUserLabel, uiText("7TV"));
     }
-    menu->addSeparator();
-    this->appendCommonProfileActions(menu);
+    if (!this->offlinePreview_ && this->ui_.switchAvatars &&
+        !this->ui_.switchAvatars->isHidden())
+    {
+        addButton(extras, this->ui_.switchAvatars,
+                  this->ui_.switchAvatars->text());
+    }
+    if (!extras->isEmpty())
+    {
+        menu->addMenu(extras);
+    }
+    else
+        extras->deleteLater();
+
+    styleMenu(menu);
     menu->popup(
         this->ui_.actions->mapToGlobal(QPoint(0, this->ui_.actions->height())));
 }
 
 void UserInfoPopup::showProfileDetails(QMenu *menu)
 {
-    auto *details = menu->addMenu(tr("Сведения о профиле"));
-    for (auto *label : {this->ui_.userIDLabel, this->ui_.pronounsLabel,
+    auto *details = new QMenu(tr("Сведения о профиле"), menu);
+    details->setFont(menu->font());
+    for (auto *label : {this->ui_.pronounsLabel,
                         this->ui_.lastLiveLabel, this->ui_.statusLabel,
                         this->ui_.chatterCountLabel, this->ui_.userColorLabel})
     {
@@ -2920,6 +4420,7 @@ void UserInfoPopup::showProfileDetails(QMenu *menu)
             continue;
         }
         auto *action = details->addAction(label->getText());
+        action->setEnabled(!this->offlinePreview_);
         action->setToolTip(tr("Нажмите, чтобы скопировать"));
         const auto copy = label->property("copy-text").toString();
         QObject::connect(action, &QAction::triggered, this,
@@ -2931,11 +4432,18 @@ void UserInfoPopup::showProfileDetails(QMenu *menu)
     {
         auto *action = details->addAction(
             tr("7TV-пейнт: %1").arg(this->seventvPaint_->name));
+        action->setEnabled(!this->offlinePreview_);
         QObject::connect(action, &QAction::triggered, this,
                          [id = this->seventvPaint_->id] {
                              crossPlatformCopy(id);
                          });
     }
+    if (!details->isEmpty())
+    {
+        menu->addMenu(details);
+    }
+    else
+        details->deleteLater();
 }
 
 void UserInfoPopup::updateNamePresentation()
@@ -2969,11 +4477,17 @@ void UserInfoPopup::setOfflinePreviewData(const UserInfoPreviewData &data)
     ++this->userDataRequestGeneration_;
     ++this->usercardMessagesRequestGeneration_;
     this->earnedBadges_.clear();
+    static_cast<UsercardBadgeStrip *>(this->ui_.badgeStrip)->resetExpansion();
     this->earnedBadgesReady_ = false;
     this->earnedBadgesError_.clear();
     this->userId_ = data.userId;
-    this->historyProfileDisplayName_ = data.displayName;
     this->userName_ = data.login;
+    if (this->ui_.contentTabs->currentWidget() == this->ui_.rolesPage)
+    {
+        this->ui_.contentTabs->setCurrentWidget(this->ui_.messagesPage);
+    }
+    this->ui_.rolesPage->setTarget(data.userId, data.login);
+    this->historyProfileDisplayName_ = data.displayName;
     this->loginHint_ = data.login;
     if (this->ui_.userColorRow)
     {
@@ -2981,6 +4495,8 @@ void UserInfoPopup::setOfflinePreviewData(const UserInfoPreviewData &data)
             "swatch-color",
             data.chatColor.isEmpty() ? QVariant() : QVariant(data.chatColor));
     }
+    this->offlinePublicHistoryAllowed_ = data.allowPublicHistory;
+    this->offlineHistoryAutoFill_ = data.allowPublicHistory && data.autoFillHistory;
     this->resetPublicHistory();
     this->underlyingChannel_ = data.messages;
     this->channel_ = data.messages;
@@ -3012,7 +4528,7 @@ void UserInfoPopup::setOfflinePreviewData(const UserInfoPreviewData &data)
     this->ui_.notesPreview->hide();
     this->ui_.badgesLabel->setVisible(true);
     this->ui_.badgesLabel->setEnabled(false);
-    this->ui_.badgesLabel->setToolTip(
+    this->ui_.badgesLabel->setAccessibleDescription(
         tr("Badge lookup is disabled in offline preview"));
     this->ui_.followButton->hide();
     this->ui_.timeoutWidget->hide();
@@ -3021,6 +4537,7 @@ void UserInfoPopup::setOfflinePreviewData(const UserInfoPreviewData &data)
     this->earnedBadges_ = data.earnedBadges;
     this->earnedBadgesReady_ = !data.earnedBadges.empty();
     this->updateObservedBadges();
+    this->updateQuickActions();
     this->bannerPixmap_ = data.banner;
     this->updateProfileBanner();
     this->usercardMessagesChannel_ =
@@ -3042,8 +4559,9 @@ void UserInfoPopup::setOfflinePreviewData(const UserInfoPreviewData &data)
         data.messages ? data.messages->getName() : QString();
     this->setMessagesHeading(channelName);
     this->setWindowTitle(tr("%1 — offline usercard preview").arg(data.login));
-
+    this->scheduleHistoryViewportFill();
     this->updatePublicHistoryButton();
+    this->refreshUsercardActivity();
 }
 
 void UserInfoPopup::loadProfileBanner(const QString &url)
@@ -3106,19 +4624,8 @@ void UserInfoPopup::updateProfileBanner()
     }
     this->ui_.banner->setFixedHeight(std::max(1, int(62 * this->scale())));
     this->ui_.banner->show();
-    if (this->bannerPixmap_.isNull())
-    {
-        this->ui_.banner->clear();
-        return;
-    }
-    const int height = this->ui_.banner->height();
-    const int width = std::max(1, this->ui_.profileScroll->viewport()->width());
-    const auto image = this->bannerPixmap_.scaled(
-        width, height, Qt::KeepAspectRatioByExpanding,
-        Qt::SmoothTransformation);
-    this->ui_.banner->setPixmap(image.copy((image.width() - width) / 2,
-                                           (image.height() - height) / 2, width,
-                                           height));
+    static_cast<UsercardCoverLabel *>(this->ui_.banner)->setCover(this->bannerPixmap_, this->scale(),
+        usercardChrome::palette(this->theme->isLightTheme()));
 }
 
 void UserInfoPopup::updateObservedBadges()
@@ -3183,7 +4690,9 @@ void UserInfoPopup::updateObservedBadges()
         }
     }
     strip->setBadges(std::move(badges), this->scale());
-    strip->setToolTip(
+    // The strip handles hover itself with image previews; keep collection
+    // availability accessible without a competing native text tooltip.
+    strip->setAccessibleDescription(
         this->earnedBadgesReady_
             ? tr("Полученные значки Twitch и значки из загруженных сообщений")
         : this->earnedBadgesError_.isEmpty()
@@ -3233,7 +4742,7 @@ void UserInfoPopup::requestEarnedBadges()
 void UserInfoPopup::windowDeactivationEvent()
 {
     // Opening this card's compact menu must not destroy the card (and its
-    // asynchronous history request) before an action can be selected.
+    // open menus) before an action can be selected.
     for (auto *popup = QApplication::activePopupWidget(); popup;
          popup = popup->parentWidget())
     {
@@ -3752,6 +5261,7 @@ void UserInfoPopup::setData(const QString &name,
     }
     const QStringView idPrefix = u"id:";
     bool isId = name.startsWith(idPrefix);
+    this->historyProfileDisplayName_.clear();
     this->loginHint_ = isId ? QString{} : name;
     if (isId)
     {
@@ -3762,14 +5272,14 @@ void UserInfoPopup::setData(const QString &name,
     else if (!expectedUserId.isEmpty())
     {
         // Resolve by this exact ID, never by the current owner of a saved nick.
-        // Keep Twitch actions disabled until the canonical login is resolved.
+        // Keep Twitch actions disabled until the canonical login is resolved;
+        // the displayed login can use the saved login immediately.
         this->userId_ = expectedUserId;
         this->userName_.clear();
     }
     else
     {
         this->userId_.clear();
-    this->historyProfileDisplayName_.clear();
         this->userName_ = name;
         this->kickUserSlug_ = KickApi::slugify(name);
     }
@@ -3810,6 +5320,22 @@ void UserInfoPopup::setData(const QString &name,
         this->forceYouTube_ ||
         this->underlyingChannel_->getType() == Channel::Type::YouTube;
     this->forceYouTube_ = false;
+    if (this->ui_.contentTabs->currentWidget() == this->ui_.rolesPage)
+    {
+        this->ui_.contentTabs->setCurrentWidget(this->ui_.messagesPage);
+    }
+    if (!this->isKick_ && !this->isYouTube_)
+    {
+        this->ui_.rolesPage->setTarget(this->userId_,
+                                      this->loginHint_);
+    }
+    else
+    {
+        this->ui_.rolesPage->setTarget({}, {});
+    }
+    this->ui_.contentTabs->setTabEnabled(
+        this->ui_.contentTabs->indexOf(this->ui_.rolesPage),
+        !this->isKick_ && !this->isYouTube_);
     if (this->seventvAvatar_)
     {
         this->seventvAvatar_->stop();
@@ -3826,12 +5352,11 @@ void UserInfoPopup::setData(const QString &name,
     this->bannerUrl_.clear();
     this->bannerPixmap_ = {};
     this->earnedBadges_.clear();
+    static_cast<UsercardBadgeStrip *>(this->ui_.badgeStrip)->resetExpansion();
     this->earnedBadgesReady_ = false;
     this->earnedBadgesError_.clear();
     this->updateProfileBanner();
-    const auto channelName = this->underlyingChannel_->getName();
-    this->setMessagesHeading(channelName);
-
+    this->setMessagesHeading(this->underlyingChannel_->getName());
     if (this->isKick_)
     {
         this->ui_.timeoutWidget->setMinTimeout(60);
@@ -4172,6 +5697,7 @@ void UserInfoPopup::updateLatestMessages()
 
     this->updateUsercardMessagesVisibility();
     this->maybeStartUsercardMessageAutoLoad();
+    this->scheduleHistoryViewportFill();
 
     this->refreshConnection_ =
         std::make_unique<pajlada::Signals::ScopedConnection>(
@@ -4210,6 +5736,8 @@ void UserInfoPopup::updateLatestMessages()
 
 void UserInfoPopup::updateUsercardMessagesVisibility()
 {
+    if (this->activityRefreshTimer_ && !this->activityRefreshTimer_->isActive())
+        this->activityRefreshTimer_->start();
     const bool hasMessages = this->usercardMessagesChannel_ &&
                              this->usercardMessagesChannel_->hasMessages();
     const bool hadMessages = this->ui_.latestMessages->isVisible();
@@ -4242,11 +5770,34 @@ void UserInfoPopup::updateUsercardMessagesVisibility()
     }
 }
 
+void UserInfoPopup::refreshUsercardActivity()
+{
+    if (!this->ui_.activityCount || !this->ui_.activityLatest)
+        return;
+    const auto channelName = this->underlyingChannel_ ? this->underlyingChannel_->getName() : QString();
+    const auto activity = this->usercardMessagesChannel_
+        ? summarizeUsercardActivity(this->usercardMessagesChannel_->getMessageSnapshot(), this->userId_, channelName)
+        : UsercardActivity{};
+    const auto count = this->userId_.isEmpty() ? QStringLiteral("—") :
+        QLocale().toString(qulonglong(activity.messageCount));
+    if (this->ui_.activityCount->text() != count)
+        this->ui_.activityCount->setText(count);
+    QString latest = QStringLiteral("—");
+    if (activity.latestMessage.isValid())
+    {
+        // Use a stable local timestamp, with no timer or periodic history scan.
+        const auto time = activity.latestMessage.toLocalTime();
+        latest = time.date() == QDate::currentDate() ? time.toString("HH:mm") : time.toString("dd.MM.yy HH:mm");
+    }
+    if (this->ui_.activityLatest->text() != latest)
+        this->ui_.activityLatest->setText(latest);
+}
+
 bool UserInfoPopup::canUsePublicHistory() const
 {
-    return getSettings()->usercardPublicLogs && !this->offlinePreview_ &&
-           !this->isKick_ &&
-           !this->isYouTube_ && !this->userId_.isEmpty() &&
+    return (this->offlinePreview_ ? this->offlinePublicHistoryAllowed_
+                                 : getSettings()->usercardPublicLogs.getValue()) &&
+           !this->isKick_ && !this->isYouTube_ && !this->userId_.isEmpty() &&
            this->underlyingChannel_ &&
            !this->underlyingChannel_->getName().isEmpty();
 }
@@ -4255,13 +5806,18 @@ void UserInfoPopup::resetPublicHistory()
 {
     this->publicHistoryCursor_ = {};
     this->publicHistoryMessages_.clear();
-    this->publicHistoryUncolored_.clear();
+    this->publicHistoryIncomplete_.clear();
     this->publicHistoryColor_.clear();
-    this->publicHistoryProfileDisplayName_.clear();
+    this->publicHistoryDisplayName_.clear();
     this->publicHistoryTimestamps_.clear();
     this->publicHistoryStatus_.clear();
+    this->publicHistoryStarted_ = false;
     this->publicHistoryLoading_ = false;
     this->publicHistoryComplete_ = false;
+    this->publicHistoryPartialRetried_ = false;
+    this->publicHistoryPreserveAnchor_ = false;
+    this->historyViewportFillBlocked_ = false;
+    this->historyViewportFillQueued_ = false;
     this->publicHistoryWindowLimited_ = false;
     this->updatePublicHistoryButton();
 }
@@ -4293,16 +5849,47 @@ bool UserInfoPopup::hasCachedOlderHistory() const
                                  });
 }
 
-void UserInfoPopup::requestPublicHistory()
+void UserInfoPopup::scheduleHistoryViewportFill()
 {
-    const auto login =
-        this->userName_.isEmpty() ? this->loginHint_ : this->userName_;
+    if (this->historyViewportFillQueued_ || this->historyViewportFillBlocked_ ||
+        this->publicHistoryLoading_ || !this->ui_.latestMessages ||
+        (!this->publicHistoryStarted_ && !this->offlineHistoryAutoFill_) ||
+        (this->offlinePreview_ && !this->offlineHistoryAutoFill_) ||
+        !this->canUsePublicHistory())
+        return;
+    const auto generation = this->usercardMessagesRequestGeneration_;
+    this->historyViewportFillQueued_ = true;
+    QTimer::singleShot(0, this, [this, generation] {
+        if (generation != this->usercardMessagesRequestGeneration_)
+            return;
+        this->historyViewportFillQueued_ = false;
+        if (this->publicHistoryLoading_ || this->historyViewportFillBlocked_ ||
+            !this->ui_.messagesPage->isVisible() || this->publicHistoryWindowLimited_)
+            return;
+        // A freshly replaced ChannelView can still carry the previous scrollbar
+        // state until Qt delivers its layout event. Use the actual row heights.
+        auto *view = this->ui_.latestMessages;
+        if (this->usercardMessagesChannel_ && this->usercardMessagesChannel_->hasMessages())
+        {
+            view->performLayout(false, true);
+            if (!view->getScrollBar().isHidden())
+                return;
+        }
+        this->requestPublicHistory(HistoryRequest::FillViewport);
+    });
+}
+
+void UserInfoPopup::requestPublicHistory(HistoryRequest reason)
+{
+    const bool userInitiated = reason == HistoryRequest::Manual;
+    const auto login = this->userName_.isEmpty() ? this->loginHint_ : this->userName_;
     if (!this->canUsePublicHistory() || this->publicHistoryLoading_ ||
-        login.isEmpty())
+        login.isEmpty() || (!userInitiated && !this->publicHistoryStarted_ &&
+                            !this->offlineHistoryAutoFill_))
     {
         return;
     }
-    if (this->hasCachedOlderHistory())
+    if (userInitiated && this->hasCachedOlderHistory())
     {
         this->rebuildPublicHistoryView(true);
         this->updateUsercardMessagesVisibility();
@@ -4312,10 +5899,18 @@ void UserInfoPopup::requestPublicHistory()
     {
         return;
     }
+
+    this->publicHistoryStarted_ = true;
+    if (userInitiated)
+    {
+        this->historyViewportFillBlocked_ = false;
+    }
     this->publicHistoryLoading_ = true;
+    this->publicHistoryPreserveAnchor_ = userInitiated;
     this->publicHistoryStatus_ = tr("Поиск в публичных логах…");
     this->updatePublicHistoryButton();
     this->updateUsercardMessagesVisibility();
+
     const auto generation = this->usercardMessagesRequestGeneration_;
     publiclogs::requestPage(
         this->userId_, login, this->underlyingChannel_->getName(),
@@ -4385,12 +5980,6 @@ void UserInfoPopup::applyPublicHistory(const QJsonObject &data)
             message.sentAt = row.value("time_utc").toString();
             message.text = row.value("text").toString();
             message.isFirstMessage = row.value("first_msg").toBool();
-            // Public log rows carry the sender's name, colour and badges.
-            if (const auto shown = row.value("display_name").toString();
-                !shown.isEmpty())
-            {
-                message.senderDisplayName = shown;
-            }
             message.senderColor = row.value("color").toString();
             message.senderBadges = row.value("badges").toString();
             if (message.senderLogin.isEmpty() ||
@@ -4399,9 +5988,11 @@ void UserInfoPopup::applyPublicHistory(const QJsonObject &data)
                 continue;
             }
             if (message.senderColor.isEmpty() ||
-                message.senderDisplayName.isEmpty())
+                message.senderDisplayName.trimmed().isEmpty() ||
+                (message.senderDisplayName == message.senderLogin &&
+                 message.senderDisplayName == message.senderDisplayName.toLower()))
             {
-                this->publicHistoryUncolored_.insert(id, message);
+                this->publicHistoryIncomplete_.insert(id, message);
             }
             if (message.senderColor.isEmpty())
             {
@@ -4414,26 +6005,49 @@ void UserInfoPopup::applyPublicHistory(const QJsonObject &data)
             ids.insert(id);
             ++added;
         }
+        auto &cursor = this->publicHistoryCursor_;
+        const auto oldCursor = cursor;
         const bool partial =
             data.value("error").toString() == u"partial_source";
-        if (partial && !this->publicHistoryPartialRetried_)
+        const bool retryPartial = partial && !this->publicHistoryPartialRetried_;
+        if (retryPartial)
         {
-            // Repeat the cursor once to include rows from a temporarily unavailable mirror.
+            // keep the cursor: the next request covers this range again and
+            // picks up what the late mirror holds (rows already shown are
+            // skipped)
             this->publicHistoryPartialRetried_ = true;
         }
         else
         {
-            this->publicHistoryCursor_ = data.value("next_cursor").toObject();
+            if (!partial || data.value("more").toBool())
+                cursor = data.value("next_cursor").toObject();
             this->publicHistoryPartialRetried_ = false;
         }
-        this->publicHistoryComplete_ = !data.value("more").toBool() && !partial;
+        // A duplicate-only page still advances its own cursor. It is never
+        // mistaken for the end of the other source's history.
+        const bool complete =
+            !data.value("more").toBool() &&
+            data.value("error").toString() != u"partial_source";
+        // A partial page with a next cursor can still fill the viewport. Give
+        // the late mirror its one retry. Without an older cursor leave the
+        // displayed rows in place for a later manual retry.
+        const auto beforeTime = parseIvrTimestamp(oldCursor.value("time_utc").toString());
+        const auto nextTime = parseIvrTimestamp(cursor.value("time_utc").toString());
+        const bool advanced = nextTime.isValid() &&
+            (oldCursor.isEmpty() || nextTime < beforeTime ||
+             (nextTime == beforeTime && cursor.value("id").toString() < oldCursor.value("id").toString()));
+        this->historyViewportFillBlocked_ = !complete && !advanced &&
+            !(retryPartial && data.value("more").toBool());
+        this->publicHistoryComplete_ = complete;
         const auto rows = data.value("rows").toArray().size();
         this->publicHistoryStatus_ =
-            partial ? tr("История частичная: один из источников недоступен")
-                    : tr("Публичные логи: получено %1 сообщений").arg(rows);
+            data.value("error").toString() == u"partial_source"
+                ? tr("История частичная: один из источников недоступен")
+            : tr("Публичные логи: получено %1 сообщений").arg(rows);
         if (added)
         {
-            this->rebuildPublicHistoryView(true);
+            this->rebuildPublicHistoryView(
+                this->publicHistoryPreserveAnchor_);
         }
     }
     else
@@ -4443,10 +6057,12 @@ void UserInfoPopup::applyPublicHistory(const QJsonObject &data)
             : status == u"disabled"
                 ? tr("Публичные логи сейчас отключены")
                 : tr("История недоступна; повторите запрос кнопкой «История»");
-
+        // Unknown coverage and a failed source do not prove a global end.
+        this->historyViewportFillBlocked_ = true;
     }
     this->updatePublicHistoryButton();
     this->updateUsercardMessagesVisibility();
+    this->scheduleHistoryViewportFill();
 }
 
 QString UserInfoPopup::knownChatColor() const
@@ -4487,24 +6103,24 @@ QString UserInfoPopup::knownChatColor() const
 
 void UserInfoPopup::refreshPublicHistoryColors()
 {
-    if (this->publicHistoryUncolored_.isEmpty() || !this->underlyingChannel_)
+    if (this->publicHistoryIncomplete_.isEmpty() || !this->underlyingChannel_)
     {
         return;
     }
     const auto color = this->knownChatColor();
     if (color == this->publicHistoryColor_ &&
-        this->historyProfileDisplayName_ == this->publicHistoryProfileDisplayName_)
+        this->historyProfileDisplayName_ == this->publicHistoryDisplayName_)
     {
         return;
     }
     this->publicHistoryColor_ = color;
-    this->publicHistoryProfileDisplayName_ = this->historyProfileDisplayName_;
+    this->publicHistoryDisplayName_ = this->historyProfileDisplayName_;
     auto *renderChannel =
         dynamic_cast<TwitchChannel *>(this->underlyingChannel_.get());
     for (auto &message : this->publicHistoryMessages_)
     {
-        auto source = this->publicHistoryUncolored_.find(message->id);
-        if (source == this->publicHistoryUncolored_.end())
+        auto source = this->publicHistoryIncomplete_.constFind(message->id);
+        if (source == this->publicHistoryIncomplete_.cend())
         {
             continue;
         }
@@ -4515,7 +6131,8 @@ void UserInfoPopup::refreshPublicHistoryColors()
         }
         message = makeUsercardModLogMessage(colored, renderChannel,
                                             this->underlyingChannel_->getName(),
-                                            this->userId_, this->historyProfileDisplayName_);
+                                            this->userId_,
+                                            this->historyProfileDisplayName_);
     }
     this->rebuildPublicHistoryView(true);
 }
@@ -4568,7 +6185,7 @@ void UserInfoPopup::rebuildPublicHistoryView(bool preserveAnchor)
         add(message, false);
     }
     // Keep the full original message (emotes/replies/badges) whenever it is
-    // already present in the live buffer; normalized public log text cannot
+    // already present in the live buffer; normalized log text cannot
     // replace that richer object.
     for (const auto &message : this->underlyingChannel_->getMessageSnapshot())
     {
@@ -4709,7 +6326,10 @@ void UserInfoPopup::rebuildPublicHistoryView(bool preserveAnchor)
              it != this->publicHistoryTimestamps_.end();)
         {
             if (!retained.contains(it.key()))
+            {
+                this->publicHistoryIncomplete_.remove(it.key());
                 it = this->publicHistoryTimestamps_.erase(it);
+            }
             else
                 ++it;
         }
@@ -4730,10 +6350,10 @@ void UserInfoPopup::updatePublicHistoryButton()
     this->ui_.historyButton->setText(
         this->publicHistoryLoading_ ? tr("Загрузка…") : tr("История"));
     this->ui_.historyButton->setToolTip(
-        (!this->publicHistoryStatus_.isEmpty()
-             ? this->publicHistoryStatus_
-             : available ? tr("Публичные логи чата. Прокрутите вверх, чтобы загрузить ещё")
-                         : tr("Включите публичные логи в настройках")) +
+        (!this->publicHistoryStatus_.isEmpty() ? this->publicHistoryStatus_
+         : available ? tr("Публичные логи чата. Прокрутите вверх, чтобы "
+                          "загрузить ещё")
+                     : tr("Включите публичные логи в настройках")) +
         (this->publicHistoryWindowLimited_
              ? tr(" · Буфер карточки ограничен; старые строки доступны "
                   "прокруткой")
@@ -4751,6 +6371,7 @@ void UserInfoPopup::resetUsercardMessageLoader()
     this->usercardMessagesLazyLoadEnabled_ =
         getSettings()->alwaysLoadMoreUsercardMessages;
     this->usercardMessagesChannel_.reset();
+    this->refreshUsercardActivity();
     this->updateLoadMoreMessagesButton();
 }
 
@@ -4884,7 +6505,7 @@ void UserInfoPopup::fetchMoreUsercardMessages(int emptyPageSkipsLeft,
     {
         this->usercardMessagesError_ =
             authError.isEmpty()
-                ? uiText(QStringLiteral("No saved Leafyrino moderator login found."))
+                ? uiText(QStringLiteral("No saved Chatterino Noctis moderator login found."))
                 : authError;
         this->usercardMessagesLazyLoadEnabled_ = false;
         this->usercardMessagesLoading_ = false;
@@ -4947,7 +6568,8 @@ void UserInfoPopup::fetchMoreUsercardMessages(int emptyPageSkipsLeft,
                 }
 
                 messages.push_back(makeUsercardModLogMessage(
-                    *it, renderChannel, channelName, targetUserId, self->historyProfileDisplayName_));
+                    *it, renderChannel, channelName, targetUserId,
+                    self->historyProfileDisplayName_));
             }
 
             if (!messages.empty())
@@ -5093,8 +6715,8 @@ void UserInfoPopup::updateUserData()
         }
 
         this->userId_ = user.id;
+        this->ui_.rolesPage->setTarget(user.id, user.login);
         this->historyProfileDisplayName_ = user.displayName;
-        this->refreshPublicHistoryColors();
         this->refreshFollowingStatus(false);
         this->updateUsercardFollowButton();
 
@@ -5112,6 +6734,8 @@ void UserInfoPopup::updateUserData()
         }
         // Upgrade a provisional name-only buffer to a strict UID-filtered one.
         this->updateLatestMessages();
+        this->refreshPublicHistoryColors();
+        this->updateQuickActions();
 
         // The public logs' newest page starts loading now, so the history
         // button shows it at once.
@@ -5167,8 +6791,6 @@ void UserInfoPopup::updateUserData()
         this->loadProfileBanner(user.offlineImageUrl);
         this->updateObservedBadges();
         this->requestEarnedBadges();
-        this->updatePublicHistoryButton();
-
 
         if (getSettings()->showUsercardFollowerCount)
         {
@@ -6395,6 +8017,9 @@ void UserInfoPopup::showRoleManagementMenu()
     menu->addSeparator();
     addAction(uiText("Add editor"), "/editor", "add editor to");
     addAction(uiText("Remove editor"), "/uneditor", "remove editor from");
+    menu->setFont(getApp()->getFonts()->getFont(FontStyle::UiMedium,
+                                               this->scale()));
+    styleMenu(menu);
 
     // The original role button now lives in the hidden action-controls host.
     // Anchor to the visible compact menu, or the profile viewport if scrolled.
@@ -6418,7 +8043,7 @@ void UserInfoPopup::runRoleManagementCommand(const QString &command,
     const bool wasPinned = this->ensurePinned();
     auto reply = QMessageBox::warning(
         this, uiText("Confirm role change"),
-        uiText(QString("Are you sure you want to %1 %2 in #%3?"))
+        uiText(QString("Are you sure you want to %1 %2 in %3?"))
             .arg(actionText, this->userName_,
                  this->underlyingChannel_->getName()),
         QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
@@ -6614,6 +8239,8 @@ void UserInfoPopup::resetUsercardInfoRows()
     this->ui_.createdDateLabel->setVisible(settings->showUsercardCreatedDate);
 
     this->ui_.followageLabel->setText(tr("Фоллов: загрузка…"));
+    this->ui_.followageLabel->setProperty("openUrl", QVariant());
+    this->ui_.followageLabel->unsetCursor();
     this->ui_.followageLabel->setToolTip({});
     this->ui_.followageRow->setVisible(settings->showUsercardFollowage);
     this->ui_.followageIcon->setVisible(false);
@@ -6879,34 +8506,18 @@ void UserInfoPopup::updateBadgesButton()
     this->ui_.badgesLabel->setEnabled(canShow);
     if (!canShow)
     {
-        this->ui_.badgesLabel->setToolTip({});
+        this->ui_.badgesLabel->setAccessibleDescription({});
         return;
     }
 
-    this->ui_.badgesLabel->setToolTip(uiText("View earned Twitch badges"));
+    this->ui_.badgesLabel->setAccessibleDescription(uiText("Show all badges (%1)")
+        .arg(this->ui_.badgeStrip ? this->ui_.badgeStrip->property("badgeCount").toInt() : 0));
 }
 
-void UserInfoPopup::openBadgesDialog()
+void UserInfoPopup::toggleInlineBadges()
 {
-    if (this->isKick_ || this->isYouTube_ || this->userName_.isEmpty() ||
-        !this->underlyingChannel_)
-    {
-        return;
-    }
-
-    const auto channelName = this->underlyingChannel_->getName();
-    if (channelName.isEmpty())
-    {
-        return;
-    }
-
-    const auto displayName = this->ui_.nameLabel != nullptr
-                                 ? this->ui_.nameLabel->getText()
-                                 : this->userName_;
-    auto *twitchChannel =
-        dynamic_cast<TwitchChannel *>(this->underlyingChannel_.get());
-    UserBadgesDialog::showDialog(this->userName_, channelName, displayName,
-                                 twitchChannel, this);
+    if (auto *strip = static_cast<UsercardBadgeStrip *>(this->ui_.badgeStrip))
+        strip->toggleExpansion();
 }
 
 void UserInfoPopup::showNameHistoryMenu()
@@ -6942,7 +8553,9 @@ void UserInfoPopup::showNameHistoryMenu()
 void UserInfoPopup::openNameHistoryMenu(const QString &statusText)
 {
     auto *button = this->ui_.nameHistoryButton;
-    if (button == nullptr || !button->isVisible())
+    // This control lives in the hidden details container. The visible ⋮
+    // menu now owns the action; its own visibility still reflects settings.
+    if (button == nullptr || button->isHidden())
     {
         return;
     }
@@ -6955,6 +8568,9 @@ void UserInfoPopup::openNameHistoryMenu(const QString &statusText)
     auto *menu = new QMenu(this);
     menu->setAttribute(Qt::WA_DeleteOnClose);
     this->nameHistoryMenu_ = menu;
+    menu->setFont(getApp()->getFonts()->getFont(FontStyle::UiMedium,
+                                               this->scale()));
+    styleMenu(menu);
 
     if (!statusText.isEmpty())
     {
@@ -6987,7 +8603,12 @@ void UserInfoPopup::openNameHistoryMenu(const QString &statusText)
         }
     }
 
-    menu->popup(button->mapToGlobal(QPoint(0, button->height())));
+    QWidget *anchor = this->ui_.actions;
+    if (!anchor || anchor->visibleRegion().isEmpty())
+    {
+        anchor = this->ui_.profileScroll->viewport();
+    }
+    menu->popup(anchor->mapToGlobal(QPoint(0, anchor->height())));
 }
 
 void UserInfoPopup::requestNameHistory()
@@ -7464,6 +9085,19 @@ void UserInfoPopup::setModerationStripVisible(bool visible)
         {
             geometry.moveBottom(available.bottom());
         }
+    }
+    if (this->badgeFitBase_)
+    {
+        // Asynchronously obtained moderator permissions can add/remove this
+        // strip during a badge expansion. Retain the session, including the
+        // collapsed height the user will return to.
+        const int delta = visible ? stripHeight : -stripHeight;
+        const int cap = std::max(this->minimumHeight(), this->screen()->availableGeometry().height());
+        this->badgeFitBase_->setHeight(std::clamp(this->badgeFitBase_->height() + delta,
+                                               this->minimumHeight(), cap));
+        this->badgeFitTargetHeight_ = std::clamp(this->badgeFitTargetHeight_ + delta,
+                                               this->badgeFitBase_->height(), cap);
+        this->badgeFitExpectedSize_ = geometry.size();
     }
     this->setGeometry(geometry);
 }

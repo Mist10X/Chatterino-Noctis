@@ -2,6 +2,8 @@
 // This executable is an offline UI fixture, never the normal application.
 
 #include "common/Channel.hpp"
+#include "providers/twitch/ChannelStats.hpp"
+#include "widgets/dialogs/StreamStatsDialog.hpp"
 #include "common/UiLanguage.hpp"
 #include "common/network/NetworkManager.hpp"
 #include "controllers/accounts/AccountController.hpp"
@@ -18,6 +20,7 @@
 #include "messages/MessageElement.hpp"
 #include "messages/MessageThread.hpp"
 #include "providers/twitch/IrcMessageHandler.hpp"
+#include "providers/twitch/TwitchBadges.hpp"
 #include "widgets/helper/HighlightToast.hpp"
 #include "providers/twitch/PubSubManager.hpp"
 #include "OwnTimeoutChecks.hpp"
@@ -43,7 +46,29 @@
 #ifdef LEAFYRINO_BASELINE_USERCARD_PREVIEW
 #    include "BaselineUserInfoPopup.hpp"
 #else
+#    include "providers/twitch/TwitchAccount.hpp"
+#    include "widgets/dialogs/TwitchBadgePickerDialog.hpp"
+#    include "widgets/dialogs/EmotePopup.hpp"
+#    include "widgets/buttons/LabelButton.hpp"
+#    include "widgets/helper/ChannelAvatarLabel.hpp"
+#    include "widgets/Notebook.hpp"
+#    include "messages/layouts/MessageLayoutElement.hpp"
+#    include "widgets/TooltipWidget.hpp"
+#    include <QHoverEvent>
+#    include <QGraphicsOpacityEffect>
+#    include "NoctisTooltipChecks.hpp"
+#    include "widgets/helper/MenuStyle.hpp"
+#    include "StartupHistoryChecks.hpp"
+#    include "HistoryBadgeChecks.hpp"
+#    include "widgets/helper/ServiceHealthCard.hpp"
+#    include "HistoryChecks.hpp"
+#    include "RolesChecks.hpp"
 #    include "widgets/dialogs/UserInfoPopup.hpp"
+#    include "widgets/helper/UsercardResizeGrip.hpp"
+#    include "widgets/helper/UsercardChrome.hpp"
+#    include "widgets/helper/RoundAvatar.hpp"
+#    include "providers/seventv/paints/LinearGradientPaint.hpp"
+#    include "singletons/Settings.hpp"
 #endif
 #include "widgets/helper/ChannelView.hpp"
 #include "widgets/helper/CornerBanners.hpp"
@@ -55,34 +80,40 @@
 #include <QCommandLineParser>
 #include <QDateTime>
 #include <QDir>
+#include "singletons/Paths.hpp"
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
-#include <QLocalServer>
-#include <QLocalSocket>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QCursor>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QPainter>
 #include <QPointer>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QScreen>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSplitter>
 #include <QStyleFactory>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cstdio>
 
@@ -91,6 +122,318 @@
 #        define NOMINMAX
 #    endif
 #    include <Windows.h>
+#endif
+
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+namespace chatterino {
+struct EmotePickerPreviewCheck {
+    static bool run(const QString &path)
+    {
+        if (qEnvironmentVariableIsSet("NOCTIS_PICKER_UI_SCALE"))
+            getSettings()->uiScale.setValue(qEnvironmentVariable("NOCTIS_PICKER_UI_SCALE").toFloat());
+        EmotePopup popup;
+        popup.setAttribute(Qt::WA_DontShowOnScreen);
+        popup.loadChannel(std::make_shared<Channel>("dangerlyoha", Channel::Type::None));
+        popup.resize(460, 600);
+        popup.show();
+        owntimeout::pump(120);
+        const auto favourites = popup.favouritesView_->underlyingChannel()->getMessageSnapshot();
+        const auto *hint = favourites.empty() || favourites.front()->elements.empty() ? nullptr :
+            dynamic_cast<const TextElement *>(favourites.front()->elements.front().get());
+        const bool favouritesLocalized = hint && hint->words().join(' ') ==
+            uiText("No favourites. You can add them by Ctrl+clicking on an Emote or marking it as favourite in the context menu");
+        const auto emojiRows = popup.viewEmojis_->underlyingChannel()->getMessageSnapshot();
+        bool componentLocalized = false;
+        for (const auto &row : emojiRows)
+            if (!row->elements.empty())
+                if (const auto *label = dynamic_cast<const TextElement *>(row->elements.front().get()))
+                    componentLocalized |= label->words().join(' ') == uiText("Component");
+        if (activeUiLanguage() == "ru")
+            for (const auto *category : {"Activities", "Animals & Nature", "Component", "Flags", "Food & Drink",
+                                          "Objects", "People & Body", "Smileys & Emotion", "Symbols", "Travel & Places"})
+                componentLocalized &= uiText(category) != QString::fromLatin1(category);
+        const bool title = !popup.windowTitle().contains('#') &&
+            popup.titleChannel_->text() == "dangerlyoha" &&
+            popup.titleAvatar_->isVisible() && !popup.titleAvatar_->pixmap().isNull() &&
+            popup.titleAvatar_->geometry().right() < popup.titleChannel_->geometry().left();
+        const bool searchStyle = popup.search_->styleSheet().contains("border-radius") &&
+            popup.search_->font() == getApp()->getFonts()->getFont(FontStyle::ChatMedium, popup.scale());
+        const bool compact = popup.searchRow_->height() <= popup.search_->height() + 12 &&
+            popup.notebook_->height() >= popup.getLayoutContainer()->height() - popup.searchRow_->height() - 24
+                - (popup.hasCustomWindowFrame() ? 0 : popup.titleRow_->height());
+        popup.notebook_->select(popup.channelEmotesView_);
+        const bool animated = popup.channelEmotesView_->findChild<QWidget *>("NotebookTabTransition") != nullptr;
+        owntimeout::pump(150);
+        const bool finished = !popup.channelEmotesView_->findChild<QWidget *>("NotebookTabTransition");
+        TextElement creator("TestEmote", MessageElementFlag::AlwaysShow);
+        ImageLayoutElement element(creator, getEmptyImagePtr(), QSizeF(20, 20));
+        element.setLink(Link(Link::InsertText, "TestEmote"));
+        QString inserted;
+        auto connection = popup.linkClicked.connect([&](const Link &link) { inserted = link.value; });
+        popup.channelEmotesView_->elementClicked.invoke(&element, Qt::NoModifier);
+        const bool selection = inserted == "TestEmote" &&
+            popup.channelEmotesView_->findChild<QWidget *>("EmotePickerSelectionFeedback");
+        owntimeout::pump(240);
+        const bool selectionFinished = !popup.channelEmotesView_->findChild<QWidget *>("EmotePickerSelectionFeedback");
+        popup.search_->setText("TestEmote");
+        const bool search = popup.searchView_->isVisible() && !popup.notebook_->isVisible();
+        popup.search_->clear();
+        const bool restored = popup.notebook_->isVisible() && !popup.searchView_->isVisible();
+        popup.notebook_->select(popup.subEmotesView_);
+        owntimeout::pump(150);
+        static const QPixmap fixtureImage = [] {
+            QPixmap pixmap(36, 36);
+            pixmap.fill(Qt::transparent);
+            QPainter painter(&pixmap);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor("#7765b0"));
+            painter.drawEllipse(QRect(2, 2, 32, 32));
+            painter.setBrush(QColor("#ebd4a7"));
+            painter.drawEllipse(QRect(9, 10, 6, 6));
+            painter.drawEllipse(QRect(21, 10, 6, 6));
+            painter.drawRoundedRect(10, 23, 16, 4, 2, 2);
+            return pixmap;
+        }();
+        const auto image = Image::fromResourcePixmap(fixtureImage, 1);
+        const auto emote = std::make_shared<Emote>(Emote{
+            .name = EmoteName{"TestEmote"},
+            .images = ImageSet{image, image, image},
+            .tooltip = Tooltip{"TestEmote"}});
+        auto sub = popup.subEmotesView_->underlyingChannel();
+        sub->clearMessages();
+        for (const auto &name : {"dangerlyoha", "morphe_ya", "kopsteep"})
+        {
+            MessageBuilder header;
+            header->flags.set(MessageFlag::Centered);
+            header.emplace<TextElement>(name, MessageElementFlag::Text);
+            sub->addMessage(header.release(), MessageContext::Original);
+            MessageBuilder row;
+            row->flags.set(MessageFlag::Centered);
+            row->flags.set(MessageFlag::DisableCompactEmotes);
+            for (int i = 0; i < 19; ++i)
+                row.emplace<EmoteElement>(emote, MessageElementFlags{MessageElementFlag::AlwaysShow, MessageElementFlag::Emote})
+                    ->setLink(Link(Link::InsertText, "TestEmote"));
+            sub->addMessage(row.release(), MessageContext::Original);
+        }
+        owntimeout::pump(120);
+        popup.grab().save(path);
+        const bool paused = activeUiLanguage() == "ru"
+            ? uiText("Paused") == QString::fromUtf8("Пауза") : uiText("Paused") == "Paused";
+        Split split(nullptr);
+        split.setAttribute(Qt::WA_DontShowOnScreen);
+        auto channel = std::make_shared<TwitchChannel>("room_modes_fixture");
+        split.setChannel(IndirectChannel(std::static_pointer_cast<Channel>(channel)));
+        TwitchChannelTestAccess::setSlowAndFollowerMode(*channel, 3, 60);
+        split.resize(620, 280);
+        split.show();
+        owntimeout::pump(120);
+        const auto *modes = dynamic_cast<LabelButton *>(split.findChild<QWidget *>("RoomModesButton"));
+        const auto expected = activeUiLanguage() == "ru"
+            ? QString::fromUtf8("Слоу-мод 3 с · Фолловеры 1 ч") : QStringLiteral("slow 3 s · followers 1 h");
+        const bool roomModes = modes && modes->text() == expected && modes->isVisible();
+        getSettings()->alwaysExpandPinnedMessages.setValue(false);
+        MessageBuilder pinned;
+        pinned->id = "alignment-fixture-message";
+        pinned.emplace<TextElement>(QString("Pinned message with enough words to wrap. ").repeated(10),
+                                   MessageElementFlag::Text);
+        channel->addMessage(pinned.release(), MessageContext::Original);
+        channel->setPinnedMessage(TwitchChannel::PinnedMessage{
+            .pinId = "alignment-fixture",
+            .messageId = "alignment-fixture-message",
+            .text = QString("Pinned message with enough words to wrap. ").repeated(10),
+            .authorLogin = "fixture_author",
+            .pinnerName = "fixture_mod"});
+        owntimeout::pump(150);
+        const auto *pinner = split.findChild<QWidget *>("PinnedMessageAuthor");
+        const auto *more = split.findChild<QLabel *>("PinnedMessageMore");
+        const bool pinAligned = pinner && more && more->isVisible() &&
+            std::abs(pinner->geometry().center().y() - more->geometry().center().y()) <= 1;
+        split.grab().save(path + ".pin.png");
+        split.getChannelView().pause(PauseReason::Mouse);
+        split.grab().save(path + ".modes.png");
+        getSettings()->bannerStackMode.setValue(0);
+        getSettings()->pollBannerContentScale.setValue(1.25F);
+        getSettings()->predictionBannerContentScale.setValue(1.25F);
+        const auto now = QDateTime::currentDateTimeUtc();
+        channel->setActivePoll(TwitchChannel::PollEvent{
+            .id = "banner-font-poll", .title = "One < two", .status = "ACTIVE",
+            .choices = {{.id = "a", .title = "A"}, {.id = "b", .title = "B"}},
+            .durationSeconds = 90, .createdAt = now, .endsAt = now.addSecs(90)});
+        channel->setActivePrediction(TwitchChannel::PredictionEvent{
+            .id = "banner-font-prediction", .title = "Three > two", .status = "LOCKED",
+            .outcomes = {{.id = "a", .title = "A"}, {.id = "b", .title = "B"}},
+            .createdAt = now});
+        owntimeout::pump(120);
+        auto *pollTitle = split.findChild<QLabel *>("PollTitle");
+        auto *predictionTitle = split.findChild<QLabel *>("PredictionTitle");
+        const auto titleMatches = [&] {
+            const auto expectedFont = getApp()->getFonts()->getFont(
+                FontStyle::ChatMediumBold, split.scale() * 1.25F);
+            for (const auto *label : {pollTitle, predictionTitle})
+            {
+                if (!label || !label->isVisible() || label->textFormat() != Qt::PlainText ||
+                    label->font().family() != expectedFont.family() ||
+                    label->font().pointSizeF() != expectedFont.pointSizeF() ||
+                    label->height() < label->fontMetrics().height())
+                    return false;
+            }
+            return true;
+        };
+        const bool bannerTitles = titleMatches();
+        getSettings()->chatFontSize.setValue(getSettings()->chatFontSize.getValue() + 4);
+        owntimeout::pump(200);
+        const bool resizedBanners = titleMatches() && pinner && more &&
+            pinner->font().pointSizeF() == more->font().pointSizeF();
+        std::fprintf(stderr, "banner typography: initial=%d after-font-change=%d\n",
+                     bannerTitles, resizedBanners);
+        split.grab().save(path + ".banners.png");
+        split.setChannel(IndirectChannel(Channel::getEmpty()));
+        std::fprintf(stderr, "emote picker title=%d search-style=%d compact=%d tab=%d/%d insertion=%d/%d search=%d/%d pause=%d room-modes=%d\n",
+                     title, searchStyle, compact, animated, finished, selection, selectionFinished, search, restored, paused, roomModes);
+        return title && searchStyle && compact && animated && finished && selection && selectionFinished && search && restored && paused && roomModes &&
+            favouritesLocalized && componentLocalized && pinAligned && bannerTitles && resizedBanners;
+    }
+};
+struct BadgePickerPreviewCheck {
+    static bool checkAccountNames()
+    {
+        auto channel = std::make_shared<TwitchChannel>("badge_names_fixture");
+        TwitchBadgePickerDialog dialog(channel.get());
+        const auto addHistoryName = [&](const QString &id, const QString &login,
+                                        const QString &name) {
+            MessageBuilder builder;
+            builder->userID = id;
+            builder->loginName = login;
+            builder->displayName = name;
+            channel->addMessage(builder.release(), MessageContext::Repost);
+        };
+
+        TwitchAccount account("case_fixture", {}, {}, "900020");
+        const bool loginFallback = dialog.resolveSelfDisplayName(account) ==
+                                   "case_fixture";
+        addHistoryName("900020", "case_fixture", "CASE_Fixture");
+        addHistoryName("900020", "old_login", "Old_Login");
+        addHistoryName("900021", "case_fixture", "Case_FIXTURE");
+        const bool historyFallback = dialog.resolveSelfDisplayName(account) ==
+                                     "CASE_Fixture";
+        account.setDisplayName("900020", "case_fixture", "Case_Fixture");
+        const bool verified = dialog.resolveSelfDisplayName(account) ==
+                              "Case_Fixture" &&
+                              account.getUserName() == "case_fixture";
+        account.setDisplayName("900020", "case_fixture", "case_fixture");
+        const bool lowercase = dialog.resolveSelfDisplayName(account) ==
+                               "case_fixture";
+
+        // The fixture's TwitchUsers returns a lowercase `forsen` for every ID.
+        TwitchAccount cached("forsen", {}, {}, "900022");
+        const bool cacheFallback = dialog.resolveSelfDisplayName(cached) ==
+                                   "forsen";
+        cached.setDisplayName("900022", "forsen", "Forsen");
+        const bool cachePrecedence = dialog.resolveSelfDisplayName(cached) ==
+                                     "Forsen";
+        std::fprintf(stderr, "picker account names: login=%d history=%d verified=%d lowercase=%d cache=%d cache-precedence=%d\n",
+                     loginFallback, historyFallback, verified, lowercase,
+                     cacheFallback, cachePrecedence);
+        return loginFallback && historyFallback && verified && lowercase &&
+               cacheFallback && cachePrecedence;
+    }
+
+    static bool run(const QString &path)
+    {
+        if (qEnvironmentVariableIsSet("NOCTIS_PICKER_UI_SCALE"))
+            getSettings()->uiScale.setValue(qEnvironmentVariable("NOCTIS_PICKER_UI_SCALE").toFloat());
+        if (qEnvironmentVariableIsSet("NOCTIS_PICKER_FONT_SIZE"))
+            getSettings()->chatFontSize.setValue(qEnvironmentVariableIntValue("NOCTIS_PICKER_FONT_SIZE"));
+        if (!checkAccountNames())
+            return false;
+        QPointer<TwitchBadgePickerDialog> dialog(new TwitchBadgePickerDialog(nullptr));
+        dialog->initialFetchDone_ = true;
+        GqlBadge badge;
+        badge.setID = "fixture-owned";
+        badge.version = "1";
+        badge.title = "Fixture badge";
+        badge.image4x = QUrl::fromLocalFile(path + ".asset.png").toString();
+        QImage asset(72, 72, QImage::Format_ARGB32);
+        asset.fill(QColor("#529bea"));
+        if (!asset.save(path + ".asset.png"))
+            return false;
+        dialog->badges_.availableGlobal.append(badge);
+        dialog->rebuildContent();
+        dialog->show();
+        owntimeout::pump(120);
+        const auto surface = dialog->grab().toImage();
+        surface.save(path);
+        const bool rounded = surface.pixelColor(0, 0).alpha() == 0 &&
+            surface.pixelColor(surface.width()/2, surface.height()/2).alpha() == 255;
+        for (auto *tile : dialog->findChildren<QPushButton *>())
+        {
+            if (!tile->isVisible() || tile->accessibleName() != badge.title)
+                continue;
+            QHoverEvent enter(QEvent::HoverEnter, QPointF(5,5), tile->mapToGlobal(QPoint(5,5)), QPointF(-1,-1));
+            QApplication::sendEvent(tile, &enter);
+            owntimeout::pump(250);
+            if (!dialog) return false;
+            const auto preview = dialog->badgePreview_->grab().toImage();
+            preview.save(path + ".preview.png");
+            bool imageShown = false;
+            for (int y = 0; y < preview.height() && !imageShown; ++y)
+                for (int x = 0; x < preview.width() && !imageShown; ++x)
+                    imageShown = preview.pixelColor(x, y) == QColor("#529bea");
+            const bool shown = dialog->badgePreview_->isVisible() && imageShown;
+            QEvent leave(QEvent::HoverLeave);
+            QApplication::sendEvent(tile, &leave);
+            const bool previewClosed = !dialog->badgePreview_->isVisible();
+            dialog->badges_.selectedGlobalBadge = badge;
+            dialog->animateBadgeApplied(badge, TwitchBadgePickerDialog::View::GlobalBadges);
+            const bool applying = tile->graphicsEffect() && tile->graphicsEffect()->isEnabled();
+            owntimeout::pump(260);
+            const bool applied = !tile->graphicsEffect();
+            dialog->switchView(TwitchBadgePickerDialog::View::ChannelBadges);
+            const bool tabAnimation = dialog->contentWidget_->graphicsEffect() != nullptr;
+            const auto *setting = dialog->findChild<QLabel *>("TwitchBadgePickerSettingLabel");
+            const bool translated = setting && setting->text() == uiText("Use Custom Badge for This Channel");
+            const bool fontMatches = setting && setting->font().family() ==
+                getApp()->getFonts()->getFont(FontStyle::ChatMedium, dialog->scale()).family() &&
+                dialog->globalTabButton_->font().family() == setting->font().family();
+            dialog->eventBadgesLoaded_ = true;
+            dialog->eventBadgesCacheTime_ = QDateTime::currentDateTimeUtc();
+            for (int i = 0; i < 32; ++i)
+            {
+                dialog->eventBadgesCache_.append(EventBadge{
+                    .id = QString("fixture-event-%1").arg(i),
+                    .name = QString("Fixture event badge %1").arg(i),
+                    .imageUrl = badge.image4x,
+                    .startAt = QDateTime::currentDateTimeUtc().addDays(-1),
+                    .endAt = QDateTime::currentDateTimeUtc().addDays(1),
+                    .free = i % 2 == 0});
+            }
+            dialog->switchView(TwitchBadgePickerDialog::View::EventBadges);
+            owntimeout::pump(240);
+            const auto *price = dialog->findChild<QLabel *>("TwitchBadgePickerEventBadgePrice");
+            const bool eventTranslated = price && price->text() == uiText("Free");
+            const auto priceLabels = dialog->findChildren<QLabel *>("TwitchBadgePickerEventBadgePrice");
+            const int viewportWidth = dialog->scrollArea_->viewport()->width();
+            bool priceFits = priceLabels.size() == 32;
+            for (const auto *label : priceLabels)
+            {
+                const auto left = label->mapTo(dialog->scrollArea_->viewport(), QPoint(0, 0)).x();
+                priceFits &= label->contentsRect().width() >= QFontMetrics(label->font()).horizontalAdvance(label->text()) &&
+                             left >= 0 && left + label->width() <= viewportWidth;
+            }
+            const bool finished = !dialog->contentWidget_->graphicsEffect();
+            dialog->grab().save(path + ".event.png");
+            std::fprintf(stderr, "picker: rounded=%d hover=%d closed=%d animation=%d/%d translated=%d font=%d event=%d tab=%d/%d 32-price-labels-fit=%d columns=%d\n",
+                         rounded, shown, previewClosed, applying, applied, translated, fontMatches, eventTranslated, tabAnimation, finished, priceFits, dialog->badgeGridColumns());
+            const bool ok = rounded && shown && previewClosed && applying && applied &&
+                translated && fontMatches && eventTranslated && priceFits && tabAnimation && finished;
+            delete dialog.data();
+            return ok;
+        }
+        return false;
+    }
+};
+}  // namespace chatterino
 #endif
 
 namespace {
@@ -158,6 +501,10 @@ public:
     {
         return &this->twitch;
     }
+    TwitchBadges *getTwitchBadges() override
+    {
+        return &this->twitchBadges;
+    }
     IUserDataController *getUserData() override
     {
         return &this->userData;
@@ -215,6 +562,7 @@ public:
     CommandController commands;
     mock::EmoteController emotes;
     mock::MockTwitchIrcServer twitch;
+    TwitchBadges twitchBadges;
     mock::UserDataController userData;
     SeventvPaints paints;
     BttvEmotes bttv;
@@ -238,25 +586,108 @@ public:
     ImageUploader imageUploader;
 };
 
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+std::vector<EmotePtr> fixtureBadgeCollection(int count)
+{
+    // Image::fromResourcePixmap caches by the address of the source pixmap.
+    // Keep distinct, process-owned sample icons for all entries.
+    static const std::array<QPixmap, 96> pixmaps = [] {
+        std::array<QPixmap, 96> icons;
+        for (size_t i = 0; i < icons.size(); ++i)
+        {
+            auto &icon = icons[i];
+            icon = QPixmap(36, 36);
+            icon.fill(Qt::transparent);
+            QPainter painter(&icon);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor::fromHsv(int(i * 43 % 360), 155, 245));
+            painter.drawRoundedRect(3, 3, 30, 30, 7, 7);
+            painter.setPen(Qt::white);
+            auto font = painter.font();
+            font.setPixelSize(i < 9 ? 22 : 16);
+            font.setBold(true);
+            painter.setFont(font);
+            painter.drawText(icon.rect(), Qt::AlignCenter,
+                             QString::number(i + 1));
+        }
+        return icons;
+    }();
+    static const std::array<QPixmap, 96> largePixmaps = [] {
+        std::array<QPixmap, 96> icons;
+        for (size_t i = 0; i < icons.size(); ++i)
+        {
+            auto &icon = icons[i];
+            icon = QPixmap(72,72);
+            icon.fill(Qt::transparent);
+            QPainter painter(&icon);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(i == 0 ? QColor("#12b9e6") : QColor::fromHsv(int(i*43%360),155,245));
+            painter.drawRoundedRect(6,6,60,60,14,14);
+            painter.setPen(Qt::white);
+            auto font = painter.font();
+            font.setPixelSize(i < 9 ? 44 : 32);
+            font.setBold(true);
+            painter.setFont(font);
+            painter.drawText(icon.rect(), Qt::AlignCenter, QString::number(i+1));
+        }
+        return icons;
+    }();
+    std::vector<EmotePtr> badges;
+    for (int i = 0; i < std::min(count, int(pixmaps.size())); ++i)
+    {
+        badges.push_back(std::make_shared<Emote>(Emote{
+            .name = EmoteName{QStringLiteral("Synthetic badge %1").arg(i + 1)},
+            .images = ImageSet{Image::fromResourcePixmap(pixmaps[size_t(i)], .5),
+                Image::fromResourcePixmap(pixmaps[size_t(i)], .5),
+                Image::fromResourcePixmap(largePixmaps[size_t(i)], .25)},
+            .tooltip = Tooltip{QStringLiteral("Synthetic badge %1<br>ACQUISITION SENTINEL").arg(i + 1)},
+            .id = EmoteId{QStringLiteral("fixture-earned-%1").arg(i + 1)},
+        }));
+    }
+    return badges;
+}
+
+void clickBadgeChip(QWidget *strip, float scale)
+{
+    if (!strip)
+        return;
+    const auto x = strip->property("firstRowBadgeCount").toInt() *
+                   std::max(1, int(24 * scale)) + 5;
+    const QPoint point(x, std::max(1, int(12 * scale)));
+    const auto global = strip->mapToGlobal(point);
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(point),
+                      QPointF(global), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(point),
+                        QPointF(global), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(strip, &press);
+    QApplication::sendEvent(strip, &release);
+}
+
+#endif
+
 PreviewData fixture(const QString &scenario)
 {
     const bool secondIdentity = scenario == QStringLiteral("b");
     const bool empty = scenario == QStringLiteral("empty");
     const bool longHistory = scenario == QStringLiteral("long");
     PreviewData data;
-    data.login = QStringLiteral("archive_demo");
+    data.login = QStringLiteral("fixture_viewer");
     data.userId = secondIdentity ? QStringLiteral("910000002")
                   : empty        ? QStringLiteral("910000003")
                                  : QStringLiteral("910000001");
-    data.displayName = secondIdentity ? QStringLiteral("Archive_Demo B")
-                                      : QStringLiteral("Archive_Demo A");
+    data.displayName = secondIdentity ? QStringLiteral("Fixture_Viewer B")
+                                      : QStringLiteral("Fixture_Viewer A");
     if (empty)
     {
-        data.displayName = QStringLiteral("Archive_Demo • empty");
+        data.displayName = QStringLiteral("Fixture_Viewer • empty");
     }
     data.createdText = QStringLiteral("Создан 2021-04-15 · тестовые данные");
     data.followersText = QStringLiteral("Фолловеров 1 234 · тестовые данные");
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
     data.chatColor = QStringLiteral("#E07700");
+#endif
     data.pronouns = QStringLiteral("Местоимения: they/them · тестовые данные");
     data.avatar = QPixmap(128, 128);
     data.avatar.fill(QColor(secondIdentity ? "#355b77" : "#67418b"));
@@ -282,47 +713,11 @@ PreviewData fixture(const QString &scenario)
         }
     }
 #ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
-    // Eight local fixture badges exercise the earned collection, with no image
-    // downloads or account lookup. These are visibly synthetic test icons.
-    // Image::fromResourcePixmap caches by the source object's address. Keep
-    // eight distinct source objects alive instead of reusing one stack slot.
-    static const std::array<QPixmap, 8> badgePixmaps = [] {
-        std::array<QPixmap, 8> icons;
-        for (int i = 0; i < 8; ++i)
-        {
-            auto &icon = icons[size_t(i)];
-            icon = QPixmap(36, 36);
-            icon.fill(Qt::transparent);
-            QPainter painter(&icon);
-            painter.setRenderHint(QPainter::Antialiasing);
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor::fromHsv(i * 43, 155, 245));
-            painter.drawRoundedRect(3, 3, 30, 30, 7, 7);
-            painter.setPen(Qt::white);
-            auto font = painter.font();
-            font.setPixelSize(22);
-            font.setBold(true);
-            painter.setFont(font);
-            painter.drawText(icon.rect(), Qt::AlignCenter,
-                             QString::number(i + 1));
-        }
-        return icons;
-    }();
-    for (int i = 0; i < 8; ++i)
-    {
-        data.earnedBadges.push_back(std::make_shared<Emote>(Emote{
-            .name = EmoteName{QStringLiteral("Synthetic badge %1").arg(i + 1)},
-            .images = ImageSet{Image::fromResourcePixmap(
-                badgePixmaps[size_t(i)], .5)},
-            .tooltip =
-                Tooltip{QStringLiteral("Synthetic earned badge %1").arg(i + 1)},
-            .id = EmoteId{QStringLiteral("fixture-earned-%1").arg(i + 1)},
-        }));
-    }
+    data.earnedBadges = fixtureBadgeCollection(8);
 #endif
     // Type::None has no logger or 7TV lookups. This is still the real Channel
     // queue and the real ChannelView message renderer used by UserInfoPopup.
-    data.messages = std::make_shared<Channel>(QStringLiteral("archive_room"),
+    data.messages = std::make_shared<Channel>(QStringLiteral("fixture_room"),
                                               Channel::Type::None);
     const auto count = empty ? 0 : longHistory ? 5000 : 18;
     const QStringList texts{
@@ -369,26 +764,16 @@ PreviewData fixture(const QString &scenario)
         message.userID = data.userId;
         message.loginName = data.login;
         message.displayName = data.displayName;
-        message.channelName = QStringLiteral("archive_room");
+        message.channelName = QStringLiteral("fixture_room");
         message.serverReceivedTime = start.addSecs(i * 17);
         message.messageText = texts.at(i % texts.size());
-        if (!secondIdentity && i == 17)
-        {
-            // Exact match to the independent saved Archive fixture. This lets
-            // the real message-context action navigate without live services.
-            message.id = QStringLiteral("demo-30");
-            message.serverReceivedTime =
-                QDateTime::fromMSecsSinceEpoch(1792440030000LL, Qt::UTC);
-            message.messageText =
-                QStringLiteral("Синтетическая история · сообщение 30");
-        }
         if (i % 6 == 5 && parent)
         {
             message.replyParent = parent;
             message.replyThread = thread;
             builder.emplace<ReplyCurveElement>();
             builder.emplace<TextElement>(
-                QStringLiteral("Replying to Archive_Demo"),
+                QStringLiteral("Replying to Fixture_Viewer"),
                 MessageElementFlag::RepliedMessage, MessageColor::System);
             builder.emplace<LinebreakElement>(
                 MessageElementFlag::RepliedMessage);
@@ -496,6 +881,30 @@ QJsonObject nativeHitTests(PreviewPopup &popup)
                tabs->currentWidget()->rect().center());
     checkPoint(QStringLiteral("profile-viewport"), profile->viewport(),
                profile->viewport()->rect().center());
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+    for (const auto &name : {"UsercardQuickWhisper", "UsercardQuickProfile",
+                             "UsercardQuickCopyId"})
+    {
+        if (auto *button = popup.findChild<QWidget *>(name);
+            button && button->isVisible())
+            checkPoint(QString::fromLatin1(name), button, button->rect().center());
+    }
+    if (auto *badges = popup.findChild<QWidget *>("UsercardObservedBadges");
+        badges && badges->isVisible() &&
+        badges->property("firstRowBadgeCount").toInt() <
+            badges->property("badgeCount").toInt())
+        checkPoint("badge-count-chip", badges,
+                   QPoint(badges->property("firstRowBadgeCount").toInt() *
+                              int(24 * popup.scale()) + 5,
+                          int(12 * popup.scale())));
+    if (auto *grip = popup.findChild<QWidget *>("UsercardResizeGrip"))
+    {
+        checkPoint("resize-left", grip, QPoint(2, grip->height() / 2));
+        checkPoint("resize-right", grip, QPoint(grip->width() - 3, grip->height() / 2));
+        checkPoint("resize-top", grip, QPoint(grip->width() / 2, 2));
+        checkPoint("resize-bottom", grip, QPoint(grip->width() / 2, grip->height() - 3));
+    }
+#endif
 #else
     (void)popup;
 #endif
@@ -557,24 +966,6 @@ bool writeReport(const QString &path, const OfflineApplication &app,
 
 int main(int argc, char **argv)
 {
-    // Reject accidental launches from either real installation. No profile is
-    // constructed or opened before checking the executable's own directory.
-    const QString exeDir =
-        QFileInfo(QString::fromLocal8Bit(argv[0])).absoluteDir().absolutePath();
-    const QString allowedRoot = QStringLiteral("D:/devtools/");
-    if (!exeDir.startsWith(allowedRoot, Qt::CaseInsensitive))
-    {
-        return 20;
-    }
-    const auto temporaryRoot = exeDir + QStringLiteral("/preview-temporary");
-    if (!QDir().mkpath(temporaryRoot))
-    {
-        return 21;
-    }
-    // Existing test helpers create a QTemporaryDir. Keep even that directory
-    // inside this standalone test copy, without modifying the system env.
-    qputenv("TEMP", temporaryRoot.toLocal8Bit());
-    qputenv("TMP", temporaryRoot.toLocal8Bit());
     QApplication qapp(argc, argv);
     if (qEnvironmentVariable("QT_QPA_PLATFORM") == "offscreen")
         QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf");
@@ -617,6 +1008,8 @@ int main(int argc, char **argv)
          QStringLiteral("Show the moderation strip as for a moderator")},
         {{QStringLiteral("toast-demo")},
          QStringLiteral("Render two highlight cards on a plain widget")},
+        {{QStringLiteral("stats-demo")},
+         QStringLiteral("Check stream statistics and render an offline fixture")},
         {{QStringLiteral("own-timeout-checks")},
          QStringLiteral("Drive the own-timeout input states on a synthetic "
                         "channel and exit")},
@@ -643,9 +1036,27 @@ int main(int argc, char **argv)
         {{QStringLiteral("viewer-counts-live")},
          QStringLiteral("Real viewer counts for logins a,b,c (network!)"),
          QStringLiteral("logins")},
+        {{QStringLiteral("badge-demo")},
+         QStringLiteral("Show a synthetic expanded badge collection inline")},
+        {{QStringLiteral("menu-demo")},
+         QStringLiteral("Render the compact production actions menu (offscreen only)")},
+        {{QStringLiteral("activity-demo")},
+         QStringLiteral("Compatibility flag: the actual activity panel is always shown")},
         {{QStringLiteral("render-hidden")},
          QStringLiteral("Render with the native platform without showing "
                         "fixture windows")},
+        {{QStringLiteral("history-checks")},
+         QStringLiteral("Exercise actual history widgets against a "
+                        "process-owned synthetic local server")},
+        {{QStringLiteral("startup-history-checks")}, QStringLiteral("Verify startup history over loopback")},
+        {{QStringLiteral("history-badge-checks")}, QStringLiteral("Verify late-arriving badges in historical chat rows")},
+        {{QStringLiteral("noctis-tooltip-checks")}, QStringLiteral("Verify styled text tooltips offline")},
+        {{QStringLiteral("service-health-checks")}, QStringLiteral("Check service indicator with a local endpoint")},
+        {{QStringLiteral("badge-picker-check")}, QStringLiteral("Render and check the badge picker hover preview")},
+        {{QStringLiteral("emote-picker-check")}, QStringLiteral("Check the emote picker title, search and motion")},
+        {{QStringLiteral("roles-checks")},
+         QStringLiteral("Exercise the actual role page and provider against a "
+                        "process-owned synthetic local server")},
         {{QStringLiteral("scripted-checks")},
          QStringLiteral(
              "Exercise A-B-A, empty/long and responsive actual widgets")},
@@ -677,6 +1088,74 @@ int main(int argc, char **argv)
     initializeUiLanguage(qEnvironmentVariable("LEAFYRINO_PREVIEW_LANGUAGE", "ru"));
     auto appOwner = std::make_unique<OfflineApplication>();
     auto &app = *appOwner;
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+    installMenuStyle();
+    noctistooltip::install();
+    if (parser.isSet(QStringLiteral("noctis-tooltip-checks")))
+        return preview::checkNoctisTooltips(parser.value(QStringLiteral("report")),
+                                            parser.value(QStringLiteral("screenshot")));
+    if (parser.isSet(QStringLiteral("startup-history-checks")))
+        return preview::checkStartupHistory(parser.value(QStringLiteral("report")));
+    if (parser.isSet(QStringLiteral("history-badge-checks")))
+        return preview::checkHistoryBadges(parser.value(QStringLiteral("report")));
+    if (parser.isSet(QStringLiteral("service-health-checks")))
+    {
+        using namespace servicehealth;
+        NetworkManager::init();
+        QTcpServer server;
+        if (!server.listen(QHostAddress::LocalHost, 0)) return 40;
+        bool healthy = false;
+        int hits = 0;
+        QObject::connect(&server, &QTcpServer::newConnection, &server, [&] {
+            auto *socket = server.nextPendingConnection();
+            QObject::connect(socket, &QTcpSocket::readyRead, socket, [&, socket] {
+                socket->readAll();
+                ++hits;
+                socket->write(healthy ? "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 11\r\n\r\n{\"id\":\"ok\"}"
+                                      : "HTTP/1.1 503 Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+                socket->disconnectFromHost();
+            });
+        });
+        PixmapButton anchor;
+        ServiceHealthCard card(&anchor);
+        pajlada::Signals::SignalHolder holder;
+        holder.managedConnect(changed, [&] { card.refresh(); });
+        const QUrl url(QStringLiteral("http://127.0.0.1:%1/test").arg(server.serverPort()));
+        const NetworkResult timeout(QNetworkReply::TimeoutError, {}, {});
+        for (int i = 0; i < 8; ++i) failed(SevenTV, url, timeout);
+        const bool quiet = anchor.isHidden() && !entries[SevenTV].url.isEmpty() && hits == 0;
+        const bool visible = publiclogchecks::waitUntil([&] { return !anchor.isHidden(); }, 9000);
+        const bool singleProbe = hits == 1;
+        card.open();
+        const bool shown = card.isVisible();
+        card.grab().save(parser.value(QStringLiteral("screenshot")));
+        healthy = true;
+        card.findChild<QPushButton *>()->click();
+        const bool recovered = publiclogchecks::waitUntil([&] { return anchor.isHidden() && !card.isVisible(); }, 5000);
+        failed(History, url, timeout);
+        success(History);
+        QEventLoop wait;
+        QTimer::singleShot(4400, &wait, &QEventLoop::quit);
+        wait.exec();
+        const bool cancelled = hits == 2 && !entries[History].unavailable;
+        QFile report(parser.value(QStringLiteral("report")));
+        if (report.open(QIODevice::WriteOnly))
+            report.write(QJsonDocument(QJsonObject{{"quiet", quiet}, {"visible", visible},
+                {"singleProbe", singleProbe}, {"card", shown}, {"recovered", recovered},
+                {"cancelled", cancelled}, {"requests", hits}}).toJson());
+        NetworkManager::deinit();
+        return quiet && visible && singleProbe && shown && recovered && cancelled ? 0 : 41;
+    }
+    if (parser.isSet(QStringLiteral("emote-picker-check")))
+        return EmotePickerPreviewCheck::run(parser.value(QStringLiteral("screenshot"))) ? 0 : 43;
+    if (parser.isSet(QStringLiteral("badge-picker-check")))
+    {
+        NetworkManager::init();
+        const bool ok = BadgePickerPreviewCheck::run(parser.value(QStringLiteral("screenshot")));
+        NetworkManager::deinit();
+        return ok ? 0 : 42;
+    }
+#endif
     if (clipDemo)
     {
         app.settings.showLinkTitles = false;  // offline: no resolver request
@@ -850,20 +1329,147 @@ int main(int argc, char **argv)
         }
         return pages.isEmpty() ? 34 : 0;
     }
+    const bool historyChecks = parser.isSet(QStringLiteral("history-checks"));
+#ifdef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+    if (historyChecks)
+    {
+        return 26;
+    }
+#endif
     auto splitOwner = std::make_unique<Split>(nullptr);
     auto &split = *splitOwner;
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+    if (parser.isSet(QStringLiteral("roles-checks")))
+    {
+        QJsonArray checks;
+        const int failed = roleschecks::runRolesChecks(
+            split, fixture(scenario),
+            std::clamp(parser.value(QStringLiteral("scale")).toFloat(), 0.75F, 2.0F),
+            parser.value(QStringLiteral("screenshot")), checks);
+        QFile out(parser.value(QStringLiteral("report")));
+        if (out.open(QIODevice::WriteOnly))
+        {
+            out.write(QJsonDocument(QJsonObject{{"mode", "roles"},
+                                                {"checks", checks}})
+                          .toJson());
+        }
+        splitOwner.reset();
+        return failed == 0 ? 0 : 33;
+    }
+#endif
+    if (parser.isSet(QStringLiteral("stats-demo")))
+    {
+        auto checks = ChannelStats::fixtureChecks();
+        const auto name = QStringLiteral("stats_fixture");
+        auto channel = std::make_shared<Channel>(name, Channel::Type::None);
+        const auto start = QDateTime::currentDateTime().addSecs(-1800);
+        auto make = [&](int i, int offset) {
+            auto message = std::make_shared<Message>();
+            message->id = QString::number(i);
+            message->loginName = QStringLiteral("viewer_%1").arg(i % 12);
+            message->displayName = QStringLiteral("Viewer_%1").arg(i % 12);
+            message->usernameColor = QColor::fromHsv((i % 12) * 27, 120, 230);
+            message->messageText = QStringLiteral("Synthetic chat");
+            message->serverReceivedTime = start.addSecs(offset);
+            if (i < 40)
+                message->flags.set(MessageFlag::FirstMessage);
+            return MessagePtr(message);
+        };
+        std::vector<MessagePtr> messages;
+        for (int i = 0; i < 1200; ++i)
+            messages.push_back(make(i, (i * 19) % 1700));
+        channel->addMessagesAtStart(messages);
+        ChannelStats::attach(channel);
+        const int before = ChannelStats::get(name).messages;
+        channel->fillInMissingMessages({make(800, 400), make(1500, 550)});
+        const auto data = ChannelStats::get(name);
+        checks.append(QJsonObject{{"name", "reconnect signal counts newly recovered messages exactly once"},
+                                  {"ok", before == 1200 && data.messages == before + 1}});
+        showStreamStatsDialog(nullptr, name);
+        QCoreApplication::processEvents();
+        for (auto *widget : QApplication::topLevelWidgets())
+            if (widget->windowTitle().contains(name))
+            {
+                widget->grab().save(parser.value(QStringLiteral("screenshot")), "PNG");
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+                noctistooltip::install();
+                const auto rows = widget->findChildren<QWidget *>("StreamStatsRankRow");
+                const bool noRedundant = !rows.isEmpty() &&
+                    std::ranges::all_of(rows, [](const QWidget *row) {
+                        return row->toolTip().isEmpty();
+                    });
+                checks.append(QJsonObject{{"name", "fully visible ranking rows have no redundant tooltip"},
+                                          {"ok", noRedundant}});
+                auto *chart = widget->findChild<QWidget *>("StreamStatsActivityChart");
+                if (chart)
+                {
+                    const auto point = chart->rect().center();
+                    QMouseEvent move(QEvent::MouseMove, point, chart->mapToGlobal(point),
+                                     Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                    QApplication::sendEvent(chart, &move);
+                    QCoreApplication::processEvents();
+                    if (auto *tip = preview::visibleTextTooltip())
+                        tip->grab().save(parser.value(QStringLiteral("screenshot")) + ".tip.png");
+                    checks.append(QJsonObject{{"name", "chart hover reveals additional details in styled popup"},
+                                              {"ok", preview::visibleTextTooltip() != nullptr}});
+                    noctistooltip::hideText();
+                }
+                else
+                    checks.append(QJsonObject{{"name", "activity chart is present"}, {"ok", false}});
+#endif
+            }
+        QFile report(parser.value(QStringLiteral("report")));
+        if (report.open(QIODevice::WriteOnly))
+            report.write(QJsonDocument(checks).toJson());
+        for (const auto &value : checks)
+            if (!value.toObject().value("ok").toBool())
+                return 44;
+        return checks.isEmpty() ? 45 : 0;
+    }
     if (parser.isSet(QStringLiteral("toast-demo")))
     {
         QWidget host;
         host.resize(900, 300);
         host.setStyleSheet(QStringLiteral("background:#18171c;"));
         host.show();
+        const QDir avatars(getApp()->getPaths().twitchProfileAvatars);
+        QDir().mkpath(avatars.absolutePath());
+        for (const auto &login : {QStringLiteral("morphe_ya"), QStringLiteral("dangerlyoha")})
+        {
+            QPixmap avatar(48, 48);
+            avatar.fill(login == QStringLiteral("morphe_ya") ? QColor("#9466bd") : QColor("#486bba"));
+            QPainter profile(&avatar);
+            profile.setPen(Qt::white);
+            profile.drawText(avatar.rect(), Qt::AlignCenter, login.left(1).toUpper());
+            profile.end();
+            avatar.save(avatars.filePath(login + QStringLiteral(".png")));
+        }
         auto make = [](const QString &login, const QString &text, QColor color) {
             auto message = std::make_shared<Message>();
             message->loginName = login.toLower();
             message->displayName = login;
             message->messageText = text;
             message->usernameColor = color;
+            QPixmap pixmap(24, 24);
+            pixmap.fill(Qt::transparent);
+            {
+                QPainter painter(&pixmap);
+                painter.setRenderHint(QPainter::Antialiasing);
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor("#ecc861"));
+                painter.drawEllipse(1, 1, 22, 22);
+                painter.setBrush(QColor("#342936"));
+                painter.drawEllipse(6, 7, 3, 4);
+                painter.drawEllipse(15, 7, 3, 4);
+                painter.drawRoundedRect(7, 15, 10, 3, 1, 1);
+            }
+            const auto emote = std::make_shared<Emote>(Emote{
+                .name = EmoteName{QStringLiteral("PreviewSmile")},
+                .images = ImageSet{Image::fromResourcePixmap(pixmap)},
+            });
+            message->elements.push_back(std::make_unique<TextElement>(QStringLiteral("@Mist1X_X"), MessageElementFlag::Text));
+            message->elements.push_back(std::make_unique<EmoteElement>(emote, MessageElementFlag::Emote));
+            message->elements.push_back(std::make_unique<TextElement>(text, MessageElementFlag::Text));
             return MessagePtr(message);
         };
         showHighlightToastOn(&host, QStringLiteral("morphe_ya"),
@@ -874,7 +1480,21 @@ int main(int argc, char **argv)
                              make(QStringLiteral("Another_One"),
                                   QStringLiteral("mist1x what do you think about this very long synthetic message that should be cut"),
                                   QColor("#1e90ff")));
-        QCoreApplication::processEvents();
+        auto whisper = std::make_shared<Message>();
+        whisper->loginName = "morphe_ya";
+        whisper->displayName = "Morphe_ya";
+        whisper->messageText = "Привет! Это тест личного сообщения.";
+        whisper->usernameColor = QColor("#70c6af");
+        whisper->elements.push_back(std::make_unique<TextElement>(
+            whisper->displayName + ":", MessageElementFlag::Username));
+        whisper->elements.push_back(std::make_unique<TextElement>(
+            whisper->messageText, MessageElementFlag::Text));
+        MessageBuilder::makeWhisperCard(*whisper, uiText("Whisper"),
+                                       whisper->loginName);
+        showHighlightToastOn(&host, QStringLiteral("/whispers"), whisper);
+        QEventLoop animation;
+        QTimer::singleShot(220, &animation, &QEventLoop::quit);
+        animation.exec();
         host.grab().save(parser.value(QStringLiteral("screenshot")), "PNG");
         return 0;
     }
@@ -941,6 +1561,10 @@ int main(int argc, char **argv)
             return;
         }
         current = fixture(next);
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+        if (parser.isSet("badge-demo"))
+            current.earnedBadges = fixtureBadgeCollection(30);
+#endif
         popupGuard->setOfflinePreviewData(current);
         popupGuard->show();
     };
@@ -966,17 +1590,28 @@ int main(int argc, char **argv)
     }
     controls.show();
     showCase(scenario);
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+    if (parser.isSet("badge-demo"))
+        QTimer::singleShot(330, &popup, [&] {
+            clickBadgeChip(popup.findChild<QWidget *>("UsercardObservedBadges"),
+                           popup.scale());
+        });
+#endif
     // A queued size restores the requested test geometry after native DPI
     // notifications and the existing popup's scale/layout initialization.
     QTimer::singleShot(180, &popup, [&] {
+#ifdef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+        // Historical comparison fixture only. Never override the actual
+        // usercard's constraints: doing so concealed a fixed-size regression.
         popup.setMinimumSize(0, 0);
         popup.setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+#endif
         popup.resize(width, height);
     });
     const auto report = parser.value(QStringLiteral("report"));
     QJsonArray checks;
     bool checksPassed = true;
-    if (parser.isSet(QStringLiteral("scripted-checks")))
+    if (parser.isSet(QStringLiteral("scripted-checks")) && !historyChecks)
     {
         QTimer::singleShot(400, &popup, [&] {
             auto check = [&](const QString &name, bool ok) {
@@ -1021,7 +1656,7 @@ int main(int argc, char **argv)
                     message.userID = uid;
                     message.loginName = login;
                     message.displayName = login;
-                    message.channelName = QStringLiteral("archive_room");
+                    message.channelName = QStringLiteral("fixture_room");
                     message.messageText =
                         QStringLiteral("Identity filtering fixture");
                     message.serverReceivedTime =
@@ -1035,7 +1670,7 @@ int main(int argc, char **argv)
                 };
                 appendIdentityRow(QStringLiteral("910000002"), mixed.login);
                 appendIdentityRow(mixed.userId,
-                                  QStringLiteral("archive_old_login"));
+                                  QStringLiteral("fixture_old_login"));
                 appendIdentityRow({}, mixed.login);
                 mixed.sourceMessages = mixed.messages;
                 popup.setOfflinePreviewData(mixed);
@@ -1055,8 +1690,11 @@ int main(int argc, char **argv)
                                       [](const auto &message) {
                                           return message->loginName ==
                                                  QStringLiteral(
-                                                     "archive_old_login");
+                                                     "fixture_old_login");
                                       }));
+                const auto *activityCount = popup.findChild<QLabel *>("UsercardActivityCount");
+                check("activity counts only the target UID including older login", activityCount &&
+                      activityCount->text() == QStringLiteral("19"));
             }
 
             {
@@ -1086,7 +1724,7 @@ int main(int argc, char **argv)
                     }
                     feed(sink, u'@' + tags.join(u';') +
                                    QStringLiteral(" :tmi.twitch.tv CLEARCHAT "
-                                                  "#archive_room :") +
+                                                  "#fixture_room :") +
                                    login);
                 };
                 auto notices = [](const std::vector<MessagePtr> &rows) {
@@ -1107,7 +1745,7 @@ int main(int argc, char **argv)
                     data.displayName = login;
                     data.userId = uid;
                     data.messages = std::make_shared<Channel>(
-                        QStringLiteral("archive_room"), Channel::Type::None);
+                        QStringLiteral("fixture_room"), Channel::Type::None);
                     data.sourceMessages = data.messages;
                     return data;
                 };
@@ -1117,16 +1755,16 @@ int main(int argc, char **argv)
                 const auto own =
                     writer.messages->getMessageSnapshot().back()->id;
                 feed(writer.messages,
-                     QStringLiteral("@login=archive_demo;target-msg-id=") +
+                     QStringLiteral("@login=fixture_viewer;target-msg-id=") +
                          own +
                          QStringLiteral(" :tmi.twitch.tv CLEARMSG "
-                                        "#archive_room :deleted text"));
+                                        "#fixture_room :deleted text"));
                 clearchat(writer.messages, writer.login, writer.userId, {});
                 clearchat(writer.messages, QStringLiteral("someone_else"),
                           QStringLiteral("920000001"), {});
                 feed(writer.messages,
                      QStringLiteral("@room-id=900000001 :tmi.twitch.tv "
-                                    "CLEARCHAT #archive_room"));
+                                    "CLEARCHAT #fixture_room"));
                 writer.sourceMessages = writer.messages;
                 auto rows = shown(writer);
                 check(QStringLiteral("messages plus own ban and deletion, "
@@ -1266,6 +1904,402 @@ int main(int argc, char **argv)
                                      "visible (eight synthetic icons)"),
                       current.earnedBadges.size() == 8 && badges &&
                           badges->isVisible());
+                const auto *whisper = popup.findChild<QToolButton *>("UsercardQuickWhisper");
+                const auto *profile = popup.findChild<QToolButton *>("UsercardQuickProfile");
+                const auto *copy = popup.findChild<QToolButton *>("UsercardQuickCopyId");
+                check("quick actions are visible inside the profile",
+                      whisper && profile && copy && whisper->isVisible() &&
+                          profile->isVisible() && copy->isVisible());
+                check("labelled quick actions have no hover tooltip but retain accessible descriptions",
+                      whisper && profile && copy && whisper->toolTip().isEmpty() &&
+                      profile->toolTip().isEmpty() && copy->toolTip().isEmpty() &&
+                      !profile->accessibleName().isEmpty());
+                check("production usercard constructor does not lock width or height",
+                      popup.maximumWidth() > popup.width() && popup.maximumHeight() > popup.height());
+                auto extended = fixture(scenario);
+                constexpr int largeBadgeCount = 82;
+                extended.earnedBadges = fixtureBadgeCollection(largeBadgeCount);
+                popup.setOfflinePreviewData(extended);
+                popup.resize(780, 540);
+                owntimeout::pump(100);
+                const auto *narrowChannel = popup.findChild<QLabel *>("UsercardHeadingChannel");
+                check("narrow channel heading prioritizes complete channel login",
+                      narrowChannel && narrowChannel->text() == QStringLiteral("fixture_room") &&
+                      narrowChannel->width() >= QFontMetrics(narrowChannel->font()).horizontalAdvance(narrowChannel->text()));
+                popup.resize(880, 315);
+                owntimeout::pump(180);
+                const auto *initialScroll = popup.findChild<QScrollArea *>("UsercardProfileScroll");
+                check("unresized usercard fits collapsed profile instead of opening with scrollbar",
+                      popup.height() > 315 && initialScroll && initialScroll->verticalScrollBar()->maximum() == 0 &&
+                      !initialScroll->verticalScrollBar()->isVisible());
+                const int baseHeight = badges->height();
+                const int basePopupHeight = popup.height();
+                const int prefix = badges->property("firstRowBadgeCount").toInt();
+                const auto count = popup.findChild<QLabel *>("UsercardActivityCount");
+                const auto latest = popup.findChild<QLabel *>("UsercardActivityLatest");
+                check("activity shows loaded messages and last timestamp", count && latest &&
+                      count->text() == QStringLiteral("18") && latest->text() != QStringLiteral("—"));
+                const auto *activity = popup.findChild<QWidget *>("UsercardActivity");
+                check("activity does not show intrusive tooltips", activity && count && latest &&
+                      activity->toolTip().isEmpty() && count->toolTip().isEmpty() && latest->toolTip().isEmpty());
+                const auto *headingChannel = popup.findChild<QLabel *>("UsercardHeadingChannel");
+                const auto *headingAvatar = popup.findChild<QLabel *>("ChannelIdentityAvatar");
+                check("channel identity shows name without hash and a round channel avatar", headingChannel && headingAvatar &&
+                    headingChannel->text() == QStringLiteral("fixture_room") && headingAvatar->isVisible() && !headingAvatar->pixmap().isNull());
+
+                // Show the actual production image-tooltip on a real badge,
+                // using only the fixture's loaded synthetic asset.
+                const QPoint hoverPoint(10, std::max(1, int(12 * popup.scale())));
+                // The hidden native fixture can be on a different monitor
+                // from the physical cursor. ChannelView's CursorPosition
+                // bound check deliberately chooses that cursor monitor;
+                // synthesize an interior global point there, not a clamped
+                // point from the fixture's other screen.
+                const auto *cursorScreen = QGuiApplication::screenAt(QCursor::pos());
+                const auto hoverGlobal = cursorScreen
+                    ? cursorScreen->availableGeometry().center() - QPoint(150,100)
+                    : badges->mapToGlobal(hoverPoint);
+                QMouseEvent hover(QEvent::MouseMove, hoverPoint, hoverGlobal, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(badges, &hover);
+                owntimeout::pump(60);
+                QWidget *hoverPreview = nullptr;
+                for (auto *candidate : QApplication::topLevelWidgets())
+                    if (candidate->objectName() == "UsercardBadgeHoverPreview") hoverPreview = candidate;
+                bool enlarged = false;
+                bool highResolution = false;
+                bool shortTitle = false;
+                bool acquisitionText = false;
+                if (hoverPreview)
+                {
+                    for (auto *label : hoverPreview->findChildren<QLabel *>())
+                    {
+                        enlarged |= label->isVisible() && !label->pixmap().isNull() &&
+                                    label->pixmap().deviceIndependentSize().width() > 26;
+                        if (!label->pixmap().isNull())
+                        {
+                            const auto pixels = label->pixmap().toImage();
+                            const auto marker = pixels.pixelColor(pixels.width()/4,pixels.height()/2);
+                            highResolution |= marker.blue() > 180 && marker.red() < 90 && pixels.width() >= 36;
+                        }
+                        shortTitle |= label->text().contains(QStringLiteral("Synthetic badge 1"));
+                        acquisitionText |= label->text().contains(QStringLiteral("ACQUISITION SENTINEL"));
+                    }
+                }
+                check("usercard badge hover uses the shared enlarged image preview", hoverPreview && hoverPreview->isVisible() && enlarged);
+                check("badge preview selects actual high-resolution source and omits acquisition description",
+                      highResolution && shortTitle && !acquisitionText);
+                if (hoverPreview)
+                {
+                    const auto anchor = hoverPreview->pos();
+                    const QPoint delta(3, 2);
+                    QMouseEvent tinyMove(QEvent::MouseMove, hoverPoint + delta, hoverGlobal + delta, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                    QApplication::sendEvent(badges, &tinyMove);
+                    QHelpEvent delayed(QEvent::ToolTip, hoverPoint + delta, hoverGlobal + delta);
+                    QApplication::sendEvent(badges, &delayed);
+                    owntimeout::pump(30);
+                    const auto tooltipImage = hoverPreview->grab().toImage();
+                    check("shared tooltip corners are translucent and preview follows cursor like chat",
+                          hoverPreview->isVisible() && hoverPreview->pos() == anchor + delta && !QToolTip::isVisible() &&
+                          tooltipImage.pixelColor(0,0).alpha() < 20 &&
+                          tooltipImage.pixelColor(tooltipImage.width()/2,1).alpha() > 100);
+                    if (!report.isEmpty())
+                        hoverPreview->grab().save(QFileInfo(report).absoluteDir().filePath("badge-hover.png"));
+                }
+                QEvent leave(QEvent::Leave);
+                QApplication::sendEvent(badges, &leave);
+                check("badge preview closes on leave", hoverPreview && !hoverPreview->isVisible());
+
+                // Force expansion against the bottom of the monitor. The
+                // collapse must not move the already visible first row back
+                // down to the former opening position.
+                if (auto *screen = popup.screen())
+                    popup.move(popup.x(), screen->availableGeometry().bottom() - popup.height() + 1);
+                struct ScrollVisibilityProbe : QObject
+                {
+                    int shows = 0;
+                    bool eventFilter(QObject *, QEvent *event) override
+                    {
+                        if (event->type() == QEvent::Show)
+                            ++shows;
+                        return false;
+                    }
+                } scrollProbe;
+                struct MotionProbe : QObject
+                {
+                    QWidget *strip = nullptr;
+                    QWidget *view = nullptr;
+                    QElapsedTimer elapsed;
+                    qint64 previous = 0;
+                    int resizes = 0;
+                    bool running = false;
+                    std::vector<double> intervals;
+                    void start()
+                    {
+                        intervals.clear(); previous = 0; resizes = 0;
+                        elapsed.start(); running = true;
+                    }
+                    void stop(const char *direction)
+                    {
+                        running = false;
+                        std::sort(intervals.begin(), intervals.end());
+                        if (intervals.empty()) return;
+                        const auto p95 = intervals[std::min(intervals.size()-1, size_t(intervals.size()*.95))];
+                        const auto slow = std::count_if(intervals.begin(), intervals.end(), [](double dt){return dt>32.;});
+                        std::fprintf(stderr, "badge-motion %s: frames=%zu p95_ms=%.2f max_ms=%.2f gaps_over_32ms=%td view_resizes=%d\n",
+                            direction, intervals.size(), p95, intervals.back(), slow, resizes);
+                    }
+                    bool eventFilter(QObject *watched, QEvent *event) override
+                    {
+                        if (!running) return false;
+                        if (watched == view && event->type() == QEvent::Resize) ++resizes;
+                        if (watched == strip && event->type() == QEvent::DynamicPropertyChange &&
+                            static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == "badgeRevealProgress")
+                        {
+                            const auto now = elapsed.nsecsElapsed();
+                            if (previous != 0) intervals.push_back((now-previous)/1000000.);
+                            previous = now;
+                        }
+                        return false;
+                    }
+                } motionProbe;
+                motionProbe.strip = badges;
+                motionProbe.view = popup.findChild<ChannelView *>();
+                badges->installEventFilter(&motionProbe);
+                if (motionProbe.view) motionProbe.view->installEventFilter(&motionProbe);
+                auto *bar = initialScroll->verticalScrollBar();
+                bar->installEventFilter(&scrollProbe);
+                QTimer sampleBar;
+                bool flashed = false;
+                bool trackCollapse = false;
+                QPoint collapsedAnchor;
+                bool stableRow = true;
+                int lastHeight = 0;
+                bool monotone = true;
+                int collapseResizes = 0;
+                int largestDrop = 0;
+                QObject::connect(&sampleBar, &QTimer::timeout, &scrollProbe,
+                                 [&] {
+                    flashed |= bar->isVisible();
+                    if (trackCollapse)
+                    {
+                        stableRow &= badges->mapToGlobal(QPoint(0,0)) == collapsedAnchor &&
+                                     badges->property("firstRowBadgeCount").toInt() == prefix;
+                        collapseResizes += popup.height() != lastHeight;
+                        largestDrop = std::max(largestDrop, lastHeight - popup.height());
+                        monotone &= popup.height() <= lastHeight;
+                        lastHeight = popup.height();
+                    }
+                });
+                sampleBar.start(8);
+                motionProbe.start();
+                clickBadgeChip(badges, popup.scale());
+                owntimeout::pump(75);
+                const double progress = badges->property("badgeRevealProgress").toDouble();
+                check("badge expansion animates rather than jumping",
+                      badges->property("expanded").toBool() &&
+                      progress > 0 && progress < 1 && badges->property("badgeFirstExtraProgress").toDouble() == 0);
+                const int duration = std::clamp(290 + 38 * (largeBadgeCount - prefix), 460, 1850);
+                owntimeout::pump(int(duration * 0.46));
+                check("badge icons stagger independently and first row stays fixed",
+                      badges->property("badgeFirstExtraProgress").toDouble() > 0 &&
+                      badges->property("badgeLastExtraProgress").toDouble() == 0 &&
+                      badges->property("firstRowBadgeCount").toInt() == prefix);
+                owntimeout::pump(1900);
+                motionProbe.stop("expand");
+                check("right chat is laid out at the motion endpoint, not every expansion frame", motionProbe.resizes <= 3);
+                check("remaining badges appear below unchanged first row",
+                      badges->height() > baseHeight &&
+                      badges->property("firstRowBadgeCount").toInt() == prefix &&
+                      badges->property("badgeCount").toInt() == largeBadgeCount &&
+                      badges->property("badgeRevealProgress").toDouble() == 1);
+                auto *scroll = popup.findChild<QScrollArea *>("UsercardProfileScroll");
+                check("expanded card fits its profile and hides unnecessary scrollbar",
+                      popup.height() > basePopupHeight && scroll &&
+                      scroll->verticalScrollBar()->maximum() == 0 &&
+                      !scroll->verticalScrollBar()->isVisible());
+                const int expandedHeight = popup.height();
+                const int expandedBadgeHeight = badges->height();
+                // During collapse the inner strip can already be shorter
+                // while its parent still has the previous frame's height.
+                // Sample actual pixels before the queued parent layout runs.
+                auto *badgeHost = badges->parentWidget();
+                const QSize hostSize = badgeHost->size();
+                const QRect firstIcons(badges->pos(), QSize(prefix * baseHeight, baseHeight));
+                const auto firstRowPixels = badgeHost->grab(firstIcons).toImage();
+                bool pixelsAnchored = !firstRowPixels.isNull() && prefix > 0;
+                for (int slack : {2, 8, 13, 4, 0})
+                {
+                    badgeHost->resize(hostSize.width(), hostSize.height() + slack);
+                    pixelsAnchored &= badgeHost->grab(firstIcons).toImage() == firstRowPixels;
+                }
+                check("first-row pixels stay anchored between strip and parent resize events", pixelsAnchored);
+                collapsedAnchor = badges->mapToGlobal(QPoint(0,0));
+                lastHeight = popup.height();
+                trackCollapse = true;
+                motionProbe.start();
+                clickBadgeChip(badges, popup.scale());
+                check("collapse configuration emits no transient endpoint resize", popup.height() == expandedHeight &&
+                      badges->height() == expandedBadgeHeight && badges->property("badgeRevealProgress").toDouble() == 1.0);
+                owntimeout::pump(2050);
+                motionProbe.stop("collapse");
+                check("right chat is not relaid out on every collapse frame", motionProbe.resizes <= 3);
+                badges->removeEventFilter(&motionProbe);
+                if (motionProbe.view) motionProbe.view->removeEventFilter(&motionProbe);
+                check("second click smoothly collapses badges",
+                      !badges->property("expanded").toBool() &&
+                      badges->height() == baseHeight && popup.height() == basePopupHeight);
+                check("82-badge collapse keeps first-row position and height monotone throughout", stableRow && monotone &&
+                      badges->mapToGlobal(QPoint(0,0)) == collapsedAnchor);
+                check("card shrinks through intermediate heights without a final snap",
+                      collapseResizes >= 3 && largestDrop < (expandedHeight - basePopupHeight) / 2);
+                trackCollapse = false;
+                sampleBar.stop();
+                bar->removeEventFilter(&scrollProbe);
+                check("profile scrollbar never appears on any animation frame when both endpoints fit",
+                      !flashed && scrollProbe.shows == 0 && !bar->isVisible() &&
+                      initialScroll->verticalScrollBarPolicy() == Qt::ScrollBarAsNeeded);
+#ifdef Q_OS_WIN
+                if (QGuiApplication::platformName() == "windows")
+                {
+                    for (const bool opening : {true, false})
+                    {
+                        clickBadgeChip(badges, popup.scale());
+                        owntimeout::pump(opening ? 200 : 1250);
+                        const QPoint local(32, 15);
+                        auto global = popup.mapToGlobal(local);
+                        auto target = popup.pos();
+                        QMouseEvent press(QEvent::MouseButtonPress, local, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                        QApplication::sendEvent(&popup, &press);
+                        const int initialHeight = popup.height();
+                        const auto initialProgress = badges->property("badgeRevealProgress").toDouble();
+                        bool follows = true;
+                        for (int step = 0; step < 8; ++step)
+                        {
+                            const QPoint delta(2, -2);
+                            global += delta;
+                            target += delta;
+                            QMouseEvent move(QEvent::MouseMove, popup.mapFromGlobal(global), global, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                            QApplication::sendEvent(&popup, &move);
+                            owntimeout::pump(35);
+                            follows &= popup.pos() == target;
+                        }
+                        const auto movingProgress = badges->property("badgeRevealProgress").toDouble();
+                        const bool animates = opening ? movingProgress > initialProgress && popup.height() > initialHeight
+                                                     : movingProgress < initialProgress && popup.height() < initialHeight;
+                        owntimeout::pump(2000);
+                        QMouseEvent release(QEvent::MouseButtonRelease, local, global, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                        QApplication::sendEvent(&popup, &release);
+                        check(opening ? "expansion continues while card follows drag" :
+                                        "collapse continues while card follows drag",
+                              follows && animates && popup.pos() == target &&
+                              popup.height() == (opening ? expandedHeight : basePopupHeight));
+                    }
+                }
+#endif
+                clickBadgeChip(badges, popup.scale());
+                owntimeout::pump(60);
+                showCase("b");
+                owntimeout::pump(240);
+                check("changing identity cancels animation and clears old badge rows",
+                      !badges->property("expanded").toBool() &&
+                      badges->property("badgeCount").toInt() == 8 &&
+                      badges->property("badgeRevealProgress").toDouble() == 0);
+                showCase(scenario);
+                if (auto *grip = popup.findChild<QWidget *>("UsercardResizeGrip"))
+                {
+                    const auto original = popup.geometry();
+                    const QPoint p(2, grip->height() / 2);
+                    const auto g = grip->mapToGlobal(p);
+                    QMouseEvent press(QEvent::MouseButtonPress, p, g, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(grip, &press);
+                    const bool started = static_cast<UsercardResizeGrip *>(grip)->isResizing();
+                    QMouseEvent move(QEvent::MouseMove, p, g + QPoint(-25, 0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(grip, &move);
+                    const auto moved = popup.geometry();
+                    QMouseEvent release(QEvent::MouseButtonRelease, p, g + QPoint(-25, 0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                    QApplication::sendEvent(grip, &release);
+                    check(QStringLiteral("left resize edge expands width with opposite edge fixed (%1 x %2 => %3 x %4, right %5 => %6, started %7)").arg(original.width()).arg(original.height()).arg(moved.width()).arg(moved.height()).arg(original.right()).arg(moved.right()).arg(started), moved.width() == original.width() + 25 && moved.right() == original.right());
+                    popup.setGeometry(original);
+                    const QPoint bottom(grip->width() / 2, grip->height() - 3);
+                    const auto global = grip->mapToGlobal(bottom);
+                    QMouseEvent bottomPress(QEvent::MouseButtonPress, bottom, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(grip, &bottomPress);
+                    QMouseEvent bottomMove(QEvent::MouseMove, bottom, global + QPoint(0, 34), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(grip, &bottomMove);
+                    const auto taller = popup.geometry();
+                    QMouseEvent bottomRelease(QEvent::MouseButtonRelease, bottom, global + QPoint(0, 34), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                    QApplication::sendEvent(grip, &bottomRelease);
+                    check("bottom edge increases real card height with top edge fixed", taller.height() == original.height() + 34 && taller.top() == original.top());
+                    popup.setGeometry(original);
+                    check("edge resize mask leaves central controls accessible", grip->mask().contains(p) && !grip->mask().contains(grip->rect().center()));
+                    const QRect rect(20, 40, 400, 400);
+                    check("corner resize anchors opposite corner and clamps minimum", UsercardResizeGrip::resizedGeometry(rect, Qt::LeftEdge | Qt::TopEdge, QPoint(350, 350), QSize(200, 200), QSize(800, 800)) == QRect(220, 240, 200, 200));
+                }
+                else
+                    check("resize grip exists", false);
+                if (autoClose)
+                {
+                    const auto image = popup.grab().toImage();
+                    check("frameless usercard uses translucent antialiased shadow instead of binary mask",
+                          popup.testAttribute(Qt::WA_TranslucentBackground) && popup.mask().isEmpty() &&
+                          image.pixelColor(0, 0).alpha() < 40 && image.pixelColor(image.width()/2, image.height()/2).alpha() > 240);
+                    auto *columns = popup.findChild<QSplitter *>("UsercardColumns");
+                    const auto content = QRect(columns->mapTo(&popup, QPoint()), columns->size());
+                    const auto inset = usercardChrome::shadowInset(popup.scale());
+                    const auto radius = usercardChrome::bodyRadius(popup.scale());
+                    const auto safe = int(std::ceil(radius * (1 - 1 / std::sqrt(2.0)) + 1.5 * popup.scale()));
+                    check("all opaque child corners stay inside the antialiased body geometry",
+                         content.left() >= inset + safe && content.top() >= inset + safe &&
+                         popup.width() - content.right() - 1 >= inset + safe && popup.height() - content.bottom() - 1 >= inset + safe);
+                    QPixmap rectangular(120, 60);
+                    rectangular.fill(Qt::white);
+                    const auto circle = roundAvatarPixmap(rectangular, avatarPixelSize(64, 1.3)).toImage();
+                    int fractional = 0;
+                    for (int y = 0; y < circle.height(); ++y)
+                        for (int x = 0; x < circle.width(); ++x)
+                        {
+                            const int a = circle.pixelColor(x,y).alpha();
+                            fractional += a > 0 && a < 255;
+                        }
+                    check("round avatar mask has fractional antialiased edge coverage at 130% DPI",
+                          circle.width() == 83 && circle.height() == 83 && circle.pixelColor(0,0).alpha() == 0 &&
+                          circle.pixelColor(41,41).alpha() == 255 && fractional > 32);
+                    int edgeAlpha = 0;
+                    for (int x = 0; x < image.width(); ++x)
+                        edgeAlpha = std::max({edgeAlpha, image.pixelColor(x, 0).alpha(), image.pixelColor(x, image.height() - 1).alpha()});
+                    for (int y = 0; y < image.height(); ++y)
+                        edgeAlpha = std::max({edgeAlpha, image.pixelColor(0, y).alpha(), image.pixelColor(image.width() - 1, y).alpha()});
+                    int shadowPeak = 0;
+                    for (int y = image.height() - 1; y >= image.height() - std::max(2, int(inset * popup.devicePixelRatioF())) + 1; --y)
+                        shadowPeak = std::max(shadowPeak, image.pixelColor(image.width()/2,y).alpha());
+                    check("real window shadow fades to near transparency at every outside edge", edgeAlpha <= 2 && shadowPeak > 10);
+                    const auto oldShadow = getSettings()->displaySevenTVPaintShadows.getValue();
+                    getSettings()->displaySevenTVPaintShadows = true;
+                    LinearGradientPaint paint(QStringLiteral("fixture"), QStringLiteral("fixture-paint"), std::nullopt,
+                        QGradientStops{{0, Qt::white}, {1, QColor("#b59be5")}}, false, 90,
+                        {PaintDropShadow(0,0,12,QColor(255,180,40,230))});
+                    auto font = popup.font();
+                    font.setPixelSize(24);
+                    font.setBold(true);
+                    const QString name = QStringLiteral("TestNick");
+                    const auto metrics = QFontMetricsF(font);
+                    const QSizeF paintSize(metrics.horizontalAdvance(name) + 1, metrics.height());
+                    constexpr qreal ratio = 1.3;
+                    qreal padding = 0;
+                    const QRectF clip(0,0,paintSize.width()+10,paintSize.height());
+                    const auto rendered = paint.getPixmap(name, font, Qt::white, paintSize, 1.3, ratio, true, &padding, &clip).toImage();
+                    int borderAlpha = 0, glyphPixels = 0;
+                    for (int y=0; y<rendered.height(); ++y)
+                        for (int x=0; x<rendered.width(); ++x)
+                        {
+                            const int alpha = rendered.pixelColor(x,y).alpha();
+                            if (x==0 || y==0 || x==rendered.width()-1 || y==rendered.height()-1)
+                                borderAlpha = std::max(borderAlpha, alpha);
+                            glyphPixels += alpha >= 240;
+                        }
+                    getSettings()->displaySevenTVPaintShadows = oldShadow;
+                    check("7TV glyph glow has padded transparent borders and opaque painted letters", padding > 0 && borderAlpha == 0 && glyphPixels > 20);
+                }
             }
 #endif
             for (const auto &size : {QSize(960, 670), QSize(600, 760)})
@@ -1296,10 +2330,17 @@ int main(int argc, char **argv)
                     tabs && profile && tabs->hasMouseTracking() &&
                         profile->hasMouseTracking() &&
                         popup.windowFlags().testFlag(Qt::FramelessWindowHint));
-
+                check(QStringLiteral("public card has no private history tab"),
+                      tabs && tabs->count() <= 2 &&
+                          !popup.findChild<QWidget *>(QStringLiteral("UsercardArchiveToggle")) &&
+                          !popup.findChild<QWidget *>(QStringLiteral("archiveUserCard")));
             }
             check(QStringLiteral("no external network manager thread"),
                   NetworkManager::workerThread == nullptr);
+            // Animation checks pump the event loop; a fixed 650 ms report
+            // timer would otherwise write only a partial set of checks.
+            if (!report.isEmpty())
+                checksPassed &= writeReport(report, app, current, popup, checks);
         });
     }
     if (parser.isSet(QStringLiteral("native-hit-test-checks")))
@@ -1319,9 +2360,17 @@ int main(int argc, char **argv)
             }
         });
     }
+    if (parser.isSet("menu-demo") && qEnvironmentVariable("QT_QPA_PLATFORM") == "offscreen")
+    {
+        QTimer::singleShot(450, &popup, [&] {
+            if (auto *actions = popup.findChild<QToolButton *>("UsercardActions"))
+                actions->click();
+        });
+    }
     const auto screenshot = parser.value(QStringLiteral("screenshot"));
     if (!screenshot.isEmpty())
     {
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
         if (parser.isSet(QStringLiteral("show-moderation")))
         {
             // after the synthetic profile data (which hides the strip) is set
@@ -1329,6 +2378,7 @@ int main(int argc, char **argv)
                 popup.previewModerationStrip();
             });
         }
+#endif
         if (parser.isSet(QStringLiteral("banner-demo")))
         {
             QTimer::singleShot(300, &popup, [&] {
@@ -1345,8 +2395,21 @@ int main(int argc, char **argv)
                 }
             });
         }
-        QTimer::singleShot(650, &popup, [&, screenshot] {
-            const bool saved = popup.grab().save(screenshot, "PNG");
+        QTimer::singleShot(parser.isSet("badge-demo") ? 2400 : 650, &popup, [&, screenshot] {
+            QWidget *target = &popup;
+            if (parser.isSet("menu-demo"))
+            {
+                auto *menu = popup.findChild<QMenu *>("UsercardActionsMenu");
+                const auto entries = menu ? menu->actions() : QList<QAction *>{};
+                const auto count = std::count_if(entries.begin(), entries.end(), [](const auto *item) { return !item->isSeparator(); });
+                const bool compact = menu && menu->property("mist1xStyled").toBool() && count > 0 && count <= 6 &&
+                    std::none_of(entries.begin(), entries.end(), [](const auto *item) { return item->text().contains("910000001") || item->text().contains("fixture_viewer"); });
+                checksPassed &= compact;
+                checks.append(QJsonObject{{"name", "compact Noctis usercard menu with no exposed technical duplicates"}, {"ok", compact}});
+                if (menu)
+                    target = menu;
+            }
+            const bool saved = target->grab().save(screenshot, "PNG");
             checksPassed &= saved;
             checks.append(
                 QJsonObject{{QStringLiteral("name"),
@@ -1354,13 +2417,45 @@ int main(int argc, char **argv)
                             {QStringLiteral("ok"), saved}});
         });
     }
-    if (!report.isEmpty())
+#ifndef LEAFYRINO_BASELINE_USERCARD_PREVIEW
+    if (historyChecks)
+    {
+        QTimer::singleShot(400, &popup, [&] {
+            preview::runHistoryChecks(
+                popup, fixture,
+                [&](const QString &name, bool ok) {
+                    checksPassed &= ok;
+                    checks.append(QJsonObject{{QStringLiteral("name"), name},
+                                              {QStringLiteral("ok"), ok}});
+                });
+            if (!report.isEmpty())
+            {
+                checksPassed &= writeReport(report, app, current, popup, checks);
+            }
+            qapp.exit(checksPassed ? 0 : 30);
+        });
+        QTimer::singleShot(20000, &qapp, [&] {
+            checksPassed = false;
+            checks.append(
+                QJsonObject{{QStringLiteral("name"),
+                             QStringLiteral("history checks watchdog")},
+                            {QStringLiteral("ok"), false}});
+            if (!report.isEmpty())
+            {
+                writeReport(report, app, current, popup, checks);
+            }
+            qapp.exit(31);
+        });
+    }
+#endif
+    if (!report.isEmpty() && !historyChecks &&
+        !parser.isSet(QStringLiteral("scripted-checks")))
     {
         QTimer::singleShot(650, &popup, [&] {
             writeReport(report, app, current, popup, checks);
         });
     }
-    if (parser.isSet(QStringLiteral("quit-after")))
+    if (parser.isSet(QStringLiteral("quit-after")) && !historyChecks)
     {
         QTimer::singleShot(
             std::clamp(parser.value(QStringLiteral("quit-after")).toInt(), 1000,

@@ -21,6 +21,7 @@ public:
                        int customHeight, QWidget *parent = nullptr);
 
     void setImageScale(int w, int h);
+    void setPreviewScale(float scale);
     void setWordWrap(bool wrap);
 
     void setText(const QString &text);
@@ -32,6 +33,9 @@ public:
     bool hasImage() const;
     bool attemptRefresh() const;
 
+protected:
+    bool event(QEvent *event) override;
+
 private:
     QLabel *displayImage_ = nullptr;
     QLabel *displayText_ = nullptr;
@@ -40,6 +44,8 @@ private:
 
     ImagePtr image_ = nullptr;
     QSize customSize;
+    float previewScale_ = 0.F;
+    bool wordWrap_ = false;
 };
 
 }  // namespace chatterino
