@@ -38,6 +38,7 @@
 #include "providers/seventv/SeventvAPI.hpp"
 #include "providers/seventv/SeventvEmotes.hpp"
 #include "providers/seventv/SeventvEventAPI.hpp"
+#include "providers/seventv/SeventvPaints.hpp"
 #include "providers/twitch/api/Helix.hpp"
 #include "providers/twitch/api/TwitchGql.hpp"
 #include "providers/twitch/ChannelPointReward.hpp"
@@ -929,6 +930,26 @@ TwitchChannel::TwitchChannel(const QString &name, bool anonymous)
     // for an account that is not signed in right now.
     std::ignore = this->messageAppended.connect(
         [this](MessagePtr &message, auto) {
+            // A message may arrive before the badge catalogs on a cold
+            // start. Track live authors too; a later catalog refresh will
+            // use their original IRC badge tags, not their current badges.
+            if (message && !message->userID.isEmpty() &&
+                !message->flags.hasAny(MessageFlag::System, MessageFlag::Whisper))
+            {
+                if (this->historyBadgeUserIds_.size() >= 20000)
+                {
+                    this->historyBadgeUserIds_.clear();
+                    for (const auto &row : this->getMessageSnapshot())
+                    {
+                        if (!row->userID.isEmpty())
+                        {
+                            this->historyBadgeUserIds_.insert(row->userID);
+                        }
+                    }
+                }
+                this->historyBadgeUserIds_.insert(message->userID);
+                historyBadgeChannels.insert(this, this->weakFromThis());
+            }
             if (message && message->flags.has(MessageFlag::Untimeout) &&
                 !message->timeoutUserID.isEmpty() &&
                 this->ownRestrictions_.contains(message->timeoutUserID))
@@ -1609,6 +1630,9 @@ void TwitchChannel::roomIdChanged()
         return;
     }
     const auto roomId = this->roomId();
+    // The broadcaster does not have to speak in chat before their name has
+    // cosmetic metadata. Resolve the already-known Twitch identity at join.
+    getApp()->getSeventvPaints()->noteTwitchChatter(this->getName(), roomId);
     this->refreshPubSub();
     this->refreshBadges();
     this->refreshCheerEmotes();
@@ -3266,8 +3290,7 @@ bool TwitchChannel::refreshHistoryBadgeBatch()
     {
         const auto index = cursor++;
         const auto &message = snapshot[index];
-        if (message->flags.has(MessageFlag::RecentMessage) &&
-            !message->flags.has(MessageFlag::System) &&
+        if (!message->flags.hasAny(MessageFlag::System, MessageFlag::Whisper) &&
             !message->userID.isEmpty() &&
             (this->historyBadgeRefreshUsers_.isEmpty() ||
              this->historyBadgeRefreshUsers_.contains(message->userID)))
@@ -3326,22 +3349,14 @@ bool TwitchChannel::refreshHistoryBadgeBatch()
         if (this->historyBadgeRefreshUsers_.isEmpty())
         {
             QSet<QString> present = this->historyBadgeRefreshUsersPending_;
-            for (auto it = cache.keyBegin(); it != cache.keyEnd(); ++it)
+            for (const auto &row : this->getMessageSnapshot())
             {
-                present.insert(it->startsWith(u"shared:") ? it->mid(7) : *it);
-            }
-            this->historyBadgeUserIds_ = std::move(present);
-        }
-        else
-        {
-            for (const auto &user : this->historyBadgeRefreshUsers_)
-            {
-                if (!cache.contains(user) && !cache.contains(u"shared:"_s + user) &&
-                    !this->historyBadgeRefreshUsersPending_.contains(user))
+                if (!row->userID.isEmpty())
                 {
-                    this->historyBadgeUserIds_.remove(user);
+                    present.insert(row->userID);
                 }
             }
+            this->historyBadgeUserIds_ = std::move(present);
         }
     }
     snapshot.clear();
@@ -3768,6 +3783,32 @@ void TwitchChannel::refreshBadges()
 {
     if (this->roomId().isEmpty())
     {
+        return;
+    }
+
+    if (getApp()->getAccounts()->twitch.getCurrent()->isAnon())
+    {
+        // The official Helix endpoint needs a user or app token. The public
+        // IVR badge catalog returns the same badge-set schema without one.
+        // No account data or credentials are sent.
+        const auto id = this->roomId();
+        NetworkRequest("https://api.ivr.fi/v2/twitch/badges/channel?id=" + id)
+            .timeout(12000)
+            .cache()
+            .onSuccess([weak = this->weakFromThis(), id](const NetworkResult &result) {
+                if (auto shared = weak.lock();
+                    shared && shared->roomId() == id &&
+                    getApp()->getAccounts()->twitch.getCurrent()->isAnon())
+                {
+                    const auto sets = result.parseJsonArray();
+                    if (!sets.isEmpty())
+                    {
+                        shared->addTwitchBadgeSets(HelixChannelBadges(
+                            QJsonObject{{"data", sets}}));
+                    }
+                }
+            })
+            .execute();
         return;
     }
 

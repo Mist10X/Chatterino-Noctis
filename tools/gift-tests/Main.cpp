@@ -493,6 +493,36 @@ int main(int argc, char **argv)
     const auto subscriptionBackground = subscriptionImage.pixelColor(subscriptionImage.width() - 20, 10);
     check(qAbs(subscriptionBackground.red() - subscriptionBackground.blue()) < 20,
           "subscription event has a soft notice frame without a full-width purple highlight");
+    MessageBuilder withComment;
+    withComment->flags.set(MessageFlag::Subscription);
+    withComment.emplace<TextElement>(QStringLiteral("Alice продлила подписку"),
+        MessageElementFlags{MessageElementFlag::Text, MessageElementFlag::SubscriptionHeader},
+        MessageColor::System);
+    withComment.emplace<LinebreakElement>(MessageElementFlag::SubscriptionHeader)
+        ->exhaustiveFlags = true;
+    withComment.emplace<TextElement>(QStringLiteral("Комментарий"),
+        MessageElementFlag::Text);
+    const auto comment = withComment.release();
+    auto hasNoticeIcon = [&](MessageElementFlags flags) {
+        MessageLayout layout(comment);
+        MessageLayoutContext ctx{.messageColors = colors, .flags = flags,
+                                 .width = 500, .message = *comment};
+        layout.layout(ctx, false);
+        for (int y = 0; y < layout.getHeight(); ++y)
+        {
+            for (int x = 0; x < 35; ++x)
+            {
+                if (dynamic_cast<const NoticeIconLayoutElement *>(
+                        layout.getElementAt({double(x), double(y)})))
+                    return true;
+            }
+        }
+        return false;
+    };
+    check(hasNoticeIcon({MessageElementFlag::Text, MessageElementFlag::SubscriptionHeader}),
+          "subscription with a comment has an icon on its header");
+    check(!hasNoticeIcon(MessageElementFlag::Text),
+          "a hidden subscription header does not put an icon on the chat comment");
     QFile report(QString::fromLocal8Bit(argv[1]));
     if (!report.open(QIODevice::WriteOnly))
         return 21;

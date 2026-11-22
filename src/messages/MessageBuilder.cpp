@@ -2534,6 +2534,11 @@ void MessageBuilder::addWordFromUserMessage(QStringView string,
         {
             QString username = match.captured(1);
             auto originalTextColor = textColor;
+            if (dynamic_cast<TwitchChannel *>(chatters) != nullptr &&
+                !this->message_->flags.has(MessageFlag::RecentMessage))
+            {
+                getApp()->getSeventvPaints()->noteTwitchMention(username);
+            }
 
             MessageElementFlag mentionFlag{};
             if (chatters != nullptr)
@@ -3879,7 +3884,6 @@ MessagePtr MessageBuilder::refreshHistoryBadges(const Message &message,
 {
     if (channel == nullptr || message.userID.isEmpty() ||
         message.platform != MessagePlatform::AnyOrTwitch ||
-        !message.flags.has(MessageFlag::RecentMessage) ||
         message.flags.hasAny(MessageFlag::Whisper, MessageFlag::System))
     {
         return {};

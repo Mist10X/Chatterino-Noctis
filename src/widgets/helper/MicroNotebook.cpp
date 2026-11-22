@@ -1,9 +1,14 @@
 #include "widgets/helper/MicroNotebook.hpp"
 
+#include "Application.hpp"
+#include "singletons/Fonts.hpp"
+#include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "widgets/buttons/LabelButton.hpp"
 
 #include <QFrame>
+
+#include <algorithm>
 
 namespace {
 
@@ -22,17 +27,14 @@ QWidget *makeHLine()
 {
     return makeLine(true);
 }
-QWidget *makeVLine()
-{
-    return makeLine(false);
-}
-
 class MicroNotebookButton : public LabelButton
 {
 public:
     MicroNotebookButton(const QString &text)
         : LabelButton(text, nullptr, {6, 3})
     {
+        this->setFont(getApp()->getFonts()->getFont(
+            FontStyle::ChatMedium, std::clamp(getSettings()->getClampedUiScale(), 1.0F, 1.3F)));
     }
 
     void setSelected(bool selected)
@@ -46,25 +48,29 @@ public:
     }
 
 protected:
+    void scaleChangedEvent(float /*scale*/) override
+    {
+        this->setFont(getApp()->getFonts()->getFont(
+            FontStyle::ChatMedium, std::clamp(getSettings()->getClampedUiScale(), 1.0F, 1.3F)));
+    }
+
     void paintContent(QPainter &painter) override
     {
-        painter.setPen({});
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        const QRectF pill = QRectF(this->rect()).adjusted(1, 1, -1, -1);
         if (this->selected)
         {
             painter.setBrush(getTheme()->tabs.selected.backgrounds.regular);
+            painter.drawRoundedRect(pill, 6, 6);
+            painter.setBrush(getTheme()->tabs.selected.line.regular);
+            const auto width = std::min(qreal(24), pill.width() * .4);
+            painter.drawRoundedRect(
+                QRectF(pill.center().x() - width / 2, pill.bottom() - 3,
+                       width, 2), 1, 1);
         }
-        else
-        {
-            painter.setBrush(getTheme()->tabs.regular.backgrounds.regular);
-        }
-        painter.drawRect(this->rect());
-
-        if (this->selected)
-        {
-            painter.setPen({getTheme()->tabs.selected.line.regular, 1});
-            painter.drawLine(this->rect().topLeft() + QPoint{0, 1},
-                             this->rect().topRight() + QPoint{0, 1});
-        }
+        painter.restore();
     }
 
 private:
@@ -92,18 +98,13 @@ MicroNotebook::MicroNotebook(QWidget *parent)
 
     rootLayout->setContentsMargins({});
     this->layout.setContentsMargins({});
-    this->topBar.setContentsMargins({10, 10, 10, 0});
+    this->topBar.setContentsMargins({10, 8, 10, 5});
+    this->topBar.setSpacing(6);
 }
 
 int MicroNotebook::addPage(QWidget *page, QString name)
 {
     int index = this->layout.addWidget(page);
-    if (!this->items.empty())
-    {
-        this->topBar.addSpacing(1);
-        this->topBar.addWidget(makeVLine());
-        this->topBar.addSpacing(1);
-    }
     auto *pageButton = new MicroNotebookButton(name);
     this->topBar.addWidget(pageButton);
     QObject::connect(pageButton, &MicroNotebookButton::leftClicked, this,

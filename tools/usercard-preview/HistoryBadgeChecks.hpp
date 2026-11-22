@@ -262,8 +262,11 @@ inline int checkHistoryBadges(const QString &report)
                   room->twitchBadge("subscriber", "3").value());
     check("a shared-source row never takes a native badge from the receiving channel",
           row(shared->id) == shared);
-    check("live and system rows remain untouched",
-          row(live->id) == live && row(stubSystem->id) == stubSystem);
+    check("live rows received before the catalog are repaired; system rows remain untouched",
+          row(live->id) != live && twitchBadge(row(live->id), "3") &&
+          twitchBadge(row(live->id), "3")->getEmote() ==
+              room->twitchBadge("subscriber", "3").value() &&
+          row(stubSystem->id) == stubSystem);
 
     providerArrived = true;
     room->scheduleHistoryBadgeRefresh();
@@ -280,13 +283,14 @@ inline int checkHistoryBadges(const QString &report)
     check("provider lookups are scoped to the original user and source context",
           sawSharedGlobalOnly && sawChannelLookup &&
           countExternal(row(anotherUser->id), lateHomies->name.string) == 0 &&
-          countExternal(row(live->id), lateHomies->name.string) == 0 &&
+          countExternal(row(live->id), lateHomies->name.string) == 1 &&
           twitchBadge(row(shared->id), "3") &&
           twitchBadge(row(shared->id), "3")->getEmote() == *fallback);
     check("history retains text, nickname case, metadata, timestamps and disabled flag",
           unchangedPayload(first, repaired) && unchangedPayload(missing, row(missing->id)) &&
               unchangedPayload(anotherUser, row(anotherUser->id)) &&
-              unchangedPayload(shared, row(shared->id)));
+              unchangedPayload(shared, row(shared->id)) &&
+              unchangedPayload(live, row(live->id)));
 
     auto current = room->getMessageSnapshot();
     QStringList ids;

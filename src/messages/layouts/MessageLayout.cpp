@@ -90,7 +90,7 @@ std::optional<NoticeIcon> noticeKind(const Message &message)
             break;
     }
     const auto &flags = message.flags;
-    if (flags.has(MessageFlag::Subscription) && flags.has(MessageFlag::System))
+    if (flags.has(MessageFlag::Subscription))
     {
         return NoticeIcon::Subscription;
     }
@@ -435,6 +435,10 @@ void MessageLayout::actuallyLayout(const MessageLayoutContext &ctx)
         }
 
         if (icon && element->getFlags().hasAny(ctx.flags) &&
+            (*icon != NoticeIcon::Subscription ||
+             this->message_->flags.has(MessageFlag::System) ||
+             (ctx.flags.has(MessageElementFlag::SubscriptionHeader) &&
+              element->getFlags().has(MessageElementFlag::SubscriptionHeader))) &&
             dynamic_cast<TimestampElement *>(element.get()) == nullptr)
         {
             auto color = noticeColor(*icon);
@@ -822,8 +826,13 @@ void MessageLayout::updateBuffer(QPixmap *buffer,
         // A soft rounded box around just the visible text, drawn under it.
         const qreal padX = 3.0 * this->scale_;
         const qreal padY = 1.0 * this->scale_;
-        auto box = this->container_.getContentBounds().adjusted(-padX, -padY,
-                                                                padX, padY);
+        const bool headerOnly = kind == NoticeIcon::Subscription &&
+                                !this->message_->flags.has(MessageFlag::System);
+        auto box = this->container_.getContentBounds(headerOnly);
+        if (!box.isEmpty())
+        {
+            box = box.adjusted(-padX, -padY, padX, padY);
+        }
         box.setLeft(std::max(box.left(), qreal(this->scale_)));
         box.setTop(std::max(box.top(), qreal(0.5)));
         box.setBottom(

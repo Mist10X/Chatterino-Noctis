@@ -15,6 +15,7 @@
 #include "singletons/Theme.hpp"
 #include "util/MultiChannel.hpp"
 #include "widgets/BasePopup.hpp"
+#include "widgets/dialogs/MoltorinoDialogTheme.hpp"
 #include "widgets/helper/MicroNotebook.hpp"
 
 #include <QDialogButtonBox>
@@ -26,9 +27,11 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QTableView>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <vector>
 
 namespace {
@@ -356,7 +359,13 @@ SelectChannelDialog::SelectChannelDialog(QWidget *parent)
     }
     // Multi
     {
-        ui.multiPage = new QWidget;
+        auto *scroll = new QScrollArea;
+        auto *content = new QWidget;
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidget(content);
+        ui.multiPage = scroll;
         ui.multiView = new QListWidget;
         ui.multiIndicatorMode = new QComboBox;
         ui.multiTintByPlatform =
@@ -365,7 +374,7 @@ SelectChannelDialog::SelectChannelDialog(QWidget *parent)
             new QCheckBox(uiText("Show Twitch pins, polls && predictions"));
         ui.multiCombinedViewerCount =
             new QCheckBox(uiText("Show combined viewer count in the split header"));
-        auto *layout = new QVBoxLayout(ui.multiPage);
+        auto *layout = new QVBoxLayout(content);
         {
             auto *descriptionLabel = new QLabel(
                 uiText("Show multiple channels in one split. From the input box, you "
@@ -461,6 +470,8 @@ SelectChannelDialog::SelectChannelDialog(QWidget *parent)
     this->addShortcuts();
 
     this->themeChangedEvent();
+    this->scaleChangedEvent(this->scale());
+    this->resize(390, 335);
 }
 
 void SelectChannelDialog::ok()
@@ -767,22 +778,50 @@ void SelectChannelDialog::themeChangedEvent()
 {
     BaseWindow::themeChangedEvent();
 
-    this->setPalette(getTheme()->palette);
+    const auto &t = *getTheme();
+    applyMoltorinoDialogPalette(this, t);
+    this->getLayoutContainer()->setStyleSheet(QStringLiteral(R"(
+        QLabel, QRadioButton, QCheckBox { color: %1; background: transparent; }
+        QLineEdit, QComboBox, QListWidget, QTableView {
+            color: %1; background: %2; border: 1px solid %3;
+            border-radius: 6px; padding: 5px 8px;
+            selection-background-color: %4;
+        }
+        QLineEdit:focus, QComboBox:focus { border-color: %5; }
+        QRadioButton, QCheckBox { spacing: 7px; padding: 3px 2px; }
+        QRadioButton::indicator, QCheckBox::indicator {
+            width: 13px; height: 13px; background: %2;
+            border: 1px solid %3;
+        }
+        QRadioButton::indicator { border-radius: 7px; }
+        QCheckBox::indicator { border-radius: 3px; }
+        QRadioButton::indicator:checked {
+            background: %5; border: 3px solid %4; width: 9px; height: 9px;
+        }
+        QCheckBox::indicator:checked {
+            background: %4; border-color: %5; image: url(:/buttons/menu-check-dark.svg);
+        }
+        QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: %5; }
+        QScrollArea { border: 0; background: transparent; }
+        QPushButton, QToolButton {
+            color: %1; background: %2; border: 1px solid %3;
+            border-radius: 6px; padding: 5px 13px;
+        }
+        QPushButton:hover, QToolButton:hover { background: %4; border-color: %5; }
+        QPushButton:pressed, QToolButton:pressed { background: %4; }
+        QPushButton:default { border-color: %5; }
+    )").arg(t.window.text.name(), t.splits.input.background.name(),
+             t.tabs.dividerLine.name(), t.tabs.selected.backgrounds.regular.name(),
+             t.accent.name()));
 }
 
 void SelectChannelDialog::scaleChangedEvent(float newScale)
 {
     BaseWindow::scaleChangedEvent(newScale);
 
-    auto &ui = this->ui_;
-
-    // NOTE: Normally the font is automatically inherited from its parent, but since we override
-    // the style sheet to respect light/dark theme, we have to manually update the font here
-    auto uiFont =
-        getApp()->getFonts()->getFont(FontStyle::UiMedium, this->scale());
-
-    ui.channelName->setFont(uiFont);
-    ui.channelAnonymous->setFont(uiFont);
+    // Match the real chat typography, preserving readability on a small UI scale.
+    this->getLayoutContainer()->setFont(getApp()->getFonts()->getFont(
+        FontStyle::ChatMedium, std::clamp(newScale, 1.0F, 1.4F)));
 }
 
 void SelectChannelDialog::addShortcuts()

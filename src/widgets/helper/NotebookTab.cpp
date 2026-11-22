@@ -1443,7 +1443,7 @@ void NotebookTab::paintEvent(QPaintEvent *)
     float compactDivider = getCompactDivider(getSettings()->tabStyle);
     // set area for text
     int rectW =
-        (!getSettings()->showTabCloseButton ? 0
+        (!this->hasXButton() ? 0
                                             : int(16 * scale / compactDivider));
     QRect rect(0, 0, this->width() - rectW, height);
 
@@ -1554,9 +1554,9 @@ void NotebookTab::paintEvent(QPaintEvent *)
 
 bool NotebookTab::hasXButton() const
 {
-    return this->notebook_->canClosePage(this->page) &&
-           getSettings()->showTabCloseButton &&
-           this->notebook_->getAllowUserTabManagement();
+    // Channel avatar tabs are selected by clicking, never closed by a
+    // miniature hit target. Closing remains available from the context menu.
+    return false;
 }
 
 bool NotebookTab::shouldDrawXButton() const
@@ -1738,8 +1738,7 @@ void NotebookTab::dropEvent(QDropEvent *event)
 
 void NotebookTab::mouseMoveEvent(QMouseEvent *event)
 {
-    if (getSettings()->showTabCloseButton &&
-        this->notebook_->getAllowUserTabManagement())
+    if (this->hasXButton())
     {
         bool overX = this->getXRect().contains(event->pos());
 

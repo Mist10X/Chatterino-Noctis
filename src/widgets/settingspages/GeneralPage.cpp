@@ -319,24 +319,6 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         ->setTooltip(uiText("Show a reply button next to every chat message"))
         ->addTo(layout);
 
-    auto removeTabSeq = getApp()->getHotkeys()->getDisplaySequence(
-        HotkeyCategory::Window, "removeTab");
-    QString removeTabShortcut = "an assigned hotkey (Window -> remove tab)";
-    if (!removeTabSeq.isEmpty())
-    {
-        removeTabShortcut =
-            removeTabSeq.toString(QKeySequence::SequenceFormat::NativeText);
-    }
-
-    routeSetting(layout, QStringLiteral("Appearance"),
-                 QStringLiteral("Tabs"));
-    SettingWidget::checkbox(uiText("Show tab close button"), s.showTabCloseButton)
-        ->setTooltip(
-            uiText("When disabled, the x to close a tab will be hidden.\nTabs can "
-            "still be closed by right-clicking or pressing ") +
-            removeTabShortcut + ".")
-        ->addTo(layout);
-
     routeSetting(layout, QStringLiteral("Appearance"),
                  QStringLiteral("Window"));
     SettingWidget::checkbox(uiText("Always on top"), s.windowTopMost)

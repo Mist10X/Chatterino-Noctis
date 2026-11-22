@@ -88,6 +88,7 @@ struct MessageLayoutContainer {
 
     /// Bounding box of all laid-out elements on every line.
     QRectF getContentBounds() const;
+    QRectF getContentBounds(bool subscriptionHeaderOnly) const;
 
     qreal getHeight() const;
 

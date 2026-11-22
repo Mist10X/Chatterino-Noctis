@@ -49,6 +49,7 @@
 #    include "providers/twitch/TwitchAccount.hpp"
 #    include "widgets/dialogs/TwitchBadgePickerDialog.hpp"
 #    include "widgets/dialogs/EmotePopup.hpp"
+#    include "widgets/dialogs/SelectChannelDialog.hpp"
 #    include "widgets/buttons/LabelButton.hpp"
 #    include "widgets/helper/ChannelAvatarLabel.hpp"
 #    include "widgets/Notebook.hpp"
@@ -200,6 +201,33 @@ struct EmotePickerPreviewCheck {
             .name = EmoteName{"TestEmote"},
             .images = ImageSet{image, image, image},
             .tooltip = Tooltip{"TestEmote"}});
+        const auto previousCatalog = getApp()->getBttvEmotes()->emotes();
+        auto freshCatalog = std::make_shared<EmoteMap>();
+        for (int i = 0; i < 121; ++i)
+        {
+            auto item = std::make_shared<Emote>(*emote);
+            item->name = EmoteName{QStringLiteral("Fixture_%1").arg(i)};
+            freshCatalog->emplace(item->name, item);
+        }
+        getApp()->getBttvEmotes()->setEmotes(freshCatalog);
+        owntimeout::pump(420);
+        size_t catalogCount = 0;
+        size_t largestBatch = 0;
+        for (const auto &row : popup.globalEmotesView_->underlyingChannel()->getMessageSnapshot())
+        {
+            size_t batch = 0;
+            for (const auto &element : row->elements)
+            {
+                const auto *item = dynamic_cast<const EmoteElement *>(element.get());
+                if (item && item->getEmote()->name.string.startsWith("Fixture_"))
+                    ++batch;
+            }
+            catalogCount += batch;
+            largestBatch = std::max(largestBatch, batch);
+        }
+        const bool lateCatalog = catalogCount == 121 && largestBatch <= 48;
+        getApp()->getBttvEmotes()->setEmotes(previousCatalog);
+        owntimeout::pump(420);
         auto sub = popup.subEmotesView_->underlyingChannel();
         sub->clearMessages();
         for (const auto &name : {"dangerlyoha", "morphe_ya", "kopsteep"})
@@ -289,10 +317,25 @@ struct EmotePickerPreviewCheck {
                      bannerTitles, resizedBanners);
         split.grab().save(path + ".banners.png");
         split.setChannel(IndirectChannel(Channel::getEmpty()));
+        SelectChannelDialog selector;
+        selector.setSelectedChannel({});
+        selector.setAttribute(Qt::WA_DontShowOnScreen);
+        selector.show();
+        owntimeout::pump(100);
+        const bool selectorStyled =
+            selector.getLayoutContainer()->styleSheet().contains("border-radius") &&
+            selector.getLayoutContainer()->font().family() ==
+                getApp()->getFonts()->getFont(FontStyle::ChatMedium, 1).family() &&
+            selector.width() <= 650 && selector.height() <= 750;
+        selector.grab().save(path + ".channel-selector.png");
+        selector.close();
+        std::fprintf(stderr, "late emote catalog=%d count=%zu batch=%zu; selector styled=%d\n",
+                     lateCatalog, catalogCount, largestBatch, selectorStyled);
         std::fprintf(stderr, "emote picker title=%d search-style=%d compact=%d tab=%d/%d insertion=%d/%d search=%d/%d pause=%d room-modes=%d\n",
                      title, searchStyle, compact, animated, finished, selection, selectionFinished, search, restored, paused, roomModes);
         return title && searchStyle && compact && animated && finished && selection && selectionFinished && search && restored && paused && roomModes &&
-            favouritesLocalized && componentLocalized && pinAligned && bannerTitles && resizedBanners;
+            favouritesLocalized && componentLocalized && pinAligned && bannerTitles && resizedBanners &&
+            lateCatalog && selectorStyled;
     }
 };
 struct BadgePickerPreviewCheck {

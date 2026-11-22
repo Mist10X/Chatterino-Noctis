@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 
 #include <atomic>
@@ -56,6 +57,7 @@ public:
 
     /// A Twitch chatter was seen; look their paint up if it isn't known.
     void noteTwitchChatter(const QString &login, const QString &userID);
+    void noteTwitchMention(const QString &login);
 
     /// Reads what was saved on disk (once). Message builders call it before
     /// asking for 7TV badges.
@@ -71,6 +73,7 @@ private:
     void queueSave();
     void armLookup();
     void lookUpChatters();
+    void resolveMentionLogins();
     void applyLookup(const std::vector<std::pair<QString, QString>> &batch,
                      const QJsonObject &data);
 

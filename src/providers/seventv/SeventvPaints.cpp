@@ -8,6 +8,7 @@
 #include "providers/seventv/SeventvBadges.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
+#include "providers/twitch/api/Helix.hpp"
 #include "messages/Image.hpp"
 #include "providers/seventv/eventapi/Dispatch.hpp"
 #include "providers/seventv/paints/LinearGradientPaint.hpp"
@@ -28,9 +29,12 @@
 #include <QJsonDocument>
 #include <QSaveFile>
 #include <QTimer>
+#include <QThread>
+#include <QPointer>
 #include <QUrlQuery>
 
 #include <chrono>
+#include <utility>
 
 namespace {
 using namespace chatterino;
@@ -51,6 +55,15 @@ constexpr int LOOKUP_INTERVAL_MS = 1000;
 /// 7TV refuses a query over its complexity limit (12 chatters pass, 16 not).
 constexpr size_t LOOKUP_BATCH = 10;
 constexpr size_t LOOKUP_QUEUE_MAX = 2000;
+// Only touched on the owning GUI thread, and erased when that provider is
+// destroyed. Keep this auxiliary queue independent of the paint cache.
+struct MentionLookupState {
+    QStringList logins;
+    std::unordered_map<QString, qint64> requestedAt;
+    bool armed = false;
+};
+std::unordered_map<const SeventvPaints *, MentionLookupState> mentionLookups;
+
 const QString LOOKUP_URL = QStringLiteral("https://7tv.io/v3/gql");
 const QString LOOKUP_FIELDS = QStringLiteral(
     "{style{paint_id paint{id name color function angle shape image_url "
@@ -177,6 +190,7 @@ SeventvPaints::SeventvPaints() = default;
 
 SeventvPaints::~SeventvPaints()
 {
+    mentionLookups.erase(this);
     if (this->dirty_)
     {
         this->save();
@@ -401,6 +415,84 @@ void SeventvPaints::noteTwitchChatter(const QString &login,
     }
     this->ensureLoaded();
     this->queueLookup(login, userID);
+}
+
+void SeventvPaints::noteTwitchMention(const QString &login)
+{
+    if (!getSettings()->displaySevenTVPaints || getApp()->isTest() ||
+        QThread::currentThread() != this->thread() ||
+        getApp()->getAccounts()->twitch.getCurrent()->isAnon())
+    {
+        return;
+    }
+    const auto key = login.toLower();
+    this->ensureLoaded();
+    {
+        std::shared_lock lock(this->mutex_);
+        if (this->twitchPaintMap_.contains(key) || this->lookupTimes_.contains(key))
+        {
+            return;
+        }
+    }
+    {
+        std::unique_lock lock(this->lookupMutex_);
+        if (this->lookedUp_.contains(key))
+        {
+            return;
+        }
+    }
+    const auto now = nowSeconds();
+    auto &pending = mentionLookups[this];
+    if (const auto it = pending.requestedAt.find(key);
+        it != pending.requestedAt.end() && now - it->second < LOOKUP_AFTER_S)
+    {
+        return;
+    }
+    if (pending.logins.size() >= 100)
+    {
+        return;
+    }
+    if (pending.requestedAt.size() >= 4096)
+    {
+        std::erase_if(pending.requestedAt, [now](const auto &pair) {
+            return now - pair.second >= LOOKUP_AFTER_S;
+        });
+        if (pending.requestedAt.size() >= 4096)
+        {
+            return;
+        }
+    }
+    pending.requestedAt[key] = now;
+    pending.logins.push_back(key);
+    if (!pending.armed)
+    {
+        pending.armed = true;
+        QTimer::singleShot(1000, this, &SeventvPaints::resolveMentionLogins);
+    }
+}
+
+void SeventvPaints::resolveMentionLogins()
+{
+    auto &pending = mentionLookups[this];
+    pending.armed = false;
+    auto logins = std::exchange(pending.logins, QStringList{});
+    if (logins.isEmpty() || isAppAboutToQuit() ||
+        getApp()->getAccounts()->twitch.getCurrent()->isAnon())
+    {
+        return;
+    }
+    QPointer<SeventvPaints> guard(this);
+    getHelix()->fetchUsers({}, std::move(logins),
+        [guard](const std::vector<HelixUser> &users) {
+            if (!guard || isAppAboutToQuit())
+            {
+                return;
+            }
+            for (const auto &user : users)
+            {
+                guard->noteTwitchChatter(user.login, user.id);
+            }
+        }, [] {});
 }
 
 void SeventvPaints::queueLookup(const QString &login, const QString &userID)

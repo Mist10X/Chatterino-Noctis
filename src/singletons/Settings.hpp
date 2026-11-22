@@ -460,7 +460,7 @@ public:
     BoolSetting showTimestampDateTooltip = {
         "/appearance/messages/showTimestampDateTooltip", false};
     FloatSetting boldScale = {"/appearance/boldScale", 63};
-    BoolSetting showTabCloseButton = {"/appearance/showTabCloseButton", true};
+    BoolSetting showTabCloseButton = {"/appearance/showTabCloseButton", false};
     BoolSetting showTabLive = {"/appearance/showTabLiveButton", true};
     BoolSetting colorTabHighlightsByMessage = {
         "/appearance/tabs/colorHighlightsByMessage",

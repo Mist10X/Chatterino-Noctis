@@ -46,6 +46,7 @@
 #include <QRegularExpressionValidator>
 #include <QStringBuilder>
 #include <QTabWidget>
+#include <QTimer>
 
 #include <algorithm>
 #include <utility>
@@ -176,26 +177,6 @@ auto makeEmoteMessageSorted(const std::vector<EmotePtr> &emotes,
     return builder.release();
 }
 
-auto makeEmoteMessage(std::vector<EmotePtr> emotes, const QString &emptyText)
-{
-    std::sort(emotes.begin(), emotes.end(), [](const auto &l, const auto &r) {
-        return compareEmoteStrings(l->name.string, r->name.string);
-    });
-
-    return makeEmoteMessageSorted(emotes, emptyText);
-}
-
-auto makeEmoteMessage(const EmoteMap &map)
-{
-    std::vector<EmotePtr> vec;
-    vec.reserve(map.size());
-    for (const auto &[_name, ptr] : map)
-    {
-        vec.emplace_back(ptr);
-    }
-    return makeEmoteMessage(std::move(vec), "No emotes available");
-}
-
 auto makeEmojiMessage(const std::vector<EmojiPtr> &emojiMap,
                       const QString &emptyText = {})
 {
@@ -254,11 +235,36 @@ auto makeInfoTextMessage(const QString &text)
     return builder.release();
 }
 
-void addEmotes(Channel &channel, auto &&emotes, const QString &title)
+void addEmotes(Channel &channel, const EmoteMap &emotes, const QString &title)
 {
     channel.addMessage(makeTitleMessage(title), MessageContext::Original);
-    channel.addMessage(makeEmoteMessage(std::forward<decltype(emotes)>(emotes)),
-                       MessageContext::Original);
+    std::vector<EmotePtr> sorted;
+    sorted.reserve(emotes.size());
+    for (const auto &[_name, emote] : emotes)
+    {
+        sorted.push_back(emote);
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const auto &l, const auto &r) {
+        return compareEmoteStrings(l->name.string, r->name.string);
+    });
+    if (sorted.empty())
+    {
+        channel.addMessage(makeEmoteMessageSorted({}, uiText("No emotes available")),
+                           MessageContext::Original);
+        return;
+    }
+    // A whole provider in one MessageLayout queued every image at once,
+    // even when only the first few rows were visible. Keep the existing
+    // ordering but let ChannelView lay out and load small batches on demand.
+    constexpr size_t chunkSize = 48;
+    for (size_t i = 0; i < sorted.size(); i += chunkSize)
+    {
+        const auto end = std::min(i + chunkSize, sorted.size());
+        channel.addMessage(makeEmoteMessageSorted(
+                               std::vector<EmotePtr>(sorted.begin() + i,
+                                                     sorted.begin() + end)),
+                           MessageContext::Original);
+    }
 }
 
 void addTwitchEmoteSets(const std::shared_ptr<const EmoteMap> &local,
@@ -666,6 +672,45 @@ EmotePopup::EmotePopup(QWidget *parent)
             }
             this->reloadEmotes();
         });
+
+    // Provider catalogs can finish after opening the picker (especially when
+    // a clean profile has no cache). Compare shared snapshots, rather than
+    // polling the network or rebuilding an unchanged list.
+    auto *catalogTimer = new QTimer(this);
+    catalogTimer->setInterval(300);
+    QObject::connect(catalogTimer, &QTimer::timeout, this,
+                     [this, previous = std::vector<std::shared_ptr<const EmoteMap>>{}]() mutable {
+        if (!this->isVisible() || !this->channel_)
+        {
+            previous.clear();
+            return;
+        }
+        std::vector<std::shared_ptr<const EmoteMap>> current{
+            getApp()->getBttvEmotes()->emotes(),
+            getApp()->getFfzEmotes()->emotes(),
+            getApp()->getSeventvEmotes()->globalEmotes()};
+        if (this->twitchChannel_)
+        {
+            current.push_back(this->twitchChannel_->localTwitchEmotes());
+            current.push_back(this->twitchChannel_->bttvEmotes());
+            current.push_back(this->twitchChannel_->ffzEmotes());
+            current.push_back(this->twitchChannel_->seventvEmotes());
+        }
+        if (this->kickChannel_)
+        {
+            current.push_back(this->kickChannel_->seventvEmotes());
+        }
+        if (current != previous)
+        {
+            previous = std::move(current);
+            this->reloadEmotes();
+            if (!this->search_->text().isEmpty())
+            {
+                this->filterEmotes(this->search_->text());
+            }
+        }
+    });
+    catalogTimer->start();
 
     this->themeChangedEvent();
 }
