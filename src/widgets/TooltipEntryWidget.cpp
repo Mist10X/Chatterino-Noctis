@@ -11,6 +11,21 @@
 
 namespace chatterino {
 
+namespace {
+
+// Shrink only captions beneath emote/badge previews. Keep the media size,
+// ordinary link tooltips and the chat's own font unchanged.
+void applyCaptionFont(QLabel *label, QFont font, bool compactPreview)
+{
+    if (compactPreview && font.pointSizeF() > 0)
+    {
+        font.setPointSizeF(std::max(7.5, font.pointSizeF() * 0.88));
+    }
+    label->setFont(font);
+}
+
+}  // namespace
+
 TooltipEntryWidget::TooltipEntryWidget(QWidget *parent)
     : TooltipEntryWidget(nullptr, "", 0, 0, parent)
 {
@@ -53,6 +68,7 @@ void TooltipEntryWidget::setPreviewScale(float scale)
         return;
     }
     this->previewScale_ = scale;
+    applyCaptionFont(this->displayText_, this->font(), scale > 0.F);
     this->displayText_->setMaximumWidth(scale > 0.F ? 264 : QWIDGETSIZE_MAX);
     this->setWordWrap(this->wordWrap_);
     this->refreshPixmap();
@@ -64,6 +80,11 @@ bool TooltipEntryWidget::event(QEvent *event)
     if (event->type() == QEvent::DevicePixelRatioChange && this->displayImage_)
     {
         this->refreshPixmap();
+    }
+    if (event->type() == QEvent::FontChange && this->displayText_)
+    {
+        applyCaptionFont(this->displayText_, this->font(),
+                         this->previewScale_ > 0.F);
     }
     return handled;
 }

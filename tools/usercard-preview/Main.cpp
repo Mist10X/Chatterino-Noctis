@@ -1167,7 +1167,7 @@ int main(int argc, char **argv)
                         "process-owned synthetic local server")},
         {{QStringLiteral("startup-history-checks")}, QStringLiteral("Verify startup history over loopback")},
         {{QStringLiteral("history-badge-checks")}, QStringLiteral("Verify late-arriving badges in historical chat rows")},
-        {{QStringLiteral("noctis-tooltip-checks")}, QStringLiteral("Verify styled text tooltips offline")},
+        {{QStringLiteral("noctis-tooltip-checks")}, QStringLiteral("Verify styled text and media captions offline")},
         {{QStringLiteral("service-health-checks")}, QStringLiteral("Check service indicator with a local endpoint")},
         {{QStringLiteral("badge-picker-check")}, QStringLiteral("Render and check the badge picker hover preview")},
         {{QStringLiteral("emote-picker-check")}, QStringLiteral("Check the emote picker title, search and motion")},

@@ -152,7 +152,8 @@ inline int checkNoctisTooltips(const QString &report, const QString &screenshot)
           media->pixmap().width() == 2 * media->pixmap().height());
     check("emote caption wraps at compact width using a slightly smaller chat font",
           caption && caption->width() <= 264 && caption->wordWrap() &&
-          caption->font().pointSizeF() < getApp()->getFonts()->getFont(FontStyle::ChatMediumSmall, 1.3F).pointSizeF() &&
+          qAbs(caption->font().pointSizeF() -
+              std::max(7.5, emoteTip.font().pointSizeF() * 0.88)) < 0.2 &&
           caption->font().pointSizeF() >= 7.5);
     if (!screenshot.isEmpty())
         emoteTip.grab().save(screenshot + QStringLiteral("-emote.png"));
@@ -160,6 +161,11 @@ inline int checkNoctisTooltips(const QString &report, const QString &screenshot)
     QCoreApplication::processEvents();
     check("explicit screenshot preview keeps its requested physical resolution",
           media && media->pixmap().size() == QSize(450, 225));
+    emoteTip.setOne({.image = {}, .text = QStringLiteral("Ordinary tooltip")});
+    QCoreApplication::processEvents();
+    check("reused tooltip restores normal caption font for non-emote entries",
+          caption && qAbs(caption->font().pointSizeF() -
+                          emoteTip.font().pointSizeF()) < 0.2);
     emoteTip.hide();
 
     QFile output(report);
