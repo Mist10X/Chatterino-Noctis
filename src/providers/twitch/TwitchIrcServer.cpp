@@ -84,6 +84,12 @@ void refreshOwnWhisperSpelling(const ChannelPtr &channel)
     const auto login = account->getUserName();
     if (account->isAnon())
         return;
+    if (account->hasVerifiedDisplayName())
+    {
+        whisperhistory::applyDisplayName(*channel, uid, login,
+                                         account->getDisplayName());
+        return;
+    }
     const auto messages = channel->getMessageSnapshot();
     if (!std::ranges::any_of(messages, [&](const auto &message) {
             return message->userID == uid &&
@@ -459,6 +465,21 @@ TwitchIrcServer::TwitchIrcServer()
 void TwitchIrcServer::initialize()
 {
     restoreWhispersWithBadges(this->whispersChannel);
+    this->signalHolder.managedConnect(
+        getApp()->getAccounts()->twitch.currentUserDisplayNameChanged, [this] {
+            const auto account = getApp()->getAccounts()->twitch.getCurrent();
+            if (account->hasVerifiedDisplayName())
+            {
+                const auto uid = account->getUserId();
+                const auto login = account->getUserName();
+                const auto name = account->getDisplayName();
+                whisperhistory::applyDisplayName(*this->whispersChannel, uid, login, name);
+                if (getSettings()->inlineWhispers)
+                    this->forEachChannel([&](const auto &channel) {
+                        whisperhistory::applyDisplayName(*channel, uid, login, name);
+                    });
+            }
+        });
     getApp()->getAccounts()->twitch.currentUserChanged.connect([this]() {
         const auto epoch = ++this->writeAccountEpoch_;
         this->setLastUserThatWhisperedMe({});

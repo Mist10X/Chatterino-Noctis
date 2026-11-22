@@ -36,6 +36,30 @@
 
 namespace chatterino::whisperhistory {
 
+// Account labels have a verified spelling even when the general user cache is
+// cold or still contains the protocol login. Never replace it with a fallback.
+inline QString senderDisplayName(const TwitchAccount &account,
+                                 const QString &resolvedName = {})
+{
+    if (account.hasVerifiedDisplayName())
+        return account.getDisplayName();
+    if (!resolvedName.isEmpty() &&
+        resolvedName.compare(account.getUserName(), Qt::CaseInsensitive) == 0)
+        return resolvedName;
+    return account.getUserName();
+}
+
+inline void seedVerifiedAccountName(QHash<QString, QString> &knownNames,
+                                    const QString &historyAccount,
+                                    const TwitchAccount &account)
+{
+    if (!historyAccount.isEmpty() && historyAccount == account.getUserId() &&
+        !account.isAnon() && account.hasVerifiedDisplayName())
+        knownNames.insert(historyAccount + QStringLiteral(":") +
+                              account.getUserName().toLower(),
+                          account.getDisplayName());
+}
+
 inline QJsonArray badgeSnapshot(const Message &message)
 {
     QJsonArray rows;
@@ -343,7 +367,7 @@ inline void applyDisplayName(Channel &channel, const QString &uid,
         return;
     for (const auto &message : channel.getMessageSnapshot())
     {
-        if (message->userID != uid ||
+        if (!message->flags.has(MessageFlag::Whisper) || message->userID != uid ||
             message->loginName.compare(login, Qt::CaseInsensitive) != 0 ||
             (!message->displayName.isEmpty() &&
              (message->displayName.compare(message->loginName, Qt::CaseInsensitive) != 0 ||
@@ -352,6 +376,10 @@ inline void applyDisplayName(Channel &channel, const QString &uid,
             continue;
         auto corrected = message->clone();
         corrected->displayName = name;
+        const auto oldPrefix = (message->displayName.isEmpty()
+                                    ? message->loginName : message->displayName) + u' ';
+        if (corrected->searchText.startsWith(oldPrefix))
+            corrected->searchText.replace(0, oldPrefix.size(), name + u' ');
         for (auto &element : corrected->elements)
         {
             if (element->getFlags().has(MessageElementFlag::Username))
@@ -570,6 +598,9 @@ inline void loadPage(const QString &account, const ChannelPtr &channel, bool fir
             const auto page = watcher->result();
             state.before = page.before;
             state.loading = false;
+            if (auto *accounts = getApp()->getAccounts())
+                seedVerifiedAccountName(state.knownNames, state.account,
+                                        *accounts->twitch.getCurrent());
             auto legacy = applyPage(page, *channel, state.knownNames);
             if (done)
                 done(std::move(legacy));

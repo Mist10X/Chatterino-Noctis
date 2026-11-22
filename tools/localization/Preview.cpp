@@ -1134,6 +1134,16 @@ int main(int argc, char **argv)
                   account.getDisplayName() == "Renamed_Fixture" &&
                   account.getUserName() == "renamed_fixture",
               "renamed account accepts its new verified display spelling");
+        check(whisperhistory::senderDisplayName(account) == "Renamed_Fixture" &&
+                  whisperhistory::senderDisplayName(account, "renamed_fixture") == "Renamed_Fixture" &&
+                  whisperhistory::senderDisplayName(account, "Wrong_User") == "Renamed_Fixture",
+              "outgoing whispers prefer verified nickname to cold or stale cache");
+        QHash<QString, QString> names;
+        whisperhistory::seedVerifiedAccountName(names, "900011", account);
+        check(names.isEmpty(), "whisper history spelling cannot leak across accounts");
+        whisperhistory::seedVerifiedAccountName(names, "900010", account);
+        check(names.value("900010:renamed_fixture") == "Renamed_Fixture",
+              "own verified spelling seeds paged whisper history");
     }
     {
         auto whisper = [](const QString &id, const QString &peer,
@@ -1196,6 +1206,15 @@ int main(int argc, char **argv)
                   channel->getMessageSnapshot()[1]->displayName == "Bob" &&
                   countBadges(channel->getMessageSnapshot().front()) == 2,
               "display-name metadata survives restart without adding messages");
+        QHash<QString, QString> ownNames{{"700002:bob", "BOB"}};
+        auto restored = std::make_shared<Channel>("/whispers", Channel::Type::TwitchWhispers);
+        const auto path = whisperhistory::historyPath("900002");
+        whisperhistory::applyPage(whisperhistory::readPage(path, QFileInfo(path).size()),
+                                  *restored, ownNames);
+        check(restored->getMessageSnapshot().size() == 1 &&
+                  restored->getMessageSnapshot()[0]->displayName == "BOB" &&
+                  restored->getMessageSnapshot()[0]->messageText == "Hello",
+              "verified spelling repairs a lowercase stored whisper without changing its body");
         ChannelView view(nullptr, ChannelView::Context::None, 1000);
         view.setWhisperPeer("alice");
         view.setChannel(channel);

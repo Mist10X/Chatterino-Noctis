@@ -104,22 +104,7 @@ bool appendWhisperMessageWordsLocally(const QStringList &words,
 
     b.emplace<TimestampElement>();
     b.appendGlobalBadges(self->getUserId());
-    auto shown = self->getUserName();
-    if (!confirmedName.isEmpty() &&
-        confirmedName.compare(shown, Qt::CaseInsensitive) == 0)
-    {
-        shown = confirmedName;
-    }
-    if (auto *users = app->getTwitchUsers())
-    {
-        if (auto user = users->resolveID({self->getUserId()});
-            user && !user->displayName.isEmpty() &&
-            confirmedName.isEmpty() &&
-            user->displayName.compare(shown, Qt::CaseInsensitive) == 0)
-        {
-            shown = user->displayName;
-        }
-    }
+    const auto shown = whisperhistory::senderDisplayName(*self, confirmedName);
     const auto selfColor = self->color();
     b.emplace<TextElement>(shown + u':', MessageElementFlag::Username,
                            selfColor.isValid() ? MessageColor(selfColor)
@@ -202,6 +187,12 @@ QString sendWhisper(const CommandContext &ctx)
                     currentUser->getUserId(), targetUser.id, message,
                     [words, targetName = targetUser.displayName, target,
                      currentUser] {
+                        if (currentUser->hasVerifiedDisplayName())
+                        {
+                            appendWhisperMessageWordsLocally(words, targetName,
+                                target, currentUser);
+                            return;
+                        }
                         // resolveID may return an unresolved placeholder.
                         // Resolve the sender after successful delivery; never
                         // send the whisper again to obtain its display name.
@@ -209,6 +200,7 @@ QString sendWhisper(const CommandContext &ctx)
                         const auto cached = users ? users->resolveID(
                             {currentUser->getUserId()}) : nullptr;
                         if (cached && !cached->displayName.isEmpty() &&
+                            cached->displayName != cached->displayName.toLower() &&
                             cached->displayName.compare(currentUser->getUserName(),
                                                         Qt::CaseInsensitive) == 0)
                         {
@@ -234,6 +226,11 @@ QString sendWhisper(const CommandContext &ctx)
                                     whisperhistory::applyDisplayName(
                                         *getApp()->getTwitch()->getWhispersChannel(),
                                         uid, login, user.displayName);
+                                    if (getSettings()->inlineWhispers)
+                                        getApp()->getTwitch()->forEachChannel([&](const auto &channel) {
+                                            whisperhistory::applyDisplayName(*channel, uid, login,
+                                                                               user.displayName);
+                                        });
                                 }
                             }, [] {});
                     },
