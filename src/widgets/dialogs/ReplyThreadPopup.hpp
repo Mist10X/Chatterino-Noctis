@@ -12,6 +12,7 @@
 #include <pajlada/signals/signal.hpp>
 
 class QCheckBox;
+class QLabel;
 
 namespace chatterino {
 
@@ -19,6 +20,7 @@ class MessageThread;
 class Split;
 class SplitInput;
 class Channel;
+class UsercardResizeGrip;
 
 class ReplyThreadPopup final : public DraggablePopup
 {
@@ -38,10 +40,14 @@ public:
 protected:
     void focusInEvent(QFocusEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
+    void themeChangedEvent() override;
+    void scaleChangedEvent(float scale) override;
 
 private:
     void addMessagesFromThread();
     void updateInputUI();
+    void refreshStyle();
 
     // The message reply thread
     std::shared_ptr<MessageThread> thread_;
@@ -50,12 +56,15 @@ private:
     // The channel for the `threadView`
     ChannelPtr virtualChannel_;
     Split *split_;
+    bool frameless_;
+    UsercardResizeGrip *resizeGrip_ = nullptr;
 
     struct {
         ChannelView *threadView = nullptr;
         SplitInput *replyInput = nullptr;
 
         QCheckBox *notificationCheckbox = nullptr;
+        QLabel *title = nullptr;
     } ui_;
 
     std::unique_ptr<pajlada::Signals::ScopedConnection> messageConnection_;

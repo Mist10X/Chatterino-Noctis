@@ -16,59 +16,39 @@
 #include "providers/twitch/TwitchAccount.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/Settings.hpp"
+#include "singletons/Fonts.hpp"
+#include "singletons/Theme.hpp"
 #include "util/LayoutCreator.hpp"
 #include "widgets/buttons/Button.hpp"
 #include "widgets/helper/ChannelView.hpp"
+#include "widgets/helper/UsercardResizeGrip.hpp"
+#include "widgets/dialogs/MoltorinoDialogTheme.hpp"
 #include "widgets/Scrollbar.hpp"
 #include "widgets/splits/Split.hpp"
 #include "widgets/splits/SplitInput.hpp"
 
 #include <QCheckBox>
+#include <QLabel>
 #include <QPainter>
 #include <QResizeEvent>
-#include <QSizeGrip>
 
 const QString TEXT_TITLE("Reply Thread - @%1 in %2");
 
 namespace chatterino {
 
-namespace {
-
-/// The frameless popup's resize corner, drawn so it can be found.
-class CornerGrip final : public QSizeGrip
-{
-public:
-    explicit CornerGrip(QWidget *parent)
-        : QSizeGrip(parent)
-    {
-        this->setMouseTracking(true);
-        this->setCursor(Qt::SizeFDiagCursor);
-    }
-
-protected:
-    void paintEvent(QPaintEvent * /*event*/) override
-    {
-        QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing);
-        painter.setPen(QPen(QColor(255, 255, 255, 110), 1.4));
-        const qreal w = this->width();
-        const qreal h = this->height();
-        for (qreal step : {0.25, 0.5, 0.75})
-        {
-            painter.drawLine(QPointF(w * step, h - 2), QPointF(w - 2, h * step));
-        }
-    }
-};
-
-}  // namespace
-
 ReplyThreadPopup::ReplyThreadPopup(bool closeAutomatically, Split *split)
     : DraggablePopup(closeAutomatically, split)
     , split_(split)
+    , frameless_(closeAutomatically)
 {
     assert(split != nullptr);
 
     this->setWindowTitle(uiText(QStringLiteral("Reply Thread")));
+    if (this->frameless_)
+    {
+        this->setAttribute(Qt::WA_TranslucentBackground);
+        this->setAutoFillBackground(false);
+    }
 
     HotkeyController::HotkeyMap actions{
         {"delete",
@@ -122,7 +102,7 @@ ReplyThreadPopup::ReplyThreadPopup(bool closeAutomatically, Split *split)
     // initialize UI
     this->ui_.threadView =
         new ChannelView(this, this->split_, ChannelView::Context::ReplyThread);
-    this->ui_.threadView->setMinimumSize(400, 100);
+    this->ui_.threadView->setMinimumSize(250, 90);
     this->ui_.threadView->setSizePolicy(QSizePolicy::Expanding,
                                         QSizePolicy::Expanding);
     // We can safely ignore this signal's connection since threadView will always be deleted before
@@ -173,16 +153,17 @@ ReplyThreadPopup::ReplyThreadPopup(bool closeAutomatically, Split *split)
                       .withoutMargin();
     auto layout = layers.emplace<QVBoxLayout>();
 
-    layout->setSpacing(0);
-    // provide draggable margin if frameless
-    auto marginPx = closeAutomatically ? 15 : 1;
+    layout->setSpacing(6);
+    auto marginPx = closeAutomatically ? 10 : 7;
     layout->setContentsMargins(marginPx, marginPx, marginPx, marginPx);
 
     // Top Row
     bool addCheckbox = getSettings()->enableThreadHighlight;
-    if (addCheckbox || closeAutomatically)
     {
         auto *hbox = new QHBoxLayout();
+        this->ui_.title = new QLabel(uiText("Reply Thread"), this);
+        hbox->addWidget(this->ui_.title);
+        hbox->addStretch(1);
 
         if (addCheckbox)
         {
@@ -206,13 +187,14 @@ ReplyThreadPopup::ReplyThreadPopup(bool closeAutomatically, Split *split)
                                  }
                              });
             hbox->addWidget(this->ui_.notificationCheckbox);
-            hbox->addStretch(1);
             this->ui_.notificationCheckbox->setFocusPolicy(Qt::NoFocus);
         }
 
         if (closeAutomatically)
         {
-            hbox->addWidget(this->createPinButton(), 0, Qt::AlignRight);
+            auto *pin = this->createPinButton();
+            pin->setObjectName("ReplyThreadPin");
+            hbox->addWidget(pin, 0, Qt::AlignRight);
             hbox->setContentsMargins(0, 0, 0, 5);
         }
         else
@@ -220,37 +202,97 @@ ReplyThreadPopup::ReplyThreadPopup(bool closeAutomatically, Split *split)
             hbox->setContentsMargins(10, 0, 0, 4);
         }
 
-        layout->addLayout(hbox, 1);
+        layout->addLayout(hbox);
     }
 
     layout->addWidget(this->ui_.threadView, 1);
     layout->addWidget(this->ui_.replyInput);
 
-    // size grip: visible, in the margin below the input's icons
     if (closeAutomatically)
     {
-        auto *grip = new CornerGrip(this);
-        grip->setFixedSize(14, 14);
-        layers->addWidget(grip, 0, 0, Qt::AlignRight | Qt::AlignBottom);
-        grip->raise();
+        this->resizeGrip_ = new UsercardResizeGrip(this);
+        this->resizeGrip_->syncGeometry(this->scale());
     }
 
     // Roomier than the old minimum, and the size the user last chose.
     const int width = getSettings()->replyThreadPopupWidth.getValue();
     const int height = getSettings()->replyThreadPopupHeight.getValue();
-    this->setScaleIndependentSize(width >= 320 ? width : 520,
-                                  height >= 200 ? height : 420);
+    // setScaleIndependentSize() fixes both min and max dimensions. A resize
+    // grip cannot change a fixed-size window, even when its cursor is visible.
+    this->setMinimumSize(qRound(320 * this->scale()), qRound(200 * this->scale()));
+    this->resize(qRound((width >= 320 ? width : 520) * this->scale()),
+                 qRound((height >= 200 ? height : 420) * this->scale()));
+    this->refreshStyle();
 }
 
 void ReplyThreadPopup::resizeEvent(QResizeEvent *event)
 {
     DraggablePopup::resizeEvent(event);
+    if (this->resizeGrip_)
+        this->resizeGrip_->syncGeometry(this->scale());
     if (this->isVisible())
     {
         const auto scale = std::max(0.1F, this->scale());
         getSettings()->replyThreadPopupWidth = int(this->width() / scale);
         getSettings()->replyThreadPopupHeight = int(this->height() / scale);
     }
+}
+
+void ReplyThreadPopup::paintEvent(QPaintEvent *event)
+{
+    if (!this->frameless_)
+    {
+        DraggablePopup::paintEvent(event);
+        return;
+    }
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(this->theme->splits.header.border);
+    painter.setBrush(this->theme->window.background);
+    const auto radius = 10 * this->scale();
+    painter.drawRoundedRect(QRectF(rect()).adjusted(.5, .5, -.5, -.5), radius, radius);
+}
+
+void ReplyThreadPopup::refreshStyle()
+{
+    if (!this->ui_.title)
+        return;
+    const auto fontScale = std::max(.85F, this->scale());
+    auto *fonts = getApp()->getFonts();
+    this->ui_.title->setFont(fonts->getFont(FontStyle::ChatMediumBold, fontScale));
+    this->ui_.title->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
+                                      .arg(this->theme->window.text.name()));
+    if (auto *checkbox = this->ui_.notificationCheckbox)
+    {
+        checkbox->setPalette(moltorinoDialogPalette(*this->theme));
+        checkbox->setFont(fonts->getFont(FontStyle::ChatMediumSmall, fontScale));
+        checkbox->setStyleSheet(QStringLiteral(R"(
+            QCheckBox { color: %1; background: transparent; spacing: 6px; }
+            QCheckBox::indicator { width: 13px; height: 13px; border-radius: 3px;
+                                    border: 1px solid %2; background: %3; }
+            QCheckBox::indicator:checked { image: url(:/buttons/menu-check-%5.svg);
+                                           border-color: %4; }
+            QCheckBox::indicator:hover { border-color: %4; }
+        )").arg(this->theme->window.text.name(), this->theme->tabs.dividerLine.name(),
+                this->theme->splits.input.background.name(), this->theme->accent.name(),
+                this->theme->isLightTheme() ? "light" : "dark"));
+    }
+    this->update();
+}
+
+void ReplyThreadPopup::themeChangedEvent()
+{
+    DraggablePopup::themeChangedEvent();
+    this->refreshStyle();
+}
+
+void ReplyThreadPopup::scaleChangedEvent(float scale)
+{
+    DraggablePopup::scaleChangedEvent(scale);
+    this->setMinimumSize(qRound(320 * scale), qRound(200 * scale));
+    this->refreshStyle();
+    if (this->resizeGrip_)
+        this->resizeGrip_->syncGeometry(scale);
 }
 
 void ReplyThreadPopup::setThread(std::shared_ptr<MessageThread> thread,
@@ -359,7 +401,7 @@ void ReplyThreadPopup::updateInputUI()
         auto user = getApp()->getAccounts()->twitch.getCurrent();
         if (!user->isAnon())
         {
-            name = user->getUserName();
+            name = user->getDisplayName();
         }
     }
     else

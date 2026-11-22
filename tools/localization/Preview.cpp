@@ -10,6 +10,8 @@
 #include "widgets/helper/ChannelView.hpp"
 #include "widgets/helper/MenuStyle.hpp"
 #include "widgets/helper/UpdateBanner.hpp"
+#include "widgets/dialogs/ReplyThreadPopup.hpp"
+#include "messages/MessageThread.hpp"
 #include "widgets/Scrollbar.hpp"
 #include "common/Version.hpp"
 #include "controllers/tray/TrayController.hpp"
@@ -89,6 +91,8 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QKeyEvent>
+#include <QMouseEvent>
+#include <QCheckBox>
 #include <QStyleOptionComboBox>
 #include <QScreen>
 #ifdef USEWINSDK
@@ -738,6 +742,45 @@ int main(int argc, char **argv)
         app.theme.themeName.setValue(previewTheme);
     }
     installMenuStyle();
+    if (argc > 2 && QByteArray(argv[2]) == "--reply-thread")
+    {
+        Split split(nullptr);
+        auto source = std::make_shared<Channel>("thread-fixture", Channel::Type::None);
+        split.setChannel(IndirectChannel(source));
+        ReplyThreadPopup popup(true, &split);
+        auto thread = std::make_shared<MessageThread>(makeSystemMessage("Первое сообщение в ветке"));
+        auto reply = makeSystemMessage("Ответ на первое сообщение");
+        thread->addToThread(reply);
+        popup.setThread(thread, source);
+        popup.setAttribute(Qt::WA_DontShowOnScreen);
+        if (auto *pin = popup.findChild<QWidget *>("ReplyThreadPin"))
+            QMetaObject::invokeMethod(pin, "leftClicked", Qt::DirectConnection);
+        popup.show();
+        QApplication::processEvents();
+        auto *grip = popup.findChild<QWidget *>("UsercardResizeGrip");
+        bool resized = false;
+        if (grip)
+        {
+            const auto before = popup.geometry();
+            const QPoint edge(grip->width() - 2, grip->height() - 2);
+            const QPoint global = grip->mapToGlobal(edge), delta(72, 48);
+            QMouseEvent press(QEvent::MouseButtonPress, QPointF(edge), QPointF(global), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(grip, &press);
+            QMouseEvent move(QEvent::MouseMove, QPointF(edge + delta), QPointF(global + delta), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(grip, &move);
+            QMouseEvent release(QEvent::MouseButtonRelease, QPointF(edge + delta), QPointF(global + delta), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(grip, &release);
+            resized = popup.width() == before.width() + delta.x() && popup.height() == before.height() + delta.y();
+        }
+        check(resized, "public reply thread resizes by dragging real corner");
+        check(popup.minimumWidth() < popup.maximumWidth(), "reply popup is not fixed width");
+        check(popup.grab().save(output + "/reply-thread.png"), "reply thread renders");
+        popup.hide();
+        QFile report(output + "/reply-thread-results.json");
+        report.open(QIODevice::WriteOnly | QIODevice::Truncate);
+        report.write(QJsonDocument(QJsonObject{{"checks", checks}, {"failures", failures}}).toJson());
+        return failures ? 1 : 0;
+    }
     if (argc > 2 && QByteArray(argv[2]) == "--update-prompt")
     {
         auto notes = QStringLiteral("# Chatterino Noctis 2.0\n\n");
@@ -1057,7 +1100,7 @@ int main(int argc, char **argv)
                     paths.push_back(QString::fromUtf8(input->split('\n').front()));
                     conditional |= input->toLower().contains("if-none-match: \"fixture-v1\"");
                     QByteArray status = "200 OK", etag = "\"fixture-v1\"";
-                    QByteArray body = R"([{"tag_name":"v1.3.8"},{"tag_name":"v3.0.0-beta.1","prerelease":true},{"tag_name":"v2.0.1","draft":false}])";
+                    QByteArray body = R"([{"tag_name":"v1.3.8"},{"tag_name":"v3.0.0-beta.1","prerelease":true},{"tag_name":"v2.0.2","draft":false}])";
                     if (requests == 2) { status = "304 Not Modified"; body.clear(); }
                     else if (requests == 3) { body = R"([{"tag_name":"v2.0.2"}])"; etag = "\"fixture-v2\""; }
                     else if (requests >= 4) { status = "429 Too Many Requests"; body = R"({"message":"rate limited"})"; }
@@ -1085,12 +1128,12 @@ int main(int argc, char **argv)
         };
         auto pause = [](int ms) { QEventLoop loop; QTimer::singleShot(ms,&loop,&QEventLoop::quit); loop.exec(); };
         for (int i = 0; i < 5; ++i) updates.checkForUpdates();
-        check(wait([&]{ return updates.getStatus() == Updates::UpdateAvailable; }, 5000) && updates.getOnlineVersion() == "2.0.1" && requests == 1,
+        check(wait([&]{ return updates.getStatus() == Updates::UpdateAvailable; }, 5000) && updates.getOnlineVersion() == "2.0.2" && requests == 1,
               "HTTP fixture chooses highest stable and coalesces concurrent checks");
         for (int i = 0; i < 5; ++i) updates.checkForUpdates();
         check(wait([&]{ return requests >= 2; }, 18000), "HTTP fixture next request scheduled despite throttle");
         pause(500);
-        check(conditional && updates.getStatus() == Updates::UpdateAvailable && updates.getOnlineVersion() == "2.0.1" && requests == 2,
+        check(conditional && updates.getStatus() == Updates::UpdateAvailable && updates.getOnlineVersion() == "2.0.2" && requests == 2,
               "conditional 304 retains confirmed update and does not create duplicate request");
         updates.checkForUpdates();
         check(wait([&]{return updates.getOnlineVersion()=="2.0.2";},18000) && updates.getStatus()==Updates::UpdateAvailable,
