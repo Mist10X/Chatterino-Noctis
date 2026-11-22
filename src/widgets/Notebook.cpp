@@ -43,6 +43,7 @@
 #include <QWheelEvent>
 #include <QWidget>
 
+#include <algorithm>
 #include <cstdlib>
 #include <memory>
 #include <ranges>
@@ -874,7 +875,9 @@ void Notebook::resizeAddButton()
 
 float Notebook::tabScale() const
 {
-    return std::max(1.F, this->scale());
+    // Keyboard shortcuts can zoom the chat up to 10x. Keep navigation within
+    // the selectable UI scale range so wrapped tabs leave room for messages.
+    return std::clamp(this->scale(), 1.F, 4.F);
 }
 
 void Notebook::scaleChangedEvent(float /*scale*/)

@@ -186,9 +186,15 @@ void checkChatReadability(Split &split, float scale)
     const auto *edit = split.getInput().findChild<QTextEdit *>();
     const auto *header = split.findChild<SplitHeader *>();
     const auto label = QStringLiteral(" at %1x").arg(scale);
-    check(body.pointSizeF() >= 7.5 && timestamp.pointSizeF() >= 7.5 &&
-              view.height() >= QFontMetrics(body).height(),
+    const auto lineHeight = QFontMetrics(body).height();
+    const bool chatReadable = body.pointSizeF() >= 7.5 && timestamp.pointSizeF() >= 7.5 &&
+                              view.height() >= lineHeight;
+    check(chatReadable,
           "readable message and timestamp with room for a line" + label);
+    if (!chatReadable)
+        qWarning() << "Unreadable chat at zoom" << scale << "viewport" << view.size()
+                   << "font line height" << lineHeight << "split" << split.size()
+                   << "composer" << split.getInput().size();
     check(edit && edit->font().family() == body.family() &&
               edit->font().pointSizeF() == body.pointSizeF() &&
               edit->viewport()->height() >= edit->fontMetrics().height(),
@@ -1556,6 +1562,8 @@ int main(int argc, char **argv)
                             app.settings.setClampedUiScale(zoom);
                             settle(20);
                             checkChatReadability(*testSplit, zoom);
+                            check(activeTab->height() == int(NOTEBOOK_TAB_HEIGHT * std::clamp(zoom, 1.F, 4.F)),
+                                  QString("channel tab geometry at shortcut zoom %1x").arg(zoom));
                             int index = -1;
                             check(notebook.tabAt(activeTab->geometry().center(), index) == ordinaryPage,
                                   QString("channel tab hit target at shortcut zoom %1x").arg(zoom));
