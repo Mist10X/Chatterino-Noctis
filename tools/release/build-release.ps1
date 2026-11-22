@@ -86,7 +86,7 @@ $runtimeDirs = @('generic', 'iconengines', 'imageformats', 'networkinformation',
                  'platforms', 'styles', 'tls', 'crashpad')
 foreach ($dir in $runtimeDirs) { Copy-Item (Join-Path $Runtime $dir) $staging -Recurse }
 
-# 2. Icon, licences, the guide, release notes, the extra theme.
+# 2. Icon, licences, the guide and release notes.
 Copy-Item (Join-Path $repo 'resources\icon.ico') (Join-Path $staging 'Chatterino-Noctis.ico')
 Copy-Item (Join-Path $repo 'LICENSE') (Join-Path $staging 'LICENSE.txt')
 Copy-Item (Join-Path $repo 'LICENSES') $staging -Recurse
@@ -99,11 +99,11 @@ if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) {
     throw "Release notes not found: $notes"
 }
 Copy-Item -LiteralPath $notes -Destination (Join-Path $staging 'Что нового.txt')
-New-Item -ItemType Directory (Join-Path $staging 'Themes') | Out-Null
-Copy-Item (Join-Path $here 'Mist-Dark.json') (Join-Path $staging 'Themes')
+# Noctis Dark is built into the client. Never ship a writable profile theme
+# in an overlay update: users may have edited even the old default filename.
 
 # 3. Nothing from a profile may be in the package.
-$forbidden = @('Settings', 'Cache', 'Logs', 'Misc', 'Plugins', 'ProfileAvatars', 'IPC', 'Crashes')
+$forbidden = @('Settings', 'Cache', 'Logs', 'Misc', 'Plugins', 'ProfileAvatars', 'IPC', 'Crashes', 'Themes')
 foreach ($name in $forbidden) {
     if (Test-Path (Join-Path $staging $name)) { throw "Profile folder in the package: $name" }
 }

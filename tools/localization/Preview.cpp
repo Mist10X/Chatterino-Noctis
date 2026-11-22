@@ -683,20 +683,28 @@ int main(int argc, char **argv)
     initResources();
     qt.setWindowIcon(QIcon(":/icon.ico"));
     qt.setApplicationDisplayName("Chatterino Noctis");
-    if (argc > 2 && (QByteArray(argv[2]) == "--theme-migration-legacy" ||
-                     QByteArray(argv[2]) == "--theme-migration-custom"))
+    if (argc > 2 && QByteArray(argv[2]).startsWith("--theme-migration-"))
     {
-        const bool custom = QByteArray(argv[2]) == "--theme-migration-custom";
+        const auto mode = QByteArray(argv[2]);
+        const bool stock = mode == "--theme-migration-stock";
+        const bool custom = mode == "--theme-migration-custom" ||
+                            mode == "--theme-migration-custom-mist" ||
+                            mode == "--theme-migration-custom-noctis";
+        const auto oldName = mode == "--theme-migration-custom"
+                                 ? QStringLiteral("fixture-custom.json")
+                                 : mode == "--theme-migration-custom-noctis"
+                                       ? QStringLiteral("Noctis-Dark.json")
+                                       : QStringLiteral("Mist-Dark.json");
         QTemporaryDir themeDir;
-        const auto customFile = themeDir.filePath("fixture-custom.json");
-        check(!custom || QFile::copy(":/themes/Noctis-Dark.json", customFile),
+        const auto customFile = themeDir.filePath(oldName);
+        const auto source = stock ? qEnvironmentVariable("NOCTIS_LEGACY_THEME_FIXTURE")
+                                  : QStringLiteral(":/themes/Noctis-Dark.json");
+        check((!custom && !stock) || QFile::copy(source, customFile),
               "isolated custom theme source copied");
-        const auto oldName = custom ? QStringLiteral("fixture-custom.json")
-                                    : QStringLiteral("Mist-Dark.json");
         const auto seed = QJsonDocument(QJsonObject{{"appearance", QJsonObject{
             {"theme", QJsonObject{{"name", oldName}}}}}}).toJson(QJsonDocument::Compact);
         mock::BaseApplication migrationApp(QString::fromUtf8(seed), true,
-                                          custom ? customFile : QString());
+                                          (custom || stock) ? customFile : QString());
         migrationApp.settings.disableSave();
         const auto selected = migrationApp.theme.themeName.getValue();
         check(selected == (custom ? oldName : QStringLiteral("Noctis-Dark")),

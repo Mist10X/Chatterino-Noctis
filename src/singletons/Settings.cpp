@@ -24,6 +24,8 @@
 #include "util/WindowsHelper.hpp"
 
 #include <pajlada/signals/scoped-connection.hpp>
+#include <QCryptographicHash>
+#include <QFile>
 #include <QStringList>
 #include <rapidjson/pointer.h>
 
@@ -146,7 +148,34 @@ void Settings::migrate(bool isTest)
         if (selectedTheme == QStringLiteral("Mist-Dark.json") ||
             selectedTheme == QStringLiteral("Noctis-Dark.json"))
         {
-            themeName = QString("Noctis-Dark");
+            // These names are also legal custom theme filenames. Only
+            // migrate the unmodified preset shipped with public 1.3.9 (or a
+            // missing legacy file), never a user's edited color palette.
+            auto root = this->settingsPath_.parent_path();
+            // Production settings are in <profile>/Settings. The existing
+            // isolated mock keeps its settings.json at the profile root.
+            if (!isTest || root.filename() == "Settings")
+            {
+                root = root.parent_path();
+            }
+            const auto path = root / "Themes" / qStringToStdPath(selectedTheme);
+            QFile legacyTheme(stdPathToQString(path));
+            bool useBuiltIn = !legacyTheme.exists();
+            if (!useBuiltIn && selectedTheme == QStringLiteral("Mist-Dark.json") &&
+                legacyTheme.size() <= 65536 &&
+                legacyTheme.open(QIODevice::ReadOnly))
+            {
+                const auto digest = QCryptographicHash::hash(
+                    legacyTheme.readAll().replace("\r\n", "\n"),
+                    QCryptographicHash::Sha256);
+                // Published 1.3.9 standard preset, with normalized newlines.
+                useBuiltIn = digest == QByteArray::fromHex(
+                    "4011ce2f84d730631341a2daa5c053326fd374c48ae57712c0ac81db7299f9fd");
+            }
+            if (useBuiltIn)
+            {
+                themeName = QString("Noctis-Dark");
+            }
         }
         this->noctisThemeMigrated = true;
     }
