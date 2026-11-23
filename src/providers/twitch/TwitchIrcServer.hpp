@@ -233,6 +233,7 @@ private:
 
     void refreshModeratedChannels();
     void applyModeratedChannelInfo();
+    void pollChannelPointsInBackground();
 
     QMap<QString, std::weak_ptr<Channel>> channels;
     QMap<QString, std::weak_ptr<Channel>> anonymousChannels;
@@ -246,6 +247,8 @@ private:
     QTimer writeLoginTimeout_;
     QTimer writeConfirmationWatchdog_;
     QTimer writeReconnectTimer_;
+    QTimer channelPointsBackgroundTimer_;
+    QString lastBackgroundPointsChannel_;
     int writeReconnectDelayMs_ = 1000;
     pajlada::Signals::SignalHolder writeSignalHolder_;
     QObjectPtr<TwitchReadConnectionPool> readConnection_ = nullptr;

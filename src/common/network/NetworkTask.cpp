@@ -174,6 +174,8 @@ QNetworkReply *NetworkTask::createReply()
     {
         case NetworkRequestType::Get:
             return accessManager->get(request);
+        case NetworkRequestType::Head:
+            return accessManager->head(request);
 
         case NetworkRequestType::Delete: {
             if (data->payload.isEmpty())

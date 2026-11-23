@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "singletons/ImageUploader.hpp"
+#include "singletons/ImageUploadRouting.hpp"
 
 #include "Application.hpp"
 #include "common/Channel.hpp"
@@ -26,14 +27,13 @@
 
 #include <QBuffer>
 #include <QDesktopServices>
-#include <QHttpMultiPart>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QFileInfo>
 #include <QImageReader>
-#include <QMutex>
 #include <QPointer>
 #include <QSaveFile>
+#include <QUuid>
 
 #include <utility>
 
@@ -41,6 +41,14 @@ namespace {
 
 constexpr int UPLOAD_DELAY = 2000;
 constexpr int UPLOAD_TIMEOUT_MS = 120000;
+
+chatterino::NetworkRequest publicUploadRequest(const QUrl &url, chatterino::NetworkRequestType method)
+{
+    return chatterino::NetworkRequest(url, method).followRedirects(false)
+        .attribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual)
+        .attribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual)
+        .attribute(QNetworkRequest::AuthenticationReuseAttribute, QNetworkRequest::Manual);
+}
 
 bool validUploadLink(const QString &link)
 {
@@ -259,11 +267,12 @@ void ImageUploader::deleteImage(const QString &imageLink,
         done(DeleteResult::Failed, uiText("Invalid deletion link"));
         return;
     }
-    // kappa.lol, segs.lol, ...: the page /delete?KEY asks /api/delete?key=KEY
+    // Kappa uses a query parameter; Olrite uses a token in the path.
+    const auto olriteToken = olriteDeletionToken(url);
     const auto key = url.query(QUrl::FullyEncoded);
-    if (url.scheme() != QStringLiteral("https") ||
+    if (olriteToken.isEmpty() && (url.scheme() != QStringLiteral("https") ||
         url.path() != QStringLiteral("/delete") || key.isEmpty() ||
-        key.contains('=') || key.contains('&'))
+        key.contains('=') || key.contains('&')))
     {
         if (QDesktopServices::openUrl(url))
         {
@@ -283,15 +292,34 @@ void ImageUploader::deleteImage(const QString &imageLink,
     }
     this->deletionsInFlight_.insert(imageKey);
     QUrl api(url);
-    api.setPath(QStringLiteral("/api/delete"));
-    api.setQuery(QStringLiteral("key=") + key);
-    auto finish = [this, imageKey, imageLink, done](const NetworkResult &result) {
+    if (!olriteToken.isEmpty())
+    {
+        api = this->olriteEndpoint_;
+        api.setPath(QStringLiteral("/api/delete/") + olriteToken);
+        api.setQuery(QString());
+    }
+    else
+    {
+        api.setPath(QStringLiteral("/api/delete"));
+        api.setQuery(QStringLiteral("key=") + key);
+    }
+    auto finish = [this, imageKey, imageLink, done, url, olriteToken](const NetworkResult &result) {
         this->deletionsInFlight_.remove(imageKey);
         if (result.parseJson().value("success").toBool())
         {
             this->markDeleted(imageLink);
             imagepreview::forget(imageLink);
             done(DeleteResult::Deleted, {});
+            return;
+        }
+        // If the host requires its browser confirmation page, retain the
+        // deletion link and let the owner confirm there. Never mark it deleted
+        // without the service's successful response.
+        if (!olriteToken.isEmpty() &&
+            (result.status() == 401 || result.status() == 403 || result.status() == 405) &&
+            QDesktopServices::openUrl(url))
+        {
+            done(DeleteResult::OpenedInBrowser, {});
             return;
         }
         if (result.status() == 400 || result.status() == 404)
@@ -302,7 +330,16 @@ void ImageUploader::deleteImage(const QString &imageLink,
         }
         done(DeleteResult::Failed, result.formatError());
     };
-    NetworkRequest(api)
+    auto request = olriteToken.isEmpty()
+                       ? NetworkRequest(api)
+                       : publicUploadRequest(api, NetworkRequestType::Post);
+    if (!olriteToken.isEmpty())
+    {
+        request = std::move(request).header("Content-Type", "application/json")
+                      .payload("{}").singleUseUpload().hideRequestBody();
+    }
+    std::move(request)
+        .caller(this)
         .timeout(10000)
         .onSuccess(finish)
         .onError(finish)
@@ -360,57 +397,208 @@ void ImageUploader::logToFile(const QString &originalFilePath,
     logSaveFile.commit();
 }
 
-void ImageUploader::sendImageUploadRequest(RawImageData imageData,
-                                           ChannelPtr channel,
-                                           QPointer<ResizingTextEdit> textEdit)
+namespace {
+struct UploadSettings {
+    QString url, field, headers, linkPattern, deletePattern;
+    bool fallbackEnabled;
+
+    bool operator==(const UploadSettings &) const = default;
+    bool useKappaFallback() const
+    {
+        return this->fallbackEnabled &&
+               this->url == QStringLiteral("https://kappa.lol/api/upload") &&
+               this->field == u"file" && this->headers.isEmpty() &&
+               this->linkPattern == u"{link}" &&
+               (this->deletePattern.isEmpty() || this->deletePattern == u"{delete}");
+    }
+};
+
+UploadSettings uploadSettings()
 {
-    QUrl url(getSettings()->imageUploaderUrl.getValue().isEmpty()
-                 ? getSettings()->imageUploaderUrl.getDefaultValue()
-                 : getSettings()->imageUploaderUrl);
-    QString formField(
-        getSettings()->imageUploaderFormField.getValue().isEmpty()
-            ? getSettings()->imageUploaderFormField.getDefaultValue()
-            : getSettings()->imageUploaderFormField);
-    auto extraHeaders =
-        parseHeaderList(getSettings()->imageUploaderHeaders.getValue());
-    QString originalFilePath = imageData.filePath;
+    const auto *s = getSettings();
+    auto defaultIfBlank = [](const auto &setting) {
+        return setting.getValue().isEmpty() ? setting.getDefaultValue() : setting.getValue();
+    };
+    return {defaultIfBlank(s->imageUploaderUrl), defaultIfBlank(s->imageUploaderFormField),
+            s->imageUploaderHeaders.getValue(), s->imageUploaderLink.getValue(),
+            s->imageUploaderDeletionLink.getValue(), s->imageUploaderKappaFallback.getValue()};
+}
+
+}  // namespace
+
+struct ImageUploader::PendingImage {
+    RawImageData data;
+    ChannelPtr channel;
+    QPointer<ResizingTextEdit> edit;
+    UploadSettings settings;
+};
+
+void ImageUploader::rememberKappaHealth(bool available)
+{
+    this->kappaAvailable_ = available;
+    this->kappaHealthUntil_ = QDeadlineTimer(available ? 60000 : 30000);
+}
+
+void ImageUploader::uploadNextImage(ChannelPtr channel, QPointer<ResizingTextEdit> textEdit)
+{
+    auto image = std::make_shared<PendingImage>(PendingImage{
+        std::move(this->uploadQueue_.front()), channel, textEdit, uploadSettings()});
+    this->uploadQueue_.pop();
     this->updated.invoke({
         .kind = ImageUploadUpdate::Kind::Started,
         .textEdit = textEdit.data(),
-        .imageData = imageData.data,
-        .queued = this->uploadQueue_.size() > 0 ? this->uploadQueue_.size() - 1
-                                                : 0,
+        .imageData = image->data.data,
+        .queued = this->uploadQueue_.size(),
     });
+    if (!image->settings.useKappaFallback())
+    {
+        this->submitImage(image, false);
+        return;
+    }
+    if (!this->kappaHealthUntil_.hasExpired())
+    {
+        this->submitImage(image, !this->kappaAvailable_);
+        return;
+    }
+    // Only the current item has a pending probe. The remaining batch stays
+    // queued and uses the cached result. No checks run while the uploader is idle.
+    const auto checked = [this, image](const NetworkResult &result) {
+        const int status = result.status().value_or(0);
+        if ((status >= 200 && status < 300) || status == 404 || status == 405)
+        {
+            // A POST-only route may intentionally return 404/405 to HEAD.
+            this->rememberKappaHealth(true);
+            this->submitImage(image, false);
+        }
+        else if (hostUnavailable(result))
+        {
+            this->rememberKappaHealth(false);
+            this->submitImage(image, true);
+        }
+        else
+        {
+            this->handleFailedUpload(result, QStringLiteral("kappa.lol"),
+                                     image->channel, image->edit);
+        }
+    };
+    publicUploadRequest(this->kappaEndpoint_, NetworkRequestType::Head)
+        .caller(this).timeout(2500).onSuccess(checked).onError(checked).execute();
+}
 
-    QHttpMultiPart *payload = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-    QHttpPart part = QHttpPart();
-    part.setBody(imageData.data);
-    part.setHeader(QNetworkRequest::ContentTypeHeader, imageData.mimeType);
-    part.setHeader(QNetworkRequest::ContentLengthHeader,
-                   QVariant(imageData.data.length()));
-    part.setHeader(QNetworkRequest::ContentDispositionHeader,
-                   QString(R"(form-data; name="%1"; filename="control_v.%2")")
-                       .arg(formField)
-                       .arg(imageData.format));
-    payload->append(part);
+void ImageUploader::submitImage(const std::shared_ptr<PendingImage> &image,
+                                bool secondary)
+{
+    const auto &config = image->settings;
+    const bool managed = config.useKappaFallback();
+    if (managed && (!getSettings()->imageUploaderEnabled ||
+                    uploadSettings() != config || !image->edit ||
+                    this->pastePosition_.document() != image->edit->document()))
+    {
+        this->updated.invoke({.kind = ImageUploadUpdate::Kind::Failed,
+                              .textEdit = image->edit.data()});
+        this->finishUpload();
+        return;
+    }
+    const auto url = secondary ? this->olriteEndpoint_ :
+        config.url == QStringLiteral("https://kappa.lol/api/upload")
+            ? this->kappaEndpoint_ : QUrl(config.url);
+    const auto &imageData = image->data;
+    const QString formField = secondary ? QStringLiteral("file") : config.field;
+    // Use the same non-replayable POST as chat sends. A host can store the
+    // image and then close the connection before it sends back a link.
+    const auto boundary = QUuid::createUuid().toByteArray(QUuid::WithoutBraces);
+    const auto field = formField.toUtf8().replace("\r", "%0D").replace("\n", "%0A")
+                           .replace("\"", "%22");
+    QByteArray body = "--" + boundary +
+        "\r\nContent-Disposition: form-data; name=\"" + field +
+        "\"; filename=\"control_v." + imageData.format.toUtf8() +
+        "\"\r\nContent-Type: " + imageData.mimeType.toUtf8() + "\r\n\r\n";
+    body.reserve(body.size() + imageData.data.size() + boundary.size() + 8);
+    body += imageData.data;
+    body += "\r\n--" + boundary + "--\r\n";
 
-    NetworkRequest(url, NetworkRequestType::Post)
-        .headerList(extraHeaders)
-        .multiPart(payload)
+    auto request = managed ? publicUploadRequest(url, NetworkRequestType::Post)
+                           : NetworkRequest(url, NetworkRequestType::Post)
+                                 .headerList(parseHeaderList(config.headers));
+    if (secondary)
+    {
+        request = std::move(request).header("X-Olrite-Preserve", "true");
+    }
+    std::move(request)
+        .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+        .payload(body)
+        .singleUseUpload()
+        .hideRequestBody()
+        .caller(this)
         .timeout(UPLOAD_TIMEOUT_MS)
         .onSuccess(
-            [textEdit, channel, originalFilePath, this](NetworkResult result) {
-                this->handleSuccessfulUpload(result, originalFilePath, channel,
-                                             textEdit);
+            [this, image, secondary, managed, host = url.host()](NetworkResult result) {
+                const auto status = result.status().value_or(0);
+                if (managed && (status < 200 || status >= 300))
+                {
+                    this->handleFailedUpload(result, host, image->channel, image->edit);
+                    return;
+                }
+                if (managed && !secondary)
+                    this->rememberKappaHealth(true);
+                const auto &config = image->settings;
+                QString link;
+                QString deletionLink;
+                if (secondary)
+                {
+                    const auto response = result.parseJson();
+                    if (!response.value("success").toBool(true))
+                    {
+                        this->handleFailedUpload(result, host, image->channel, image->edit);
+                        return;
+                    }
+                    link = olriteImageLink(response.value("url").toString());
+                    for (const auto &field : {"delete", "delete_url", "deleteUrl", "deletion_url"})
+                    {
+                        const auto candidate = olriteLink(response.value(field).toString());
+                        if (!olriteDeletionToken(QUrl(candidate)).isEmpty())
+                        {
+                            deletionLink = candidate;
+                            break;
+                        }
+                    }
+                    if (!link.isEmpty() && deletionLink.isEmpty())
+                    {
+                        image->channel->addSystemMessage(
+                            uiText("The backup service did not return a deletion link."));
+                    }
+                }
+                else
+                {
+                    link = config.linkPattern.isEmpty() ? QString::fromUtf8(result.getData())
+                                                        : getLinkFromResponse(result, config.linkPattern);
+                    if (!config.deletePattern.isEmpty())
+                        deletionLink = getLinkFromResponse(result, config.deletePattern);
+                    if (managed)
+                    {
+                        link = builtInImageLink(link, QStringLiteral("kappa.lol"));
+                        deletionLink = builtInImageLink(deletionLink, QStringLiteral("kappa.lol"));
+                    }
+                }
+                this->handleSuccessfulUpload(link, deletionLink, *image);
             })
-        .onError([channel, textEdit, this](NetworkResult result) -> bool {
-            this->handleFailedUpload(result, channel, textEdit);
-            return true;
+        .onError([this, image, secondary, managed, host = url.host()](NetworkResult result) {
+            if (managed && !secondary && hostUnavailable(result))
+            {
+                this->rememberKappaHealth(false);
+                if (failedBeforeUpload(result))
+                {
+                    this->submitImage(image, true);
+                    return;
+                }
+            }
+            this->handleFailedUpload(result, host, image->channel, image->edit);
         })
         .execute();
 }
 
 void ImageUploader::handleFailedUpload(const NetworkResult &result,
+                                       const QString &host,
                                        ChannelPtr channel,
                                        QPointer<ResizingTextEdit> textEdit)
 {
@@ -419,52 +607,59 @@ void ImageUploader::handleFailedUpload(const NetworkResult &result,
         .textEdit = textEdit.data(),
     });
 
-    auto errorMessage =
-        QString("An error happened while uploading your image: %1")
-            .arg(result.formatError());
+    QString errorMessage;
+    if (result.error() == QNetworkReply::HostNotFoundError)
+    {
+        errorMessage = host.isEmpty()
+            ? uiText("Upload server not found. Check its address in the image uploader settings.")
+            : uiText("Upload server %1 could not be found in DNS. Check its address in the image uploader settings.").arg(host);
+    }
+    else if (result.error() == QNetworkReply::RemoteHostClosedError ||
+             result.error() == QNetworkReply::ContentReSendError)
+    {
+        errorMessage = uiText("The upload service did not confirm the upload. You can paste the image again.");
+    }
+    else
+    {
+        errorMessage = uiText("Could not upload the image (%1).").arg(result.formatError());
+    }
 
-    auto obj = result.parseJson();
-    if (!obj.isEmpty())
+    if (const auto obj = result.parseJson();
+        result.error() != QNetworkReply::HostNotFoundError && !obj.isEmpty())
     {
         auto apiCode = obj.value("code");
         if (!apiCode.isUndefined())
         {
             auto codeString = apiCode.toVariant().toString();
             codeString.truncate(20);
-            errorMessage += QString(" - code: %1").arg(codeString);
+            errorMessage += QStringLiteral(" [%1]").arg(codeString);
         }
 
         auto apiError = obj.value("error").toString();
         if (!apiError.isEmpty())
         {
             apiError.truncate(300);
-            errorMessage += QString(" - error: %1").arg(apiError.trimmed());
+            errorMessage += QStringLiteral(" %1").arg(apiError.trimmed());
         }
     }
 
     channel->addSystemMessage(errorMessage);
 
-    while (!this->uploadQueue_.empty())
-    {
-        this->uploadQueue_.pop();
-    }
-    this->uploadMutex_.unlock();
+    this->finishUpload();
 }
 
-void ImageUploader::handleSuccessfulUpload(const NetworkResult &result,
-                                           QString originalFilePath,
-                                           ChannelPtr channel,
-                                           QPointer<ResizingTextEdit> textEdit)
+void ImageUploader::finishUpload()
 {
-    QString link =
-        getSettings()->imageUploaderLink.getValue().isEmpty()
-            ? result.getData()
-            : getLinkFromResponse(result, getSettings()->imageUploaderLink);
-    QString deletionLink =
-        getSettings()->imageUploaderDeletionLink.getValue().isEmpty()
-            ? ""
-            : getLinkFromResponse(result,
-                                  getSettings()->imageUploaderDeletionLink);
+    QObject::disconnect(this->draftChange_);
+    this->pastePosition_ = {};
+    this->uploadQueue_ = {};
+    this->uploading_ = false;
+}
+void ImageUploader::handleSuccessfulUpload(QString link, QString deletionLink,
+                                          const PendingImage &image)
+{
+    const auto &channel = image.channel;
+    const auto &textEdit = image.edit;
     link = link.trimmed();
     deletionLink = deletionLink.trimmed();
     if (!validUploadLink(link))
@@ -472,38 +667,46 @@ void ImageUploader::handleSuccessfulUpload(const NetworkResult &result,
         this->updated.invoke({.kind = ImageUploadUpdate::Kind::Failed,
                               .textEdit = textEdit.data()});
         channel->addSystemMessage(uiText("The upload service returned an invalid image link."));
-        this->uploadQueue_ = {};
-        this->uploadMutex_.unlock();
+        this->finishUpload();
         return;
     }
     if (!validUploadLink(deletionLink))
     {
         deletionLink.clear();
     }
-    this->logToFile(originalFilePath, link, deletionLink, channel);
-    if (textEdit == nullptr)
+    this->logToFile(image.data.filePath, link, deletionLink, channel);
+    if (!textEdit || this->pastePosition_.isNull() ||
+        this->pastePosition_.document() != textEdit->document())
     {
-        while (!this->uploadQueue_.empty())
-        {
-            this->uploadQueue_.pop();
-        }
-        this->uploadMutex_.unlock();
+        this->updated.invoke({.kind = ImageUploadUpdate::Kind::Failed,
+                              .textEdit = textEdit.data()});
+        channel->addSystemMessage(uiText("Uploaded image: %1").arg(link));
+        this->finishUpload();
         return;
     }
-    if (this->pastePosition_.document() == textEdit->document() && !link.isEmpty())
     {
         auto &cursor = this->pastePosition_;
         // Typing at a stationary cursor can extend its selection. Insert at
         // the saved edge without replacing any of the newly typed caption.
         cursor.clearSelection();
-        QString insertion = link + ' ';
+        QString insertion = link;
         if (cursor.positionInBlock() > 0 &&
             !cursor.document()->characterAt(cursor.position() - 1).isSpace())
         {
             insertion.prepend(' ');
         }
+        const bool hasSeparator = cursor.position() < cursor.document()->characterCount() - 1 &&
+            cursor.document()->characterAt(cursor.position()).isSpace();
+        const auto active = textEdit->textCursor();
+        const bool caretAtPaste = !active.hasSelection() && active.position() == cursor.position();
+        if (!hasSeparator)
+            insertion.append(' ');
         cursor.setKeepPositionOnInsert(false);
         cursor.insertText(insertion);
+        if (hasSeparator)
+            cursor.movePosition(QTextCursor::NextCharacter);
+        if (caretAtPaste)
+            textEdit->setTextCursor(cursor);
         cursor.setKeepPositionOnInsert(true);
     }
     // The preview above the input shows the picture, the link and a delete
@@ -516,14 +719,18 @@ void ImageUploader::handleSuccessfulUpload(const NetworkResult &result,
     });
     if (this->uploadQueue_.empty())
     {
-        this->uploadMutex_.unlock();
+        this->finishUpload();
     }
     else
     {
-        QTimer::singleShot(UPLOAD_DELAY, [channel, textEdit, this]() {
-            this->sendImageUploadRequest(this->uploadQueue_.front(), channel,
-                                         textEdit);
-            this->uploadQueue_.pop();
+        QTimer::singleShot(UPLOAD_DELAY, this, [this, channel, textEdit, settings = image.settings]() {
+            if (!getSettings()->imageUploaderEnabled || uploadSettings() != settings ||
+                !textEdit || this->pastePosition_.document() != textEdit->document())
+            {
+                this->finishUpload();
+                return;
+            }
+            this->uploadNextImage(channel, textEdit);
         });
     }
 }
@@ -638,26 +845,39 @@ void ImageUploader::upload(std::queue<RawImageData> images, ChannelPtr channel,
                            QPointer<ResizingTextEdit> outputTextEdit)
 {
     BenchmarkGuard benchmarkGuard("upload");
-    if (!this->uploadMutex_.tryLock())
+    if (this->uploading_)
     {
-        channel->addSystemMessage("Please wait until the upload finishes.");
+        channel->addSystemMessage(uiText("Please wait until the upload finishes."));
         return;
     }
 
     assert(!images.empty());
     assert(this->uploadQueue_.empty());
 
+    this->uploading_ = true;
     std::swap(this->uploadQueue_, images);
     this->pastePosition_ = outputTextEdit ? outputTextEdit->textCursor() : QTextCursor{};
     if (!this->pastePosition_.isNull())
     {
         this->pastePosition_.setPosition(this->pastePosition_.selectionStart());
         this->pastePosition_.setKeepPositionOnInsert(true);
+        auto *document = this->pastePosition_.document();
+        this->draftChange_ = QObject::connect(
+            document, &QTextDocument::contentsChange, this,
+            [this, document, previousLength = document->characterCount()]
+            (int position, int removed, int added) mutable {
+                // setPlainText/clear replace the document's final paragraph,
+                // even though the QTextDocument object itself stays the same.
+                if (position == 0 && removed > 0 &&
+                    (removed >= previousLength || (!added && document->isEmpty())))
+                {
+                    this->pastePosition_ = {};
+                }
+                previousLength = document->characterCount();
+            });
     }
 
-    this->sendImageUploadRequest(this->uploadQueue_.front(), std::move(channel),
-                                 std::move(outputTextEdit));
-    this->uploadQueue_.pop();
+    this->uploadNextImage(std::move(channel), std::move(outputTextEdit));
 }
 
 }  // namespace chatterino

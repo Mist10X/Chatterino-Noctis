@@ -1,0 +1,14 @@
+{
+  "screens": [
+    {
+      "name": "Offscreen 1920x1080",
+      "x": 0,
+      "y": 0,
+      "width": 1920,
+      "height": 1080,
+      "logicalDpi": 96,
+      "logicalBaseDpi": 96,
+      "devicePixelRatio": 1
+    }
+  ]
+}

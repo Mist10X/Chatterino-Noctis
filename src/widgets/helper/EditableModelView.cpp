@@ -101,8 +101,6 @@ EditableModelView::EditableModelView(QAbstractTableModel *model, bool movable)
                      });
 
     vbox->addWidget(this->tableView_);
-
-    buttons->addStretch(1);
 }
 void EditableModelView::setValidationRegexp(QRegularExpression regexp)
 {
@@ -249,9 +247,15 @@ void EditableModelView::addRegexHelpLink()
         new QLabel(uiText("<a href='"
                    "https://chatterino.com/help/regex'>"
                    "<span style='color:#99f'>regex info</span></a>"));
+    regexHelpLabel->setObjectName("settingsRegexHelp");
     regexHelpLabel->setOpenExternalLinks(true);
     regexHelpLabel->setWordWrap(true);
-    this->addCustomButton(regexHelpLabel);
+    regexHelpLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    // Use the toolbar's free space before wrapping the help link. A plain
+    // word-wrapped label would keep its narrow size hint while the spacer
+    // consumed the rest of the row.
+    regexHelpLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    this->buttons_->addWidget(regexHelpLabel, 1);
 }
 
 bool EditableModelView::filterSearchResults(const QString &query,

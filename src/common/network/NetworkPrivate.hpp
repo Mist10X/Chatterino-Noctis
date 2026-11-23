@@ -78,7 +78,12 @@ public:
     QString typeString() const;
     QString diagnosticUrl() const
     {
-        return this->request.url().toString(QUrl::RemoveQuery | QUrl::RemoveFragment |
+        auto url = this->request.url();
+        if (url.path().startsWith(QStringLiteral("/api/delete/")))
+        {
+            url.setPath(QStringLiteral("/api/delete/redacted"));
+        }
+        return url.toString(QUrl::RemoveQuery | QUrl::RemoveFragment |
                                             QUrl::RemoveUserInfo);
     }
 

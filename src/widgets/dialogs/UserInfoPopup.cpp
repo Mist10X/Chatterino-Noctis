@@ -3562,8 +3562,18 @@ void UserInfoPopup::themeChangedEvent()
                     label->objectName() == "UsercardActivityTitle" ? FontStyle::ChatMediumBold : FontStyle::ChatMedium,
                     this->scale()));
         }
-        this->ui_.messagesHeading->setFont(font);
-        this->ui_.headingChannelName->setFont(font);
+        // Use the same legible semi-bold face as the navigation tabs.
+        // LabelButton synchronizes its inner label on FontChange.
+        const auto headerFont = getApp()->getFonts()->getFont(
+            FontStyle::UiTabs, this->scale());
+        this->ui_.messagesHeading->setFont(headerFont);
+        this->ui_.headingChannelName->setFont(headerFont);
+        for (auto *button : {this->ui_.rolesToggle, this->ui_.messagesToggle,
+                             this->ui_.historyButton})
+        {
+            if (button)
+                button->setFont(headerFont);
+        }
         this->ui_.actions->setFont(font);
         this->ui_.rolesPage->setScale(this->scale());
         this->updateMessagesHeader();

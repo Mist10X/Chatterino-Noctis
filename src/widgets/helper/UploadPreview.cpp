@@ -155,7 +155,7 @@ void UploadPreview::apply(const ImageUploadUpdate &update)
             this->pendingThumbnail_ = {};
             this->link_ = update.link;
             this->delete_->setEnabled(true);
-            this->delete_->show();
+            this->delete_->setVisible(!update.deletionLink.isEmpty());
             this->setStatus(
                 uiText("Uploaded to %1").arg(siteOf(update.link)),
                 update.link);

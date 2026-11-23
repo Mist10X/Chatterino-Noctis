@@ -151,7 +151,9 @@ private:
     int normalTabWidthForHeight(int height) const;
 
     bool showsAvatar() const;
-    /// The tab shows only its avatar (an unselected tab in "Avatar only").
+    /// Compact avatar tabs reveal their title only when selected.
+    bool collapsesAvatarTitle() const;
+    /// The title is currently fully collapsed.
     bool avatarOnly() const;
     int avatarDiameter() const;
     void paintAvatar(QPainter &painter, QRect rect, const QColor &text);

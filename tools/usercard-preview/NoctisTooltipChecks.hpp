@@ -11,6 +11,7 @@
 
 #include <QApplication>
 #include <QFile>
+#include <QFontInfo>
 #include <QHelpEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -128,6 +129,13 @@ inline int checkNoctisTooltips(const QString &report, const QString &screenshot)
     BaseWidget previewOwner;
     TooltipWidget emoteTip(&previewOwner);
     emoteTip.setOverrideScale(1.3F);
+    // Reproduce an existing profile with a Regular (possibly explicitly
+    // named) chat face; media captions must be more readable without
+    // changing the ordinary tooltip face on subsequent reuse.
+    auto regular = emoteTip.font();
+    regular.setWeight(QFont::Normal);
+    regular.setStyleName(QStringLiteral("Regular"));
+    emoteTip.setFont(regular);
     QPixmap wideSource(560, 280);
     wideSource.fill(QColor("#506bd1"));
     QPainter sourcePainter(&wideSource);
@@ -155,6 +163,9 @@ inline int checkNoctisTooltips(const QString &report, const QString &screenshot)
           qAbs(caption->font().pointSizeF() -
               std::max(7.5, emoteTip.font().pointSizeF() * 0.88)) < 0.2 &&
           caption->font().pointSizeF() >= 7.5);
+    check("media caption resolves to the real compact semibold chat face",
+          caption && QFontInfo(caption->font()).weight() >= QFont::DemiBold &&
+          QFontInfo(caption->font()).family() == QFontInfo(regular).family());
     if (!screenshot.isEmpty())
         emoteTip.grab().save(screenshot + QStringLiteral("-emote.png"));
     emoteTip.setOne({.image = source, .text = {}, .customWidth = 450, .customHeight = 225});
@@ -165,7 +176,9 @@ inline int checkNoctisTooltips(const QString &report, const QString &screenshot)
     QCoreApplication::processEvents();
     check("reused tooltip restores normal caption font for non-emote entries",
           caption && qAbs(caption->font().pointSizeF() -
-                          emoteTip.font().pointSizeF()) < 0.2);
+                          emoteTip.font().pointSizeF()) < 0.2 &&
+          QFontInfo(caption->font()).weight() == QFontInfo(regular).weight() &&
+          QFontInfo(caption->font()).styleName() == QFontInfo(regular).styleName());
     emoteTip.hide();
 
     QFile output(report);

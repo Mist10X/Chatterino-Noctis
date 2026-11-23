@@ -374,6 +374,55 @@ void checkSettingsSelectors(QWidget &widget, OfflineApp &app, const QString &out
     check(checkedCustomSpeed, "located scroll speed on its settings page");
 }
 
+void checkInitialSettingsHighlightFit(QWidget &widget, const QString &output)
+{
+    const auto tabs = widget.findChildren<SettingsDialogTab *>();
+    const auto highlights = std::ranges::find_if(tabs, [](auto *tab) {
+        return tab->name() == uiText("Highlights");
+    });
+    if (highlights == tabs.end())
+    {
+        check(false, "default settings finds Highlights");
+        return;
+    }
+    const auto initialSize = widget.size();
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(*highlights, &enter);
+    QEventLoop settle;
+    QTimer::singleShot(30, &settle, &QEventLoop::quit);
+    settle.exec();
+    auto *page = (*highlights)->createdPage();
+    auto *subtabs = page ? page->findChild<QTabWidget *>() : nullptr;
+    auto *table = subtabs ? subtabs->currentWidget()->findChild<QTableView *>() : nullptr;
+    auto *helpLink = subtabs ? subtabs->currentWidget()->findChild<QLabel *>("settingsRegexHelp") : nullptr;
+    check(table && helpLink, "default Highlights table and help link exist");
+    if (!table || !helpLink)
+    {
+        return;
+    }
+    const auto available = widget.screen()->availableGeometry().size();
+    check(widget.size() == initialSize && widget.width() <= available.width() &&
+              widget.height() <= available.height(),
+          "initial Highlights page keeps the screen-bounded dialog size");
+    if (available.width() >= 1280)
+    {
+        check(table->horizontalHeader()->length() <= table->viewport()->width() &&
+                  table->horizontalScrollBar()->maximum() == 0,
+              "all highlight columns fit at initial 1.3x settings size on a wide screen");
+        check(helpLink->heightForWidth(helpLink->width()) <=
+                  helpLink->fontMetrics().height() + 6,
+              "regex help fits on one line at initial 1.3x settings size");
+    }
+    else
+    {
+        check(table->horizontalHeader()->length() <= table->viewport()->width() ||
+                  table->horizontalScrollBar()->maximum() > 0,
+              "highlight controls remain accessible on a small screen");
+    }
+    check(widget.grab().save(output + "/settings-highlights-initial-130.png"),
+          "rendered initial Highlights layout without a manual resize");
+}
+
 void checkSettingsZoomMatrix(QWidget &widget, OfflineApp &app, const QString &output)
 {
     const auto tabs = widget.findChildren<SettingsDialogTab *>();
@@ -562,17 +611,6 @@ void checkSettingsZoomMatrix(QWidget &widget, OfflineApp &app, const QString &ou
                 if (name == uiText("Highlights") && scale == 1.3F)
                 {
                     check(widget.grab().save(output + "/settings-highlights-130.png"), "rendered highlights table");
-                    const auto compactSize = widget.size();
-                    widget.resize(std::max(1148, widget.width()), widget.height());
-                    QEventLoop settle;
-                    QTimer::singleShot(15, &settle, &QEventLoop::quit);
-                    settle.exec();
-                    auto *table = subtabs->currentWidget()->findChild<QTableView *>();
-                    check(table && table->horizontalHeader()->length() <= table->viewport()->width(),
-                          "all highlight controls fit in a 1148-pixel settings window");
-                    check(widget.grab().save(output + "/settings-highlights-wide-130.png"), "rendered wide highlights table");
-                    widget.resize(compactSize);
-                    QApplication::processEvents();
                 }
                 subtabs->setCurrentIndex(original);
             }
@@ -885,12 +923,17 @@ int main(int argc, char **argv)
         initializeUiLanguage("ru");
         app.settings.chatFontFamily.setValue(QStringLiteral("Noctis Montserrat"));
         app.settings.chatFontSize.setValue(10);
+        app.settings.uiScale.setValue(1.3F);
         SettingsDialog::showDialog(nullptr);
         for (auto *window : QApplication::topLevelWidgets())
         {
             if (auto *settings = dynamic_cast<SettingsDialog *>(window))
             {
                 std::unique_ptr<SettingsDialog> owner(settings);
+                qt.processEvents();
+                checkInitialSettingsHighlightFit(*settings, output);
+                // Still exercise the deliberately compact, manually resized
+                // dialog throughout the zoom matrix.
                 settings->resize(900, 640);
                 qt.processEvents();
                 checkSettingsZoomMatrix(*settings, app, output);
@@ -1632,6 +1675,10 @@ int main(int argc, char **argv)
                     QImage avatar(32, 32, QImage::Format_RGB32);
                     avatar.fill(Qt::blue);
                     avatar.save(app.paths_.twitchProfileAvatars + "/fixture.png");
+                    const auto savedTabStyle = app.settings.tabStyle.getValue();
+                    const auto savedAvatarStyle = app.settings.tabAvatarStyle.getValue();
+                    app.settings.tabStyle.setValue(QStringLiteral("compact"));
+                    app.settings.tabAvatarStyle.setValue(QStringLiteral("avataronly"));
                     activeTab->setDefaultTitle("fixture_channel");
                     activeTab->setAvatarLogin("fixture");
                     notebook.select(whispers, false);
@@ -1657,6 +1704,60 @@ int main(int argc, char **argv)
                     check(activeTab->size() == normalSize && activeTab->height() >= 28 &&
                               normalTab == activeTab->grab().toImage(),
                           "half-scale channel tab retains 1x avatar, name and click target");
+
+                    // Keep the user's avatar preference intact when switching
+                    // tab style, and exercise the live notebook layout.
+                    const auto longLogin = QStringLiteral("wwwwwwwwwwwwwwwwwwwwwwwww");
+                    avatar.save(app.paths_.twitchProfileAvatars + "/" + longLogin + ".png");
+                    activeTab->setDefaultTitle(longLogin);
+                    activeTab->setAvatarLogin(longLogin);
+                    auto *secondPage = notebook.addPage(false);
+                    auto *secondTab = secondPage->getTab();
+                    secondTab->setDefaultTitle(QStringLiteral("fixture"));
+                    secondTab->setAvatarLogin(QStringLiteral("fixture"));
+                    app.settings.tabStyle.setValue(QStringLiteral("normal"));
+                    settle(180);
+                    const int fullFirst = activeTab->minimumTabWidth();
+                    const int fullSecond = secondTab->minimumTabWidth();
+                    activeTab->grab();
+                    secondTab->grab();
+                    check(fullFirst > activeTab->height() &&
+                              fullSecond > secondTab->height() &&
+                              activeTab->toolTip().isEmpty() &&
+                              secondTab->toolTip().isEmpty() &&
+                              app.settings.tabAvatarStyle.getEnum() == TabAvatarStyle::AvatarOnly,
+                          "normal tabs show whole active and inactive channel names despite stored AvatarOnly");
+                    notebook.select(secondPage, false);
+                    settle(70);
+                    check(activeTab->minimumTabWidth() == fullFirst &&
+                              secondTab->minimumTabWidth() == fullSecond,
+                          "normal channel tab widths stay fixed while the selection animates");
+                    settle(170);
+                    check(activeTab->minimumTabWidth() == fullFirst &&
+                              secondTab->minimumTabWidth() == fullSecond,
+                          "normal tab names remain expanded after switching channels");
+                    app.settings.tabAvatarStyle.setValue(QStringLiteral("off"));
+                    settle(180);
+                    check(activeTab->minimumTabWidth() > activeTab->height() &&
+                              activeTab->minimumTabWidth() < fullFirst,
+                          "normal tabs respect the explicit setting to hide avatars");
+                    app.settings.tabStyle.setValue(QStringLiteral("compact"));
+                    app.settings.tabAvatarStyle.setValue(QStringLiteral("avatarandname"));
+                    settle(180);
+                    check(activeTab->minimumTabWidth() > activeTab->height(),
+                          "compact style retains the explicit avatar-and-name option");
+                    app.settings.tabAvatarStyle.setValue(QStringLiteral("avataronly"));
+                    settle(180);
+                    check(activeTab->minimumTabWidth() == activeTab->height(),
+                          "switching back to compact restores collapsed inactive tabs");
+                    notebook.select(ordinaryPage, false);
+                    notebook.removePage(secondPage);
+                    activeTab->setDefaultTitle(QStringLiteral("fixture_channel"));
+                    activeTab->setAvatarLogin(QStringLiteral("fixture"));
+                    app.settings.tabStyle.setValue(savedTabStyle);
+                    app.settings.tabAvatarStyle.setValue(savedAvatarStyle);
+                    settle(180);
+
                     std::vector<SplitContainer *> wrapPages;
                     for (int i = 0; i < 14; ++i)
                     {

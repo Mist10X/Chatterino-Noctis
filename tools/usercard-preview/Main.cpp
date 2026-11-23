@@ -10,6 +10,8 @@
 #include "controllers/commands/Command.hpp"
 #include "controllers/commands/CommandController.hpp"
 #include "controllers/hotkeys/HotkeyController.hpp"
+#include "controllers/highlights/HighlightController.hpp"
+#include "controllers/sound/NullBackend.hpp"
 #include "controllers/spellcheck/SpellChecker.hpp"
 #include "messages/Emote.hpp"
 #include "messages/Image.hpp"
@@ -29,12 +31,17 @@
 #include "PublicLogsChecks.hpp"
 #include "providers/twitch/api/TwitchGql.hpp"
 #include "mocks/BaseApplication.hpp"
+#include "mocks/ChatterinoBadges.hpp"
 #include "mocks/EmoteController.hpp"
 #include "mocks/TwitchIrcServer.hpp"
 #include "mocks/UserData.hpp"
 #include "providers/bttv/BttvEmotes.hpp"
+#include "providers/bttv/BttvBadges.hpp"
 #include "providers/ffz/FfzEmotes.hpp"
+#include "providers/ffz/FfzBadges.hpp"
+#include "providers/folhinha/FolhinhaBadges.hpp"
 #include "providers/seventv/SeventvEmotes.hpp"
+#include "providers/seventv/SeventvBadges.hpp"
 #include "providers/seventv/SeventvPaints.hpp"
 #include "providers/seventv/SeventvAPI.hpp"
 #include "providers/seventv/SeventvPersonalEmotes.hpp"
@@ -60,6 +67,8 @@
 #    include <QGraphicsOpacityEffect>
 #    include "NoctisTooltipChecks.hpp"
 #    include "widgets/helper/MenuStyle.hpp"
+#    include "UploadRoutingChecks.hpp"
+#    include "UploadDraftChecks.hpp"
 #    include "StartupHistoryChecks.hpp"
 #    include "HistoryBadgeChecks.hpp"
 #    include "widgets/helper/ServiceHealthCard.hpp"
@@ -87,6 +96,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -622,6 +632,39 @@ public:
     {
         return &this->twitchBadges;
     }
+    IChatterinoBadges *getChatterinoBadges() override
+    {
+        return &this->chatterinoBadges;
+    }
+    FfzBadges *getFfzBadges() override
+    {
+        return &this->ffzBadges;
+    }
+    BttvBadges *getBttvBadges() override
+    {
+        return &this->bttvBadges;
+    }
+    SeventvBadges *getSeventvBadges() override
+    {
+        return &this->seventvBadges;
+    }
+    HomiesBadges *getHomiesBadges() override
+    {
+        // Optional; constructing it would start a real service timer.
+        return nullptr;
+    }
+    FolhinhaBadges *getFolhinhaBadges() override
+    {
+        return &this->folhinhaBadges;
+    }
+    HighlightController *getHighlights() override
+    {
+        return &this->highlights;
+    }
+    ISoundController *getSound() override
+    {
+        return &this->sound;
+    }
     IUserDataController *getUserData() override
     {
         return &this->userData;
@@ -669,7 +712,7 @@ public:
     }
     ImageUploader *getImageUploader() override
     {
-        // Nothing is uploaded: the checks only drive its progress signal.
+        // Upload checks send synthetic images to a loopback fixture.
         return &this->imageUploader;
     }
 
@@ -680,6 +723,13 @@ public:
     mock::EmoteController emotes;
     mock::MockTwitchIrcServer twitch;
     TwitchBadges twitchBadges;
+    mock::ChatterinoBadges chatterinoBadges;
+    FfzBadges ffzBadges;
+    BttvBadges bttvBadges;
+    SeventvBadges seventvBadges;
+    FolhinhaBadges folhinhaBadges;
+    HighlightController highlights{this->settings, &this->accounts};
+    NullBackend sound;
     mock::UserDataController userData;
     SeventvPaints paints;
     BttvEmotes bttv;
@@ -1165,6 +1215,8 @@ int main(int argc, char **argv)
         {{QStringLiteral("history-checks")},
          QStringLiteral("Exercise actual history widgets against a "
                         "process-owned synthetic local server")},
+        {{QStringLiteral("upload-routing-checks")}, QStringLiteral("Test image uploader selection on local servers")},
+        {{QStringLiteral("upload-draft-checks")}, QStringLiteral("Test screenshot pastes over a loopback upload service")},
         {{QStringLiteral("startup-history-checks")}, QStringLiteral("Verify startup history over loopback")},
         {{QStringLiteral("history-badge-checks")}, QStringLiteral("Verify late-arriving badges in historical chat rows")},
         {{QStringLiteral("noctis-tooltip-checks")}, QStringLiteral("Verify styled text and media captions offline")},
@@ -1211,6 +1263,10 @@ int main(int argc, char **argv)
     if (parser.isSet(QStringLiteral("noctis-tooltip-checks")))
         return preview::checkNoctisTooltips(parser.value(QStringLiteral("report")),
                                             parser.value(QStringLiteral("screenshot")));
+    if (parser.isSet(QStringLiteral("upload-routing-checks")))
+        return preview::uploadchecks::checkRouting(parser.value(QStringLiteral("report")));
+    if (parser.isSet(QStringLiteral("upload-draft-checks")))
+        return preview::uploadchecks::run(parser.value(QStringLiteral("report")));
     if (parser.isSet(QStringLiteral("startup-history-checks")))
         return preview::checkStartupHistory(parser.value(QStringLiteral("report")));
     if (parser.isSet(QStringLiteral("history-badge-checks")))
@@ -2063,6 +2119,19 @@ int main(int argc, char **argv)
                 const auto *headingAvatar = popup.findChild<QLabel *>("ChannelIdentityAvatar");
                 check("channel identity shows name without hash and a round channel avatar", headingChannel && headingAvatar &&
                     headingChannel->text() == QStringLiteral("fixture_room") && headingAvatar->isVisible() && !headingAvatar->pixmap().isNull());
+                bool headerType = headingChannel &&
+                    QFontInfo(headingChannel->font()).weight() >= QFont::DemiBold;
+                const auto *heading = popup.findChild<QLabel *>("UsercardMessagesHeading");
+                headerType &= heading &&
+                    QFontInfo(heading->font()).weight() >= QFont::DemiBold;
+                for (const auto *name : {"UsercardRolesToggle", "UsercardMessagesToggle",
+                                         "UsercardHistory"})
+                {
+                    const auto *button = popup.findChild<QWidget *>(name);
+                    const auto *label = button ? button->findChild<QLabel *>() : nullptr;
+                    headerType &= label && QFontInfo(label->font()).weight() >= QFont::DemiBold;
+                }
+                check("usercard history heading and navigation render the real semibold tab font", headerType);
 
                 // Show the actual production image-tooltip on a real badge,
                 // using only the fixture's loaded synthetic asset.

@@ -24,7 +24,11 @@ using MessagePtr = std::shared_ptr<const Message>;
 
 namespace chatterino::recentmessages {
 
-using ResultCallback = std::function<void(const std::vector<MessagePtr> &)>;
+// Display the primary batch immediately. Additional batches contain only
+// verified messages from independent sources for suspect intervals. The final
+// batch (possibly empty) or the error callback completes the operation.
+using ResultCallback = std::function<void(const std::vector<MessagePtr> &,
+                                          bool fallback, bool finished)>;
 using ErrorCallback = std::function<void()>;
 
 void load(

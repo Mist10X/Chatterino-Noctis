@@ -5,13 +5,15 @@
 #pragma once
 
 #include <pajlada/signals/signal.hpp>
+#include <QDeadlineTimer>
 #include <QHash>
 #include <QMimeData>
-#include <QMutex>
+#include <QObject>
 #include <QSet>
 #include <QString>
 #include <QStringView>
 #include <QTextCursor>
+#include <QUrl>
 
 #include <functional>
 #include <memory>
@@ -60,8 +62,9 @@ struct ImageUploadUpdate {
     size_t queued = 0;
 };
 
-class ImageUploader final
+class ImageUploader final : public QObject
 {
+    friend class ImageUploaderTestAccess;
 public:
     enum class DeleteResult { Deleted, OpenedInBrowser, Failed };
 
@@ -78,7 +81,7 @@ public:
     /// Public URLs uploaded from this installation and posted by a saved Twitch account.
     QStringList deletableImages(const Message &message);
 
-    /// Deletes a picture uploaded from here. kappa.lol and its sister sites
+    /// Deletes a picture uploaded from here. kappa.lol and olrite.lol
     /// are asked directly; for other sites the deletion page is opened in
     /// the browser. `done` gets an error text on failure (GUI thread).
     void deleteImage(const QString &imageLink,
@@ -92,20 +95,28 @@ private:
     void loadDeletionLinks();
     void markDeleted(const QString &imageLink);
 
-    void sendImageUploadRequest(RawImageData imageData, ChannelPtr channel,
-                                QPointer<ResizingTextEdit> textEdit);
+    void uploadNextImage(ChannelPtr channel, QPointer<ResizingTextEdit> textEdit);
+    struct PendingImage;
+    void submitImage(const std::shared_ptr<PendingImage> &image, bool secondary);
+    void rememberKappaHealth(bool available);
 
-    void handleSuccessfulUpload(const NetworkResult &result,
-                                QString originalFilePath, ChannelPtr channel,
-                                QPointer<ResizingTextEdit> textEdit);
-    void handleFailedUpload(const NetworkResult &result, ChannelPtr channel,
+    void handleSuccessfulUpload(QString link, QString deletionLink,
+                                const PendingImage &image);
+    void handleFailedUpload(const NetworkResult &result, const QString &host,
+                            ChannelPtr channel,
                             QPointer<ResizingTextEdit> textEdit);
+    void finishUpload();
 
     void logToFile(const QString &originalFilePath, const QString &imageLink,
                    const QString &deletionLink, ChannelPtr channel);
 
-    QMutex uploadMutex_;
+    bool uploading_ = false;
+    QUrl kappaEndpoint_{QStringLiteral("https://kappa.lol/api/upload")};
+    QUrl olriteEndpoint_{QStringLiteral("https://olrite.lol/api/upload")};
+    QDeadlineTimer kappaHealthUntil_{0};
+    bool kappaAvailable_ = true;
     QTextCursor pastePosition_;
+    QMetaObject::Connection draftChange_;
     std::queue<RawImageData> uploadQueue_;
     /// imagepreview::key of the picture -> its deletion link
     QHash<QString, QString> deletionLinks_;

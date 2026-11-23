@@ -105,6 +105,18 @@ public:
         channel.loadRecentMessages();
     }
 
+    static qint64 rejoinAfterHeartbeat(TwitchChannel &channel, qint64 heartbeatMs)
+    {
+        *channel.roomID_.access() = QStringLiteral("910000002");
+        channel.lastConnectedAt_ = std::chrono::system_clock::time_point(
+            std::chrono::milliseconds(heartbeatMs));
+        channel.markDisconnected();
+        channel.joined.invoke();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   channel.lastConnectedAt_->time_since_epoch())
+            .count();
+    }
+
     static bool historyBadgeRefreshPending(const TwitchChannel &channel)
     {
         return channel.historyBadgeRefreshQueued_;

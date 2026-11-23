@@ -42,7 +42,8 @@ std::vector<Communi::IrcMessage *> parseRecentMessages(
 }
 
 std::vector<MessagePtr> buildRecentMessages(
-    std::vector<Communi::IrcMessage *> &messages, Channel *channel)
+    std::vector<Communi::IrcMessage *> &messages, Channel *channel,
+    bool includeDateMarkers)
 {
     VectorMessageSink sink({}, MessageFlag::RecentMessage);
 
@@ -54,7 +55,8 @@ std::vector<MessagePtr> buildRecentMessages(
 
     for (auto *message : messages)
     {
-        if (auto optReceivedTs = message->tags().get("rm-received-ts"))
+        if (auto optReceivedTs = message->tags().get("rm-received-ts");
+            includeDateMarkers && optReceivedTs)
         {
             const auto msgDate =
                 QDateTime::fromMSecsSinceEpoch(optReceivedTs->toLongLong())
@@ -105,14 +107,33 @@ QString recentMessagesApiUrlTemplate()
     }
 }
 
+QString fallbackRecentMessagesApiUrlTemplate()
+{
+    // An explicit custom primary (including a loopback fixture) must never
+    // silently send requests to a production provider.
+    if (!qEnvironmentVariable("CHATTERINO2_RECENT_MESSAGES_URL").isEmpty())
+    {
+        return qEnvironmentVariable("CHATTERINO2_RECENT_MESSAGES_FALLBACK_URL");
+    }
+    if (getSettings()->recentMessagesApi.getEnum() == RecentMessagesApi::Robotty)
+    {
+        return QStringLiteral("https://recent-messages.zneix.eu/api/v2/"
+                              "recent-messages/%1");
+    }
+    return QStringLiteral("https://recent-messages.robotty.de/api/v2/"
+                          "recent-messages/%1");
+}
+
 QUrl constructRecentMessagesUrl(
     const QString &name, const int limit,
     const std::optional<std::chrono::time_point<std::chrono::system_clock>>
         after,
     const std::optional<std::chrono::time_point<std::chrono::system_clock>>
-        before)
+        before,
+    const QString &urlTemplate)
 {
-    QUrl url(recentMessagesApiUrlTemplate().arg(name));
+    QUrl url((urlTemplate.isEmpty() ? recentMessagesApiUrlTemplate()
+                                    : urlTemplate).arg(name));
     QUrlQuery urlQuery(url);
     if (!urlQuery.hasQueryItem("limit"))
     {

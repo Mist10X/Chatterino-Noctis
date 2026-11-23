@@ -36,16 +36,13 @@ const auto UNKNOWN_DATA_KEY = u"unattributedSamples"_s;
 constexpr qint64 SAME_BALANCE_INTERVAL_MS = 15 * 60 * 1000;
 constexpr qint64 MAX_OBSERVATION_GAP_MS = 30 * 60 * 1000;
 
-struct Observation {
-    QString accountId;
-    QDateTime time;
-};
-
 struct ChartDataCache {
     QMutex mutex;
     QJsonObject data;
     QString path;
-    QHash<QString, Observation> observations;
+    // Last confirmed observation for each independent balance owner on each
+    // channel. Another account's events neither bridge nor interrupt it.
+    QHash<QString, QHash<QString, QDateTime>> observations;
     bool loaded = false;
 };
 
@@ -186,10 +183,10 @@ bool ChannelPointsChartStore::recordSample(const QString &channelId,
     }
 
     observedAt = observedAt.toUTC();
-    const auto previousObservation = cache.observations.value(channelId);
-    const auto elapsed = previousObservation.time.msecsTo(observedAt);
-    const bool startsSegment = !previousObservation.time.isValid() ||
-                               previousObservation.accountId != accountId ||
+    const auto previousObservation =
+        cache.observations.value(channelId).value(accountId);
+    const auto elapsed = previousObservation.msecsTo(observedAt);
+    const bool startsSegment = !previousObservation.isValid() ||
                                elapsed < 0 || elapsed > MAX_OBSERVATION_GAP_MS;
 
     auto samples = storedSamples(cache.data, channelId, accountId);
@@ -202,7 +199,7 @@ bool ChannelPointsChartStore::recordSample(const QString &channelId,
             lastTime.msecsTo(observedAt) < SAME_BALANCE_INTERVAL_MS &&
             last.value("balance"_L1).toInteger(-1) == balance)
         {
-            cache.observations.insert(channelId, {accountId, observedAt});
+            cache.observations[channelId].insert(accountId, observedAt);
             return false;
         }
     }
@@ -236,7 +233,7 @@ bool ChannelPointsChartStore::recordSample(const QString &channelId,
         return false;
     }
     cache.data = std::move(nextData);
-    cache.observations.insert(channelId, {accountId, observedAt});
+    cache.observations[channelId].insert(accountId, observedAt);
     return true;
 }
 

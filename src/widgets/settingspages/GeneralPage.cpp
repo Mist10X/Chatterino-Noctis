@@ -291,9 +291,9 @@ void GeneralPage::initLayout(GeneralPageView &layout)
 
     SettingWidget::dropdown(uiText("Tab style"), s.tabStyle)->addTo(layout);
     SettingWidget::dropdown(uiText("Channel avatars on tabs"), s.tabAvatarStyle)
-        ->setTooltip(uiText("Show the Twitch channel's avatar on its tab. With "
-                     "\"Avatar only\", the other tabs show just the avatar "
-                     "and the name appears on hover."))
+        ->setTooltip(uiText("Show the channel's avatar on its tab. Normal tabs "
+                     "always show channel names. In Compact style, "
+                     "\"Avatar only\" shows the name only on the selected tab."))
         ->addTo(layout);
     SettingWidget::checkbox(uiText("Extend wrapped tabs"), s.growWrappedNotebookLines)
         ->setTooltip(uiText("When horizontal tabs are wrapped, extend the line for "

@@ -5,6 +5,7 @@
 #include "widgets/TooltipEntryWidget.hpp"
 
 #include <QEvent>
+#include <QFontDatabase>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -13,13 +14,39 @@ namespace chatterino {
 
 namespace {
 
-// Shrink only captions beneath emote/badge previews. Keep the media size,
-// ordinary link tooltips and the chat's own font unchanged.
+// Keep emote/badge captions compact but legible. This does not affect media
+// sizing, ordinary link tooltips, or the chat's own font.
 void applyCaptionFont(QLabel *label, QFont font, bool compactPreview)
 {
-    if (compactPreview && font.pointSizeF() > 0)
+    if (compactPreview)
     {
-        font.setPointSizeF(std::max(7.5, font.pointSizeF() * 0.88));
+        if (font.pointSizeF() > 0)
+        {
+            font.setPointSizeF(std::max(7.5, font.pointSizeF() * 0.88));
+        }
+        // A copied Qt font may retain an explicit Regular face regardless of
+        // its new weight. Select the real SemiBold/Bold bundled Montserrat
+        // face, preserving the user's family and a heavier chosen weight.
+        font.setStyleName(QString());
+        font.setWeight(std::max(QFont::DemiBold, font.weight()));
+        if (font.family().compare(QStringLiteral("Noctis Montserrat"),
+                                  Qt::CaseInsensitive) == 0)
+        {
+            const bool bold = font.weight() >= QFont::Bold;
+            for (const auto &style : QFontDatabase::styles(font.family()))
+            {
+                auto normalized = style.toLower();
+                normalized.remove(u' ');
+                normalized.remove(u'-');
+                if (normalized == (bold ? QStringLiteral("bold")
+                                        : QStringLiteral("semibold")) ||
+                    (!bold && normalized == QStringLiteral("demibold")))
+                {
+                    font.setStyleName(style);
+                    break;
+                }
+            }
+        }
     }
     label->setFont(font);
 }

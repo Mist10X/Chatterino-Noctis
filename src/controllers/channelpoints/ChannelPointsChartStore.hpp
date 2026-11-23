@@ -27,6 +27,9 @@ public:
     static bool recordSample(const QString &channelId, const QString &accountId,
                              qint64 balance,
                              QDateTime observedAt = QDateTime::currentDateTimeUtc());
+    // Explicit end of observation for the channel (all owners). Do not call
+    // for a transient request error or ordinary account switching: continuity
+    // already expires after 30 minutes without an actual confirmed balance.
     static void markGap(const QString &channelId);
     static QVector<ChannelPointsChartSample> samplesForChannel(
         const QString &channelId);

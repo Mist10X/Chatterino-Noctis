@@ -15,6 +15,7 @@
 #include "common/QLogging.hpp"
 #include "common/UiLanguage.hpp"
 #include "controllers/accounts/AccountController.hpp"
+#include "controllers/channelpoints/ChannelPointsBackgroundPoll.hpp"
 #include "messages/Message.hpp"
 #include "messages/Emote.hpp"
 #include "messages/MessageBuilder.hpp"
@@ -24,6 +25,7 @@
 #include "providers/ffz/FfzEmotes.hpp"
 #include "providers/irc/IrcConnection2.hpp"
 #include "providers/moltorino/MoltorinoSupporterBadges.hpp"
+#include "providers/moltorino/MoltorinoAuth.hpp"
 #include "providers/seventv/eventapi/Dispatch.hpp"
 #include "providers/seventv/SeventvEmotes.hpp"
 #include "providers/seventv/SeventvEventAPI.hpp"
@@ -464,6 +466,13 @@ TwitchIrcServer::TwitchIrcServer()
 
 void TwitchIrcServer::initialize()
 {
+    // Poll registered channels, not the selected split. A single staggered
+    // request per tick keeps startup and large tab sets from creating bursts.
+    this->channelPointsBackgroundTimer_.setInterval(
+        channelpoints::BackgroundPollTickMs);
+    QObject::connect(&this->channelPointsBackgroundTimer_, &QTimer::timeout,
+                     this, &TwitchIrcServer::pollChannelPointsInBackground);
+    this->channelPointsBackgroundTimer_.start();
     restoreWhispersWithBadges(this->whispersChannel);
     this->signalHolder.managedConnect(
         getApp()->getAccounts()->twitch.currentUserDisplayNameChanged, [this] {
@@ -715,6 +724,7 @@ void TwitchIrcServer::initialize()
 
 void TwitchIrcServer::aboutToQuit()
 {
+    this->channelPointsBackgroundTimer_.stop();
     ++this->writeAccountEpoch_;
     this->writeLoginTimeout_.stop();
     this->writeConfirmationWatchdog_.stop();
@@ -1832,6 +1842,48 @@ void TwitchIrcServer::forEachChannel(std::function<void(ChannelPtr)> func)
 
         func(chan);
     }
+}
+
+void TwitchIrcServer::pollChannelPointsInBackground()
+{
+    assertInGuiThread();
+    if (isAppAboutToQuit() || !getSettings()->enableChannelPointsDisplay)
+    {
+        return;
+    }
+    const auto account = getApp()->getAccounts()->twitch.getCurrent();
+    if (!account || account->isAnon())
+    {
+        return;
+    }
+
+    const auto now = QDateTime::currentDateTimeUtc();
+    // forEachChannel walks the sorted, weak channel registry. Copy only
+    // eligible channels for this tick, and never hold its mutex over a
+    // network request or retain a channel after the user closes its tab.
+    std::vector<std::shared_ptr<TwitchChannel>> candidates;
+    this->forEachChannel([&](const ChannelPtr &channel) {
+        auto twitch = std::dynamic_pointer_cast<TwitchChannel>(channel);
+        if (twitch && twitch->isChannelPointsBackgroundRefreshDue(now))
+        {
+            candidates.push_back(std::move(twitch));
+        }
+    });
+    if (candidates.empty())
+    {
+        return;
+    }
+    const auto auth = MoltorinoAuth::resolveCurrentUserToken();
+    if (!auth.hasToken())
+    {
+        return;
+    }
+    channelpoints::pollNextChannel(
+        candidates, this->lastBackgroundPointsChannel_,
+        [](const auto &channel) { return channel->getName(); },
+        [&](const auto &channel) {
+            return channel->refreshChannelPointsInBackground(auth, now);
+        });
 }
 
 void TwitchIrcServer::connect()

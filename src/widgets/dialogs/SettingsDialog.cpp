@@ -140,23 +140,27 @@ private:
     GeneralPageView *view_{};
 };
 
-QSize openingSize(const QScreen *screen)
-{
-    const QSize preferred(900, 640);
-    if (!screen)
-    {
-        return preferred;
-    }
-    // availableGeometry uses logical pixels. Leave room for the native frame.
-    return preferred.boundedTo(screen->availableGeometry().size() - QSize(24, 48));
-}
-
 QFont settingsFont()
 {
     const auto scale = SettingsPage::interfaceScale();
     auto font = getApp()->getFonts()->getFont(FontStyle::ChatMedium, scale);
     font.setWeight(std::max(QFont::Medium, font.weight()));
     return font;
+}
+
+QSize openingSize(const QScreen *screen)
+{
+    // Reserve enough room for the sidebar and the wider settings tables at
+    // the initial size. Scale the width with the actual settings typography,
+    // not unrestricted chat zoom, and leave user resizing unrestricted.
+    const auto fontScale = std::max(1., settingsFont().pointSizeF() / 10.);
+    const QSize preferred(qRound(1040 * fontScale), 640);
+    if (!screen)
+    {
+        return preferred;
+    }
+    // availableGeometry uses logical pixels. Leave room for the native frame.
+    return preferred.boundedTo(screen->availableGeometry().size() - QSize(24, 48));
 }
 
 QString settingsDialogStyle(const usercardChrome::Palette &c, const QFont &font)

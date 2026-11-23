@@ -770,7 +770,7 @@ public:
     /// Image sites whose page links get a picture too (direct image files
     /// get one on any site). Separated by spaces or commas.
     QStringSetting imagePreviewSites = {
-        "/links/imagePreviewSites", "kappa.lol segs.lol eblo.id kappalol.fun"};
+        "/links/imagePreviewSites", "kappa.lol segs.lol eblo.id kappalol.fun olrite.lol"};
     IntSetting thumbnailSize = {"/appearance/thumbnailSize", 0};
     IntSetting thumbnailSizeStream = {"/appearance/thumbnailSizeStream", 2};
     BoolSetting unshortLinks = {"/links/unshortLinks", false};
@@ -1036,6 +1036,8 @@ public:
     // Image Uploader
     BoolSetting imageUploaderEnabled = {"/external/imageUploader/enabled",
                                         false};
+    BoolSetting imageUploaderKappaFallback = {
+        "/external/imageUploader/kappaFallback", false};
     // kappa.lol unless set otherwise: only the switch is needed for Ctrl+V
     QStringSetting imageUploaderUrl = {"/external/imageUploader/url",
                                        "https://kappa.lol/api/upload"};

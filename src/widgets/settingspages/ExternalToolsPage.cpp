@@ -187,6 +187,12 @@ void ExternalToolsPage::initLayout(GeneralPageView &layout)
         SettingWidget::checkbox(uiText("Enable image uploader"), s.imageUploaderEnabled)
             ->addTo(layout);
 
+        SettingWidget::checkbox(uiText("Use olrite.lol when kappa.lol is unavailable"),
+                                s.imageUploaderKappaFallback)
+            ->conditionallyEnabledBy(s.imageUploaderEnabled)
+            ->setTooltip(uiText("The backup service supports deleting images and uploads up to 50 MB without automatic expiration."))
+            ->addTo(layout);
+
         SettingWidget::checkbox(uiText("Ask for confirmation when uploading an image"),
                                 s.askOnImageUpload)
             ->addTo(layout);

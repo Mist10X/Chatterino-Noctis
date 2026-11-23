@@ -28,6 +28,7 @@ enum class NetworkRequestType {
     Put,
     Delete,
     Patch,
+    Head,
 };
 
 std::vector<std::pair<QByteArray, QByteArray>> parseHeaderList(

@@ -44,6 +44,7 @@ class TestEventSubMessagesP;
 namespace chatterino {
 
 class TwitchChannelTestAccess;
+struct MoltorinoAuthToken;
 
 enum class HighlightState;
 
@@ -353,6 +354,10 @@ public:
     void refreshChannelPoints();
     void refreshChatters();
     void refreshChannelPointsIfStale(bool force = false);
+    /// Staggered background sampling, independent of Split visibility.
+    bool isChannelPointsBackgroundRefreshDue(const QDateTime &now) const;
+    bool refreshChannelPointsInBackground(const MoltorinoAuthToken &auth,
+                                          const QDateTime &now);
     void handlePinnedChatUpdate(const QJsonObject &data);
     void tryEmitPinnedChatPinSystemMessage(const QJsonObject &innerData);
 
@@ -696,7 +701,12 @@ private:
     void refreshBadges();
     void refreshCheerEmotes();
     void loadRecentMessages();
-    void loadRecentMessagesReconnect();
+    struct HistoryRange {
+        std::optional<std::chrono::system_clock::time_point> after;
+        std::chrono::system_clock::time_point before;
+    };
+    void loadRecentMessagesReconnect(HistoryRange range);
+    void finishRecentMessages();
     void noteLoadedHistoryForBadges(const std::vector<MessagePtr> &messages);
     static void processQueuedHistoryBadgeRefreshes();
     bool refreshHistoryBadgeBatch();
@@ -837,12 +847,17 @@ private:
     std::atomic<quint64> channelPointsIdentityGeneration_{0};
     QDateTime lastChannelPointsRefreshAt_;
     QDateTime lastChannelPointsUpdateAt_;
+    QDateTime lastChannelPointsObservationAt_;
+    quint64 channelPointsObservationRevision_ = 0;
+    bool requestChannelPoints(const MoltorinoAuthToken &auth,
+                              const QDateTime &now, bool background);
     QString lastChannelPointsError_;
     QString channelPointsIconUrl_;
     bool disconnected_{};
     std::optional<std::chrono::time_point<std::chrono::system_clock>>
         lastConnectedAt_{};
     std::atomic_flag loadingRecentMessages_ = ATOMIC_FLAG_INIT;
+    std::optional<HistoryRange> pendingReconnectHistory_;
     bool historyBadgeRefreshQueued_ = false;
     bool historyBadgeRefreshStarted_ = false;
     bool historyBadgeRefreshAllPending_ = false;

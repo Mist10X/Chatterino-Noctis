@@ -119,6 +119,7 @@ public:
 #include <QMessageBox>
 #include <QTemporaryDir>
 #include "ChannelPointsChartChecks.hpp"
+#include "ChannelPointsBackgroundPollChecks.hpp"
 #include "ChannelPointsStoreChecks.hpp"
 namespace chatterino {
 class ChannelPointsDialogTestAccess
@@ -165,6 +166,8 @@ int main(int argc, char **argv)
             failures += !ok;
         };
         preview::checkChannelPointsStore(check);
+        preview::checkChannelPointsBackgroundPoll(check);
+        preview::checkChannelPointsBackgroundChannel(check);
         const auto reportPath = QString::fromLocal8Bit(argv[1]);
         preview::checkChannelPointsChart(QFileInfo(reportPath).dir().filePath("chart.png"), check);
         QFile out(reportPath);

@@ -154,13 +154,16 @@ bool isImageLink(const QString &url, const QStringList &sites)
                 "profile", "group", "text", "login", "register", "settings",
                 "terms", "privacy", "albums", "images", "contact", "help",
                 "api", "docs", "account", "dashboard", "random", "rules",
+                "stats", "recent",
             };
             if (parts.size() == 1)
             {
                 return postId.match(parts.front()).hasMatch() &&
                        !sitePages.contains(parts.front().toLower());
             }
-            return parts.size() == 2 && parts.front() == QStringLiteral("group") &&
+            return parts.size() == 2 &&
+                   (parts.front() == QStringLiteral("group") ||
+                    (host == QStringLiteral("olrite.lol") && parts.front() == QStringLiteral("i"))) &&
                    postId.match(parts.back()).hasMatch();
         }
     }
@@ -169,8 +172,13 @@ bool isImageLink(const QString &url, const QStringList &sites)
 
 bool isImageLink(const QString &url)
 {
+    auto hosts = sites(getSettings()->imagePreviewSites);
+    if (getSettings()->imageUploaderKappaFallback && !hosts.contains("olrite.lol"))
+    {
+        hosts.append("olrite.lol");
+    }
     return uploads().contains(key(url)) ||
-           isImageLink(url, sites(getSettings()->imagePreviewSites));
+           isImageLink(url, hosts);
 }
 
 QString key(const QString &url)

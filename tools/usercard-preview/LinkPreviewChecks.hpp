@@ -350,6 +350,12 @@ inline int runLinkPreviewChecks(chatterino::Settings &settings,
         }
     }
     const auto hosts = imagepreview::sites(QStringLiteral("kappa.lol"));
+    const auto backupHosts = imagepreview::sites(QStringLiteral("olrite.lol"));
+    check("olriteImageAndViewerLinksArePreviewsButDeletionLinkIsNot",
+          imagepreview::isImageLink(QStringLiteral("https://olrite.lol/fixtureID"), backupHosts) &&
+              imagepreview::isImageLink(QStringLiteral("https://olrite.lol/i/fixtureID"), backupHosts) &&
+              !imagepreview::isImageLink(QStringLiteral("https://olrite.lol/delete/fixtureToken"), backupHosts) &&
+              !imagepreview::isImageLink(QStringLiteral("https://olrite.lol/recent"), backupHosts));
     check("lowercase screenshot IDs and long IDs are recognised, service pages excluded",
           imagepreview::isImageLink(QStringLiteral("https://kappa.lol/abcxyz"), hosts) &&
               imagepreview::isImageLink(QStringLiteral("https://kappa.lol/group/abcdefghijklmnopqr"), hosts) &&

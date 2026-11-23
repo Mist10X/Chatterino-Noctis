@@ -192,8 +192,7 @@ NotebookTab::NotebookTab(Notebook *notebook)
     this->selectionAnimation_.setEndValue(1.0);
     QObject::connect(&this->selectionAnimation_, &QVariantAnimation::valueChanged,
                      this, [this] {
-                         if (this->showsAvatar() && getSettings()->tabAvatarStyle.getEnum() ==
-                                                        TabAvatarStyle::AvatarOnly)
+                         if (this->collapsesAvatarTitle())
                          {
                              this->tabSizeChanged();
                          }
@@ -614,7 +613,18 @@ int NotebookTab::normalTabWidthForHeight(int height) const
                 avatar;
     }
 
-    if (static_cast<float>(height) > 150 * scale)
+    const bool fullChannelName =
+        getSettings()->tabStyle.getEnum() == TabStyle::Normal &&
+        !this->avatarLogin_.isEmpty() &&
+        this->getTitle().compare(this->avatarLogin_.section(':', -1),
+                                 Qt::CaseInsensitive) == 0;
+    if (fullChannelName)
+    {
+        // Normal tabs display the whole actual channel name. Keep the
+        // previous width limit for custom names and composite split titles.
+        width = std::max(width, height);
+    }
+    else if (static_cast<float>(height) > 150 * scale)
     {
         width = height;
     }
@@ -624,7 +634,7 @@ int NotebookTab::normalTabWidthForHeight(int height) const
                            static_cast<int>(150 * scale) + avatar);
     }
 
-    if (this->showsAvatar() && getSettings()->tabAvatarStyle.getEnum() == TabAvatarStyle::AvatarOnly)
+    if (this->collapsesAvatarTitle())
     {
         return height + qRound((width - height) * this->selectionAnimation_.currentValue().toReal());
     }
@@ -784,11 +794,18 @@ bool NotebookTab::showsAvatar() const
            getSettings()->tabAvatarStyle.getEnum() != TabAvatarStyle::Off;
 }
 
-bool NotebookTab::avatarOnly() const
+bool NotebookTab::collapsesAvatarTitle() const
 {
-    return this->selectionAnimation_.currentValue().toReal() == 0.0 && this->showsAvatar() &&
+    return getSettings()->tabStyle.getEnum() == TabStyle::Compact &&
+           this->showsAvatar() &&
            getSettings()->tabAvatarStyle.getEnum() ==
                TabAvatarStyle::AvatarOnly;
+}
+
+bool NotebookTab::avatarOnly() const
+{
+    return this->collapsesAvatarTitle() &&
+           this->selectionAnimation_.currentValue().toReal() == 0.0;
 }
 
 int NotebookTab::avatarDiameter() const
@@ -1514,7 +1531,7 @@ void NotebookTab::paintEvent(QPaintEvent *)
         QTextOption option(alignment);
         option.setWrapMode(QTextOption::NoWrap);
         painter.save();
-        if (this->showsAvatar() && getSettings()->tabAvatarStyle.getEnum() == TabAvatarStyle::AvatarOnly)
+        if (this->collapsesAvatarTitle())
         {
             painter.setOpacity(selection);
             painter.setClipRect(textRect, Qt::IntersectClip);

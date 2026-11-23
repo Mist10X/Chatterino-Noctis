@@ -11,6 +11,7 @@
 #include "common/network/NetworkResult.hpp"  // IWYU pragma: keep
 #include "common/QLogging.hpp"
 #include "controllers/accounts/AccountController.hpp"
+#include "controllers/channelpoints/ChannelPointsBackgroundPoll.hpp"
 #include "controllers/channelpoints/ChannelPointsChartStore.hpp"
 #include "controllers/emotes/EmoteController.hpp"
 #include "controllers/notifications/NotificationController.hpp"
@@ -691,9 +692,9 @@ TwitchChannel::TwitchChannel(const QString &name, bool anonymous)
         this->channelPointsFetchInFlight_.store(false);
         this->lastChannelPointsRefreshAt_ = QDateTime();
         this->lastChannelPointsUpdateAt_ = QDateTime();
+        this->lastChannelPointsObservationAt_ = QDateTime();
         this->lastChannelPointsError_.clear();
         this->channelPoints_.store(-1);
-        ChannelPointsChartStore::markGap(this->roomId());
         // Reload the chart for an account change even if neither account has
         // supplied its balance yet.
         this->channelPointsChanged.invoke();
@@ -788,8 +789,9 @@ TwitchChannel::TwitchChannel(const QString &name, bool anonymous)
     std::ignore = this->joined.connect([this]() {
         if (this->disconnected_)
         {
-            this->loadRecentMessagesReconnect();
-            this->lastConnectedAt_ = std::chrono::system_clock::now();
+            const auto now = std::chrono::system_clock::now();
+            this->loadRecentMessagesReconnect({this->lastConnectedAt_, now});
+            this->lastConnectedAt_ = now;
             this->disconnected_ = false;
         }
     });
@@ -2999,6 +3001,32 @@ void TwitchChannel::markDisconnected()
     this->disconnected_ = true;
 }
 
+namespace {
+
+std::vector<MessagePtr> unseenHistoryMessages(
+    Channel &channel, const std::vector<MessagePtr> &messages)
+{
+    QSet<QString> ids;
+    for (const auto &message : channel.getMessageSnapshot())
+    {
+        if (!message->id.isEmpty())
+            ids.insert(message->id);
+    }
+    std::vector<MessagePtr> unseen;
+    unseen.reserve(messages.size());
+    for (const auto &message : messages)
+    {
+        if (!message->id.isEmpty() && !ids.contains(message->id))
+        {
+            ids.insert(message->id);
+            unseen.push_back(message);
+        }
+    }
+    return unseen;
+}
+
+}  // namespace
+
 void TwitchChannel::loadRecentMessages()
 {
     if (!getSettings()->loadTwitchMessageHistoryOnConnect)
@@ -3014,7 +3042,7 @@ void TwitchChannel::loadRecentMessages()
     auto weak = this->weakFromThis();
     recentmessages::load(
         this->getName(), weak,
-        [weak](const auto &messages) {
+        [weak](const auto &receivedMessages, bool fallback, bool finished) {
             assert(!isAppAboutToQuit());
             auto tc = weak.lock();
             if (!tc)
@@ -3022,9 +3050,29 @@ void TwitchChannel::loadRecentMessages()
                 return;
             }
 
-            tc->addMessagesAtStart(messages);
-            tc->loadingRecentMessages_.clear();
-
+            const auto unseen = fallback
+                                    ? unseenHistoryMessages(*tc, receivedMessages)
+                                    : std::vector<MessagePtr>{};
+            const auto &messages = fallback ? unseen : receivedMessages;
+            bool merge = false;
+            if (fallback)
+            {
+                const auto snapshot = tc->getMessageSnapshot();
+                merge = std::any_of(snapshot.begin(), snapshot.end(),
+                                    [](const auto &message) {
+                                        return !message->flags.has(MessageFlag::System);
+                                    });
+            }
+            if (merge)
+            {
+                tc->fillInMissingMessages(messages);
+                for (const auto &message : messages)
+                    tc->noteChatter(*message);
+            }
+            else
+            {
+                tc->addMessagesAtStart(messages);
+            }
             std::vector<MessagePtr> msgs;
             for (const auto &msg : messages)
             {
@@ -3041,6 +3089,8 @@ void TwitchChannel::loadRecentMessages()
             getApp()->getTwitch()->getMentionsChannel()->fillInMissingMessages(
                 msgs);
             tc->noteLoadedHistoryForBadges(messages);
+            if (finished)
+                tc->finishRecentMessages();
         },
         [weak]() {
             auto shared = weak.lock();
@@ -3049,13 +3099,23 @@ void TwitchChannel::loadRecentMessages()
                 return;
             }
 
-            shared->loadingRecentMessages_.clear();
+            shared->finishRecentMessages();
         },
         getSettings()->twitchMessageHistoryLimit.getValue(), std::nullopt,
         std::nullopt, false);
 }
 
-void TwitchChannel::loadRecentMessagesReconnect()
+void TwitchChannel::finishRecentMessages()
+{
+    this->loadingRecentMessages_.clear();
+    if (auto pending = std::exchange(this->pendingReconnectHistory_, {});
+        pending && !isAppAboutToQuit())
+    {
+        this->loadRecentMessagesReconnect(*pending);
+    }
+}
+
+void TwitchChannel::loadRecentMessagesReconnect(HistoryRange range)
 {
     if (!getSettings()->loadTwitchMessageHistoryOnConnect)
     {
@@ -3064,37 +3124,40 @@ void TwitchChannel::loadRecentMessagesReconnect()
 
     if (this->loadingRecentMessages_.test_and_set())
     {
-        return;  // already loading
-    }
-
-    const auto now = std::chrono::system_clock::now();
-    int limit = getSettings()->twitchMessageHistoryLimit.getValue();
-    if (this->lastConnectedAt_.has_value())
-    {
-        // calculate how many messages could have occurred
-        // while we were not connected to the channel
-        // assuming a maximum of 10 messages per second
-        const auto secondsSinceDisconnect =
-            std::chrono::duration_cast<std::chrono::seconds>(
-                now - this->lastConnectedAt_.value())
-                .count();
-        limit =
-            std::min(static_cast<int>(secondsSinceDisconnect + 1) * 10, limit);
+        // A rejoin can arrive while startup or a previous outage is still
+        // fetching. Keep the union before the next heartbeat moves the cursor.
+        if (this->pendingReconnectHistory_)
+        {
+            range.after = std::min(range.after, this->pendingReconnectHistory_->after);
+            range.before = std::max(range.before, this->pendingReconnectHistory_->before);
+        }
+        this->pendingReconnectHistory_ = range;
+        return;
     }
 
     auto weak = this->weakFromThis();
     recentmessages::load(
         this->getName(), weak,
-        [weak](const auto &messages) {
+        [weak](const auto &receivedMessages, bool fallback, bool finished) {
             auto shared = weak.lock();
             if (!shared)
             {
                 return;
             }
 
+            const auto unseen = fallback
+                                    ? unseenHistoryMessages(*shared, receivedMessages)
+                                    : std::vector<MessagePtr>{};
+            const auto &messages = fallback ? unseen : receivedMessages;
             shared->fillInMissingMessages(messages);
-            shared->loadingRecentMessages_.clear();
+            if (fallback)
+            {
+                for (const auto &message : messages)
+                    shared->noteChatter(*message);
+            }
             shared->noteLoadedHistoryForBadges(messages);
+            if (finished)
+                shared->finishRecentMessages();
         },
         [weak]() {
             auto shared = weak.lock();
@@ -3103,9 +3166,10 @@ void TwitchChannel::loadRecentMessagesReconnect()
                 return;
             }
 
-            shared->loadingRecentMessages_.clear();
+            shared->finishRecentMessages();
         },
-        limit, this->lastConnectedAt_, now, true);
+        getSettings()->twitchMessageHistoryLimit.getValue(), range.after,
+        range.before, true);
 }
 
 namespace {
@@ -5651,6 +5715,10 @@ void TwitchChannel::handleUserPointsUpdate(const QJsonObject &payload,
                                            const QString &observedAccountId)
 {
     assertInGuiThread();
+    if (!getSettings()->enableChannelPointsDisplay)
+    {
+        return;
+    }
 
     const QString type = payload.value("type").toString();
 
@@ -5705,11 +5773,17 @@ void TwitchChannel::handleUserPointsUpdate(const QJsonObject &payload,
         return;
     }
 
+    const auto observedAt = QDateTime::currentDateTimeUtc();
+    this->lastChannelPointsObservationAt_ = observedAt;
+    this->lastChannelPointsUpdateAt_ = observedAt;
+    ++this->channelPointsObservationRevision_;
+    const bool hadError = !this->lastChannelPointsError_.isEmpty();
+    this->lastChannelPointsError_.clear();
     const bool recorded = ChannelPointsChartStore::recordSample(
-        channelId, observedAccountId, newBalance);
+        channelId, observedAccountId, newBalance, observedAt);
     if (this->channelPoints_.load() == newBalance)
     {
-        if (recorded)
+        if (recorded || hadError)
         {
             this->channelPointsChanged.invoke();
         }
@@ -6341,7 +6415,38 @@ void TwitchChannel::refreshChannelPointsIfStale(bool force)
 
 void TwitchChannel::refreshChannelPoints()
 {
-    const auto now = QDateTime::currentDateTimeUtc();
+    this->requestChannelPoints(MoltorinoAuth::resolveCurrentUserToken(),
+                               QDateTime::currentDateTimeUtc(), false);
+}
+
+bool TwitchChannel::isChannelPointsBackgroundRefreshDue(
+    const QDateTime &now) const
+{
+    return !this->isAnonymous() && !this->roomId().isEmpty() &&
+           channelpoints::backgroundRefreshDue(
+               now, this->lastChannelPointsObservationAt_,
+               this->lastChannelPointsRefreshAt_,
+               this->channelPointsFetchInFlight_.load());
+}
+
+bool TwitchChannel::refreshChannelPointsInBackground(
+    const MoltorinoAuthToken &auth, const QDateTime &now)
+{
+    // Never clear UI state or make requests for an ineligible channel just
+    // because the background sweep visited it.
+    if (isAppAboutToQuit() || !getSettings()->enableChannelPointsDisplay ||
+        !this->isChannelPointsBackgroundRefreshDue(now) || !auth.hasToken() ||
+        authTokenBelongsToChannel(auth, *this) ||
+        (!authTokenHasKnownIdentity(auth) && this->isBroadcaster()))
+    {
+        return false;
+    }
+    return this->requestChannelPoints(auth, now, true);
+}
+
+bool TwitchChannel::requestChannelPoints(const MoltorinoAuthToken &auth,
+                                        const QDateTime &now, bool background)
+{
     auto clearUnavailablePoints = [this, now](bool resetRefreshGate = false,
                                               bool forceSignal = false) {
         this->channelPointsIdentityGeneration_.fetch_add(1);
@@ -6350,7 +6455,7 @@ void TwitchChannel::refreshChannelPoints()
         const bool hadError = !this->lastChannelPointsError_.isEmpty();
         this->lastChannelPointsError_.clear();
         const auto previousBalance = this->channelPoints_.load();
-        ChannelPointsChartStore::markGap(this->roomId());
+        this->lastChannelPointsObservationAt_ = QDateTime();
         this->setChannelPointBalance(-1);
         if (resetRefreshGate)
         {
@@ -6363,14 +6468,13 @@ void TwitchChannel::refreshChannelPoints()
         }
     };
 
-    auto auth = MoltorinoAuth::resolveCurrentUserToken();
     if (!auth.hasToken())
     {
         clearUnavailablePoints();
         qCDebug(chatterinoTwitch)
             << "[Points] Skipping points fetch for" << this->getName()
             << "because no matching Twitch device login token is set";
-        return;
+        return false;
     }
 
     if (!authTokenHasKnownIdentity(auth) && this->isBroadcaster())
@@ -6378,7 +6482,7 @@ void TwitchChannel::refreshChannelPoints()
         const bool wasInFlight =
             this->channelPointsFetchInFlight_.exchange(false);
         clearUnavailablePoints(true, wasInFlight);
-        return;
+        return false;
     }
 
     if (authTokenBelongsToChannel(auth, *this))
@@ -6386,17 +6490,17 @@ void TwitchChannel::refreshChannelPoints()
         const bool wasInFlight =
             this->channelPointsFetchInFlight_.exchange(false);
         clearUnavailablePoints(true, wasInFlight);
-        return;
+        return false;
     }
 
     if (this->roomId().isEmpty())
     {
-        return;
+        return false;
     }
 
     if (this->channelPointsFetchInFlight_.exchange(true))
     {
-        return;
+        return false;
     }
 
     this->channelPointsChanged.invoke();
@@ -6407,13 +6511,14 @@ void TwitchChannel::refreshChannelPoints()
     const auto requestToken = auth.token;
     const auto requestChannelId = this->roomId();
     const auto generation = this->channelPointsIdentityGeneration_.load();
+    const auto observationRevision = this->channelPointsObservationRevision_;
 
     TwitchGql::getChannelPoints(
         this->getName(), auth.token,
-        [weak, requestToken, requestChannelId, generation](qint64 points, QString iconUrl) {
-            runInGuiThread([weak, requestToken, requestChannelId, generation, points, iconUrl]() {
+        [weak, requestToken, requestChannelId, generation, observationRevision, background](qint64 points, QString iconUrl) {
+            runInGuiThread([weak, requestToken, requestChannelId, generation, observationRevision, background, points, iconUrl]() {
                 auto shared = weak.lock();
-                if (!shared)
+                if (!shared || isAppAboutToQuit())
                 {
                     return;
                 }
@@ -6423,13 +6528,28 @@ void TwitchChannel::refreshChannelPoints()
                     return;
                 }
                 channel->channelPointsFetchInFlight_.store(false);
+                if (background && !getSettings()->enableChannelPointsDisplay)
+                {
+                    channel->channelPointsChanged.invoke();
+                    return;
+                }
                 const auto currentAuth =
                     MoltorinoAuth::resolveCurrentUserToken();
                 if (!currentAuth.hasToken() ||
                     currentAuth.token != requestToken ||
                     channel->roomId() != requestChannelId)
                 {
-                    channel->refreshChannelPointsIfStale(true);
+                    if (!background)
+                        channel->refreshChannelPointsIfStale(true);
+                    return;
+                }
+
+                // A points event received after this request is a newer
+                // observation. Do not let a delayed response move its balance
+                // or chart backwards, or record invalid values.
+                if (points < 0 || channel->channelPointsObservationRevision_ != observationRevision)
+                {
+                    channel->channelPointsChanged.invoke();
                     return;
                 }
 
@@ -6438,18 +6558,21 @@ void TwitchChannel::refreshChannelPoints()
                     << "[Points] Got" << points << "channel points for"
                     << channel->getName();
                 */
+                const auto observedAt = QDateTime::currentDateTimeUtc();
+                channel->lastChannelPointsObservationAt_ = observedAt;
+                ++channel->channelPointsObservationRevision_;
                 ChannelPointsChartStore::recordSample(requestChannelId,
-                                                      currentAuth.userId, points);
+                                                      currentAuth.userId, points, observedAt);
                 channel->setChannelPointBalance(points);
                 channel->channelPointsIconUrl_ = iconUrl;
                 channel->lastChannelPointsError_.clear();
                 channel->channelPointsChanged.invoke();
             });
         },
-        [weak, requestToken, requestChannelId, generation](const QString &error) {
-            runInGuiThread([weak, requestToken, requestChannelId, generation, error]() {
+        [weak, requestToken, requestChannelId, generation, observationRevision, background](const QString &error) {
+            runInGuiThread([weak, requestToken, requestChannelId, generation, observationRevision, background, error]() {
                 auto shared = weak.lock();
-                if (!shared)
+                if (!shared || isAppAboutToQuit())
                 {
                     return;
                 }
@@ -6459,17 +6582,29 @@ void TwitchChannel::refreshChannelPoints()
                     return;
                 }
                 channel->channelPointsFetchInFlight_.store(false);
+                if (background && !getSettings()->enableChannelPointsDisplay)
+                {
+                    channel->channelPointsChanged.invoke();
+                    return;
+                }
                 const auto currentAuth =
                     MoltorinoAuth::resolveCurrentUserToken();
                 if (!currentAuth.hasToken() ||
                     currentAuth.token != requestToken ||
                     channel->roomId() != requestChannelId)
                 {
-                    channel->refreshChannelPointsIfStale(true);
+                    if (!background)
+                        channel->refreshChannelPointsIfStale(true);
                     return;
                 }
 
-                ChannelPointsChartStore::markGap(requestChannelId);
+                // Keep the last confirmed observation. A single failed
+                // request does not mean this whole interval was missing.
+                if (channel->channelPointsObservationRevision_ != observationRevision)
+                {
+                    channel->channelPointsChanged.invoke();
+                    return;
+                }
                 channel->lastChannelPointsError_ = normalizeMoltorinoAuthError(
                     "loading channel points", error);
                 qCWarning(chatterinoTwitch)
@@ -6478,6 +6613,7 @@ void TwitchChannel::refreshChannelPoints()
                 channel->channelPointsChanged.invoke();
             });
         });
+    return true;
 }
 
 qint64 TwitchChannel::channelPointBalance() const

@@ -23,13 +23,16 @@ std::vector<Communi::IrcMessage *> parseRecentMessages(
     const QJsonObject &jsonRoot);
 
 std::vector<MessagePtr> buildRecentMessages(
-    std::vector<Communi::IrcMessage *> &messages, Channel *channel);
+    std::vector<Communi::IrcMessage *> &messages, Channel *channel,
+    bool includeDateMarkers = true);
 
 QString recentMessagesApiUrlTemplate();
+QString fallbackRecentMessagesApiUrlTemplate();
 
 QUrl constructRecentMessagesUrl(
     const QString &name, int limit,
     std::optional<std::chrono::time_point<std::chrono::system_clock>> after,
-    std::optional<std::chrono::time_point<std::chrono::system_clock>> before);
+    std::optional<std::chrono::time_point<std::chrono::system_clock>> before,
+    const QString &urlTemplate = {});
 
 }  // namespace chatterino::recentmessages::detail
