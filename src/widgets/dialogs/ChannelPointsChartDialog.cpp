@@ -41,7 +41,7 @@ float contentScale(float scale)
     return std::clamp(scale, 0.85F, 1.7F);
 }
 
-int metric(float scale, int value)
+int chartMetric(float scale, int value)
 {
     return std::max(1, qRound(scale * value));
 }
@@ -85,7 +85,7 @@ ChannelPointsChartDialog::ChannelPointsChartDialog(TwitchChannel *channel,
 
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
-    titleRow->setSpacing(metric(contentScale(this->scale()), 5));
+    titleRow->setSpacing(chartMetric(contentScale(this->scale()), 5));
 
     this->headerTitleLabel_ =
         new QLabel(uiText("Channel Points"), this->headerWidget_);
@@ -336,10 +336,10 @@ void ChannelPointsChartDialog::refreshStyle()
     this->chartView_->setChartScale(scale);
     // The invisible grip sits outside the contents, not over the header
     // buttons or an axis/plot interaction area.
-    const auto inset = UsercardResizeGrip::edgeBand(scale) + metric(scale, 5);
+    const auto inset = UsercardResizeGrip::edgeBand(scale) + chartMetric(scale, 5);
     this->mainLayout_->setContentsMargins(inset, inset, inset, inset);
-    this->mainLayout_->setSpacing(metric(scale, 8));
-    this->headerWidget_->layout()->setSpacing(metric(scale, 5));
+    this->mainLayout_->setSpacing(chartMetric(scale, 8));
+    this->headerWidget_->layout()->setSpacing(chartMetric(scale, 5));
     this->pinButton_->setOverrideScale(scale);
     this->closeButton_->setOverrideScale(scale);
     this->pinButton_->setScaleIndependentSize(18, 18);
@@ -381,8 +381,8 @@ void ChannelPointsChartDialog::applySizeConstraints()
     }
     const auto scale = contentScale(this->scale());
     const auto layoutMinimum = this->mainLayout_->minimumSize();
-    const int minWidth = std::max(metric(scale, 392), layoutMinimum.width());
-    const int minHeight = std::max(metric(scale, 325), layoutMinimum.height());
+    const int minWidth = std::max(chartMetric(scale, 330), layoutMinimum.width());
+    const int minHeight = std::max(chartMetric(scale, 300), layoutMinimum.height());
 
     int maxWidth = QWIDGETSIZE_MAX;
     int maxHeight = QWIDGETSIZE_MAX;
@@ -398,7 +398,7 @@ void ChannelPointsChartDialog::applySizeConstraints()
     if (screen != nullptr)
     {
         const auto available = screen->availableGeometry();
-        const int margin = std::max(12, metric(scale, 12));
+        const int margin = std::max(12, chartMetric(scale, 12));
         maxWidth = std::max(minWidth, available.width() - margin * 2);
         maxHeight = std::max(minHeight, available.height() - margin * 2);
     }

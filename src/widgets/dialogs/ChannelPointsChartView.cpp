@@ -22,6 +22,7 @@
 #    include <QPainter>
 #    include <QPainterPath>
 #    include <QPushButton>
+#    include <QResizeEvent>
 #    include <QSignalBlocker>
 #    include <QVariantAnimation>
 #    include <QVBoxLayout>
@@ -1134,11 +1135,41 @@ public:
     QWidget *toolbar = nullptr;
     QLabel *rangeLabel = nullptr;
     ChartCanvas *canvas = nullptr;
-    QHBoxLayout *toolbarLayout = nullptr;
+    QVBoxLayout *toolbarLayout = nullptr;
+    QHBoxLayout *primaryRow = nullptr;
+    QWidget *secondaryRowWidget = nullptr;
+    QHBoxLayout *secondaryRow = nullptr;
     QVBoxLayout *layout = nullptr;
     bool showingLegacy = false;
     bool sourceChosen = false;
     float scale = 1.F;
+
+    void reflowToolbar(int viewWidth)
+    {
+        if (!primaryRow || !secondaryRow || !resetButton)
+            return;
+        const int available = std::max(0, viewWidth - layout->contentsMargins().left() -
+                                               layout->contentsMargins().right());
+        const int spacing = primaryRow->spacing();
+        const int mainWidth = rangeCombo->minimumWidth() + resetButton->sizeHint().width() + spacing;
+        const bool hasLegacy = !legacy.isEmpty();
+        const bool wrap = hasLegacy && available < mainWidth + sourceCombo->minimumWidth() + spacing;
+        rangeLabel->setVisible(!hasLegacy && available >= mainWidth + rangeLabel->sizeHint().width() + spacing);
+        const bool inSecondary = secondaryRow->indexOf(sourceCombo) >= 0;
+        if (wrap != inSecondary)
+        {
+            if (inSecondary)
+                secondaryRow->removeWidget(sourceCombo);
+            else
+                primaryRow->removeWidget(sourceCombo);
+            if (wrap)
+                secondaryRow->addWidget(sourceCombo, 1);
+            else
+                primaryRow->insertWidget(2, sourceCombo, 1);
+        }
+        secondaryRowWidget->setVisible(wrap);
+        sourceCombo->setVisible(hasLegacy);
+    }
 
     void applyFilter(bool reset)
     {
@@ -1163,9 +1194,17 @@ ChannelPointsChartView::ChannelPointsChartView(QWidget *parent)
 
     d_->toolbar = new QWidget(this);
     d_->toolbar->setObjectName("ChannelPointsChartToolbar");
-    d_->toolbarLayout = new QHBoxLayout(d_->toolbar);
+    d_->toolbarLayout = new QVBoxLayout(d_->toolbar);
     d_->toolbarLayout->setContentsMargins(0, 0, 0, 0);
     d_->toolbarLayout->setSpacing(6);
+    d_->primaryRow = new QHBoxLayout();
+    d_->primaryRow->setContentsMargins(0, 0, 0, 0);
+    d_->toolbarLayout->addLayout(d_->primaryRow);
+    d_->secondaryRowWidget = new QWidget(d_->toolbar);
+    d_->secondaryRow = new QHBoxLayout(d_->secondaryRowWidget);
+    d_->secondaryRow->setContentsMargins(0, 0, 0, 0);
+    d_->toolbarLayout->addWidget(d_->secondaryRowWidget);
+    d_->secondaryRowWidget->hide();
 
     d_->rangeLabel = new QLabel(uiText("Range:"), d_->toolbar);
     d_->rangeLabel->setObjectName("ChannelPointsChartRangeLabel");
@@ -1203,10 +1242,10 @@ ChannelPointsChartView::ChannelPointsChartView(QWidget *parent)
     d_->resetButton->setObjectName("ChannelPointsChartResetButton");
     d_->resetButton->setToolTip(uiText("Reset the time range and chart zoom"));
 
-    d_->toolbarLayout->addWidget(d_->rangeLabel);
-    d_->toolbarLayout->addWidget(d_->rangeCombo, 1);
-    d_->toolbarLayout->addWidget(d_->sourceCombo, 1);
-    d_->toolbarLayout->addWidget(d_->resetButton);
+    d_->primaryRow->addWidget(d_->rangeLabel);
+    d_->primaryRow->addWidget(d_->rangeCombo, 1);
+    d_->primaryRow->addWidget(d_->sourceCombo, 1);
+    d_->primaryRow->addWidget(d_->resetButton);
     d_->layout->addWidget(d_->toolbar);
 
     d_->canvas = new ChartCanvas(this);
@@ -1266,7 +1305,7 @@ void ChannelPointsChartView::setSampleHistories(const Samples &current,
         d_->sourceCombo->setCurrentIndex(d_->showingLegacy ? 1 : 0);
         d_->sourceCombo->setVisible(!d_->legacy.isEmpty());
     }
-    d_->rangeLabel->setVisible(d_->legacy.isEmpty());
+    d_->reflowToolbar(this->width());
     d_->applyFilter(wasLegacy != d_->showingLegacy);
 }
 
@@ -1295,9 +1334,27 @@ void ChannelPointsChartView::setChartScale(float scale)
     d_->sourceCombo->setFont(font);
     d_->resetButton->setFont(font);
     d_->rangeLabel->setFont(font);
+    const auto metrics = QFontMetrics(font);
+    for (auto *combo : {d_->rangeCombo, d_->sourceCombo})
+    {
+        int textWidth = 0;
+        for (int i = 0; i < combo->count(); ++i)
+            textWidth = std::max(textWidth, metrics.horizontalAdvance(combo->itemText(i)));
+        combo->setMinimumWidth(textWidth + qRound(34 * s));
+    }
     d_->layout->setContentsMargins(qRound(8*s), qRound(5*s), qRound(8*s), qRound(7*s));
     d_->layout->setSpacing(qRound(7*s));
     d_->toolbarLayout->setSpacing(qRound(6*s));
+    d_->primaryRow->setSpacing(qRound(6*s));
+    d_->secondaryRow->setSpacing(qRound(6*s));
+    d_->reflowToolbar(this->width());
+}
+
+void ChannelPointsChartView::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    if (d_)
+        d_->reflowToolbar(event->size().width());
 }
 
 void ChannelPointsChartView::applyTheme(const Theme &theme)
@@ -1333,6 +1390,7 @@ void ChannelPointsChartView::applyTheme(const Theme &theme)
         }
         QComboBox#ChannelPointsChartRangeCombo::drop-down,
         QComboBox#ChannelPointsChartSourceCombo::drop-down { border: 0; width: 18px; }
+        QComboBox::down-arrow { image: url(:/buttons/settings-chevron.svg); width: 11px; height: 11px; }
         QComboBox QAbstractItemView {
             background: %3; color: %1; border: 1px solid %4;
             border-radius: 6px; outline: none; padding: 3px;
@@ -1343,6 +1401,7 @@ void ChannelPointsChartView::applyTheme(const Theme &theme)
         )").arg(colors.text.name(), colors.muted.name(),
                  field.name(), colors.border.name(), hover.name(),
                  colors.accent.name(), selected.name()));
+    d_->reflowToolbar(this->width());
 }
 
 }  // namespace chatterino

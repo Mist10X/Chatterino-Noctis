@@ -29,6 +29,9 @@ public:
 
     ~ChannelPointsChartView() override;
 
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+
 private:
     class Private;
     Private *d_;

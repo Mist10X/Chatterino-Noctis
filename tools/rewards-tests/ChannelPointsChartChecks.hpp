@@ -183,6 +183,10 @@ void checkChannelPointsChart(const QString &screenshot, Check &&check)
     popup->resize(QSize(qRound(565 * popup->scale()), qRound(425 * popup->scale()))
                       .expandedTo(popup->minimumSize()).boundedTo(popup->maximumSize()));
     paint();
+    check(range->width() >= range->minimumWidth() &&
+              source->width() >= source->minimumWidth() &&
+              reset->isVisible(),
+          "period and history selectors retain enough space for unabridged text");
     check(popup->grab().save(screenshot), "chart popup screenshot rendered");
     popup->close();
 }
