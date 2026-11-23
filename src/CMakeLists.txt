@@ -1,6 +1,12 @@
 set(LIBRARY_PROJECT "${PROJECT_NAME}-lib")
 set(VERSION_PROJECT "${LIBRARY_PROJECT}-version")
 set(EXECUTABLE_PROJECT "${PROJECT_NAME}")
+# The release version must rebuild every consumer even on MSVC environments
+# where a localized /showIncludes prefix prevents Ninja detecting includes.
+set_property(SOURCE common/Version.cpp
+    providers/twitch/Mist1XMark.cpp singletons/Updates.cpp
+    widgets/dialogs/WhatsNewDialog.cpp
+    APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/common/Mist1XVersion.hpp")
 # used for QT_DISABLE_DEPRECATED_BEFORE/QT_WARN_DEPRECATED_UP_TO
 set(CHATTERINO_MIN_QT_VERSION 0x060403)
 

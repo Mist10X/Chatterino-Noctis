@@ -14,6 +14,7 @@
 #include "messages/MessageThread.hpp"
 #include "widgets/Scrollbar.hpp"
 #include "common/Version.hpp"
+#include "common/Mist1XVersion.hpp"
 #include "controllers/tray/TrayController.hpp"
 #include "widgets/Window.hpp"
 #include "widgets/Notebook.hpp"
@@ -1116,6 +1117,8 @@ int main(int argc, char **argv)
         });
         NetworkManager::init();
         auto &updates = app.getUpdates();
+        check(updates.getCurrentVersion() == MIST1X_VERSION,
+              "update controller uses the exact compiled release version");
         auto wait = [](auto &&predicate, int timeout) {
             QElapsedTimer elapsed; elapsed.start();
             while (!predicate() && elapsed.elapsed() < timeout)
