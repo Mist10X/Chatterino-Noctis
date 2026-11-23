@@ -21,7 +21,7 @@
 
 В программу входят библиотеки и ресурсы со своими лицензиями. Их тексты лежат в папке `LICENSES/third-party` рядом с программой и в разделе «О программе».
 
-- [Qt](https://www.qt.io) — LGPL-3.0. Подключается как отдельные DLL; исходный код Qt доступен на qt.io, библиотеки можно заменить своими.
+- [Qt](https://www.qt.io) — используемые модули Qt Base, Qt SVG и Qt Image Formats распространяются по LGPL-3.0 с учётом лицензий входящих компонентов. Qt Charts не используется. Точные ссылки на исходники распространяемого Windows-рантайма Qt 6.9.3 и инструкция по замене библиотек — в [LICENSES/Qt-sources.md](LICENSES/Qt-sources.md).
 - [OpenSSL](https://www.openssl.org) — Apache-2.0.
 - Шрифт [Montserrat](https://github.com/google/fonts/tree/main/ofl/montserrat) — SIL Open Font License 1.1. В сборке он называется «Noctis Montserrat»; переименование разрешено лицензией.
 - Boost, libcommuni, rapidjson, pajlada/settings, pajlada/signals, pajlada/serialize, magic_enum, semver, miniaudio, crashpad, Fluent UI System Icons, expected-lite, certify, date, hunspell, qtkeychain, kimageformats, fmt, lrucache, Lua, Unicode data, emoji-data.

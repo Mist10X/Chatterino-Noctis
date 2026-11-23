@@ -7,20 +7,20 @@
 #    include "providers/twitch/TwitchChannel.hpp"
 #    include "singletons/Fonts.hpp"
 #    include "singletons/Theme.hpp"
-#    include "util/LayoutCreator.hpp"
 #    include "util/WidgetHelpers.hpp"
 #    include "widgets/buttons/Button.hpp"
 #    include "widgets/buttons/SvgButton.hpp"
 #    include "widgets/dialogs/ChannelPointsChartDialog.hpp"
 #    include "widgets/dialogs/ChannelPointsChartView.hpp"
-#    include "widgets/helper/InvisibleSizeGrip.hpp"
-#    include "widgets/helper/Line.hpp"
+#    include "widgets/helper/ChannelAvatarLabel.hpp"
+#    include "widgets/helper/UsercardResizeGrip.hpp"
 
 #    include <QCursor>
-#    include <QGridLayout>
 #    include <QGuiApplication>
 #    include <QHBoxLayout>
 #    include <QLabel>
+#    include <QPainter>
+#    include <QResizeEvent>
 #    include <QScreen>
 #    include <QShowEvent>
 #    include <QVBoxLayout>
@@ -32,26 +32,24 @@ namespace {
 
 using namespace chatterino;
 
-constexpr QSize DEFAULT_DIALOG_SIZE(520, 350);
-constexpr int HEADER_SEPARATOR_HEIGHT = 8;
+constexpr QSize DEFAULT_DIALOG_SIZE(565, 425);
 
-float readableFontScale(float scale)
+// Do not make the popup larger than the screen at extreme app scales.
+// Physical DPI is independently handled by Qt.
+float contentScale(float scale)
 {
-    return std::max(0.68F, scale);
+    return std::clamp(scale, 0.85F, 1.7F);
 }
 
-int scaledSeparatorHeight(float scale)
+int metric(float scale, int value)
 {
-    return std::max(1, int(HEADER_SEPARATOR_HEIGHT * scale));
+    return std::max(1, qRound(scale * value));
 }
 
-QString channelDisplayName(TwitchChannel *channel)
+QString channelDisplayName(const TwitchChannel &channel)
 {
-    if (channel == nullptr || channel->getName().isEmpty())
-    {
-        return QStringLiteral("channel");
-    }
-    return channel->getName();
+    const auto &displayName = channel.getDisplayName();
+    return displayName.isEmpty() ? channel.getName() : displayName;
 }
 
 }  // namespace
@@ -64,46 +62,62 @@ QVector<QPointer<ChannelPointsChartDialog>>
 ChannelPointsChartDialog::ChannelPointsChartDialog(TwitchChannel *channel,
                                                    QWidget *parent)
     : DraggablePopup(true, parent)
-    , channel_(channel)
+    , channel_(channel ? channel->sharedFromThis() : nullptr)
 {
+    this->setAttribute(Qt::WA_TranslucentBackground);
+    this->setAutoFillBackground(false);
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->setObjectName("ChannelPointsChartDialog");
     this->setWindowTitle(uiText(QStringLiteral("Channel Points Chart")));
-    this->setScaleIndependentSize(DEFAULT_DIALOG_SIZE);
 
     auto *container = this->getLayoutContainer();
     container->setObjectName("ChannelPointsChartDialogRoot");
-    auto layers = LayoutCreator<QWidget>(container)
-                      .setLayoutType<QGridLayout>()
-                      .withoutMargin();
-    this->mainLayout_ = layers.emplace<QVBoxLayout>().getElement();
-    this->mainLayout_->setSpacing(0);
+    this->mainLayout_ = new QVBoxLayout(container);
 
     this->headerWidget_ = new QWidget(container);
     this->headerWidget_->setObjectName("ChannelPointsChartDialogHeader");
     auto *headerLayout = new QHBoxLayout(this->headerWidget_);
-    const int margin = std::max(7, int(8 * this->scale()));
-    headerLayout->setContentsMargins(margin, 3, margin, 2);
+    headerLayout->setContentsMargins(0, 0, 0, 0);
 
     auto *headerTextLayout = new QVBoxLayout();
     headerTextLayout->setContentsMargins(0, 0, 0, 0);
     headerTextLayout->setSpacing(0);
 
-    this->headerTitleLabel_ = new QLabel(this->headerWidget_);
+    auto *titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(metric(contentScale(this->scale()), 5));
+
+    this->headerTitleLabel_ =
+        new QLabel(uiText("Channel Points"), this->headerWidget_);
     this->headerTitleLabel_->setObjectName("ChannelPointsChartHeaderTitle");
-    headerTextLayout->addWidget(this->headerTitleLabel_);
+    this->headerTitleLabel_->setTextFormat(Qt::PlainText);
+    titleRow->addWidget(this->headerTitleLabel_);
+
+    this->headerChannelLabel_ = new QLabel(this->headerWidget_);
+    this->headerChannelLabel_->setObjectName("ChannelPointsChartHeaderChannel");
+    this->headerChannelLabel_->setTextFormat(Qt::PlainText);
+    this->headerChannelLabel_->setWordWrap(true);
+    this->headerAvatar_ = new ChannelAvatarLabel(this->headerChannelLabel_,
+                                                 this->headerWidget_);
+    titleRow->addWidget(this->headerAvatar_, 0, Qt::AlignVCenter);
+    titleRow->addWidget(this->headerChannelLabel_, 1);
+    headerTextLayout->addLayout(titleRow);
 
     this->headerSubtitleLabel_ = new QLabel(this->headerWidget_);
     this->headerSubtitleLabel_->setObjectName(
         "ChannelPointsChartHeaderSubtitle");
+    this->headerSubtitleLabel_->setTextFormat(Qt::PlainText);
     this->headerSubtitleLabel_->setWordWrap(true);
     headerTextLayout->addWidget(this->headerSubtitleLabel_);
 
     headerLayout->addLayout(headerTextLayout, 1);
 
     this->pinButton_ = this->createPinButton();
+    this->pinButton_->setObjectName("ChannelPointsChartPin");
     this->pinButton_->setToolTip(uiText(QStringLiteral("Pin chart popup")));
-    headerLayout->addWidget(this->pinButton_);
+    this->pinButton_->setAccessibleName(
+        uiText(QStringLiteral("Pin chart popup")));
+    headerLayout->addWidget(this->pinButton_, 0, Qt::AlignTop);
 
     this->closeButton_ = new SvgButton(
         {
@@ -111,26 +125,26 @@ ChannelPointsChartDialog::ChannelPointsChartDialog(TwitchChannel *channel,
             .light = ":/buttons/cancelDark.svg",
         },
         this, QSize{3, 3});
+    this->closeButton_->setObjectName("ChannelPointsChartClose");
     this->closeButton_->setScaleIndependentSize(18, 18);
     this->closeButton_->setAccessibleName(uiText(QStringLiteral("Close")));
+    this->closeButton_->setToolTip(uiText(QStringLiteral("Close")));
     this->closeButton_->setCursor(Qt::PointingHandCursor);
     QObject::connect(this->closeButton_, &Button::leftClicked, this,
                      &QWidget::close);
-    headerLayout->addWidget(this->closeButton_);
+    headerLayout->addWidget(this->closeButton_, 0, Qt::AlignTop);
     this->mainLayout_->addWidget(this->headerWidget_);
 
-    auto *separator = new Line(false);
+    auto *separator = new QWidget(container);
     separator->setObjectName("ChannelPointsChartDialogSeparator");
-    separator->setFixedHeight(scaledSeparatorHeight(this->scale()));
+    separator->setFixedHeight(1);
     this->mainLayout_->addWidget(separator);
 
     this->chartView_ = new ChannelPointsChartView(container);
+    this->chartView_->setObjectName("ChannelPointsChartView");
     this->chartView_->setSizePolicy(QSizePolicy::Expanding,
                                     QSizePolicy::Expanding);
     this->mainLayout_->addWidget(this->chartView_, 1);
-
-    layers->addWidget(new InvisibleSizeGrip(this), 0, 0,
-                      Qt::AlignRight | Qt::AlignBottom);
 
     if (this->channel_ != nullptr)
     {
@@ -143,6 +157,22 @@ ChannelPointsChartDialog::ChannelPointsChartDialog(TwitchChannel *channel,
     this->refreshHeader();
     this->refreshStyle();
     this->applySizeConstraints();
+
+    const auto scale = contentScale(this->scale());
+    // Set the opening size, not a fixed scale-independent size. The user can
+    // then freely resize within the actual layout and monitor constraints.
+    this->resize(QSize(qRound(DEFAULT_DIALOG_SIZE.width() * scale),
+                       qRound(DEFAULT_DIALOG_SIZE.height() * scale))
+                     .expandedTo(this->minimumSize())
+                     .boundedTo(this->maximumSize()));
+    this->resizeGrip_ = new UsercardResizeGrip(this);
+    this->resizeGrip_->syncGeometry(scale);
+
+    this->signalHolder_.managedConnect(getApp()->getFonts()->fontChanged,
+                                       [this] {
+                                           this->refreshStyle();
+                                           this->applySizeConstraints();
+                                       });
 }
 
 void ChannelPointsChartDialog::showDialog(TwitchChannel *channel,
@@ -164,7 +194,7 @@ void ChannelPointsChartDialog::showDialog(TwitchChannel *channel,
             it = activeDialogs_.erase(it);
             continue;
         }
-        if ((*it)->channel_ == channel)
+        if ((*it)->channel_.get() == channel)
         {
             dialog = *it;
             dialog->raise();
@@ -229,6 +259,26 @@ void ChannelPointsChartDialog::scheduleUnpinParentOnClose(QWidget *parent)
     });
 }
 
+void ChannelPointsChartDialog::paintEvent(QPaintEvent *)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(this->theme->splits.header.border);
+    painter.setBrush(this->theme->window.background);
+    const auto radius = 10.0 * contentScale(this->scale());
+    painter.drawRoundedRect(QRectF(this->rect()).adjusted(.5, .5, -.5, -.5),
+                            radius, radius);
+}
+
+void ChannelPointsChartDialog::resizeEvent(QResizeEvent *event)
+{
+    DraggablePopup::resizeEvent(event);
+    if (this->resizeGrip_)
+    {
+        this->resizeGrip_->syncGeometry(contentScale(this->scale()));
+    }
+}
+
 void ChannelPointsChartDialog::themeChangedEvent()
 {
     DraggablePopup::themeChangedEvent();
@@ -240,75 +290,99 @@ void ChannelPointsChartDialog::scaleChangedEvent(float scale)
     DraggablePopup::scaleChangedEvent(scale);
     this->refreshStyle();
     this->applySizeConstraints();
+    if (this->resizeGrip_)
+    {
+        this->resizeGrip_->syncGeometry(contentScale(scale));
+    }
 }
 
 void ChannelPointsChartDialog::showEvent(QShowEvent *event)
 {
     DraggablePopup::showEvent(event);
+    this->refreshHeader();
     this->applySizeConstraints();
     this->reloadChart();
 }
 
 void ChannelPointsChartDialog::refreshHeader()
 {
-    this->headerTitleLabel_->setText(
-        uiText(QStringLiteral("%1's channel points"))
-            .arg(channelDisplayName(this->channel_)));
+    const auto channelName = this->channel_
+                                 ? channelDisplayName(*this->channel_)
+                                 : QString{};
+    this->headerTitleLabel_->setText(uiText("Channel Points"));
+    this->headerChannelLabel_->setText(channelName);
+    this->headerChannelLabel_->setVisible(!channelName.isEmpty());
+    this->headerAvatar_->setChannel(
+        this->channel_ ? this->channel_->getName() : QString{});
     this->headerSubtitleLabel_->setText(
-        uiText(QStringLiteral("Only logged while Chatterino Noctis is open. Dates are shown "
-                       "in UTC.")));
+        uiText("Recorded while Noctis is open · local time"));
 }
 
 void ChannelPointsChartDialog::refreshStyle()
 {
+    if (this->chartView_ == nullptr || this->headerAvatar_ == nullptr)
+    {
+        return;
+    }
     auto *fonts = getApp()->getFonts();
-    const auto headerScale = readableFontScale(this->scale() * 1.15F);
-    const auto subtitleScale = readableFontScale(this->scale());
+    const auto scale = contentScale(this->scale());
     this->headerTitleLabel_->setFont(
-        fonts->getFont(FontStyle::UiMediumBold, headerScale));
+        fonts->getFont(FontStyle::ChatMediumBold, scale));
+    this->headerChannelLabel_->setFont(
+        fonts->getFont(FontStyle::ChatMediumBold, scale));
     this->headerSubtitleLabel_->setFont(
-        fonts->getFont(FontStyle::UiMedium, subtitleScale));
-    this->chartView_->setFont(fonts->getFont(FontStyle::UiMedium, subtitleScale));
+        fonts->getFont(FontStyle::ChatMediumSmall, scale));
+    this->chartView_->setFont(fonts->getFont(FontStyle::ChatMedium, scale));
+    this->chartView_->setChartScale(scale);
+    // The invisible grip sits outside the contents, not over the header
+    // buttons or an axis/plot interaction area.
+    const auto inset = UsercardResizeGrip::edgeBand(scale) + metric(scale, 5);
+    this->mainLayout_->setContentsMargins(inset, inset, inset, inset);
+    this->mainLayout_->setSpacing(metric(scale, 8));
+    this->headerWidget_->layout()->setSpacing(metric(scale, 5));
+    this->pinButton_->setOverrideScale(scale);
+    this->closeButton_->setOverrideScale(scale);
+    this->pinButton_->setScaleIndependentSize(18, 18);
+    this->closeButton_->setScaleIndependentSize(18, 18);
 
     const auto *theme = this->theme;
-    const auto background = theme->window.background.name();
     const auto text = theme->window.text.name(QColor::HexArgb);
     auto mutedText = theme->window.text;
-    mutedText.setAlpha(180);
+    mutedText.setAlpha(186);
+    auto separatorColor = theme->splits.header.border;
+    separatorColor.setAlpha(120);
 
     this->getLayoutContainer()->setStyleSheet(
         QStringLiteral(R"(
-        QWidget#ChannelPointsChartDialogRoot {
-            background: %1;
-        }
-        QLabel#ChannelPointsChartHeaderTitle {
-            color: %2;
+        QLabel#ChannelPointsChartHeaderTitle,
+        QLabel#ChannelPointsChartHeaderChannel {
+            background: transparent;
+            color: %1;
         }
         QLabel#ChannelPointsChartHeaderSubtitle {
-            color: %3;
+            background: transparent;
+            color: %2;
         }
-    )")
-            .arg(background, text, mutedText.name(QColor::HexArgb)));
-
-    if (auto *separator =
-            this->findChild<QWidget *>("ChannelPointsChartDialogSeparator"))
-    {
-        separator->setFixedHeight(scaledSeparatorHeight(this->scale()));
-    }
+        QWidget#ChannelPointsChartDialogSeparator {
+            background: %3;
+        }
+    )").arg(text, mutedText.name(QColor::HexArgb),
+             separatorColor.name(QColor::HexArgb)));
 
     this->chartView_->applyTheme(*theme);
+    this->update();
 }
 
 void ChannelPointsChartDialog::applySizeConstraints()
 {
-    const int minWidth =
-        std::max(280, int(DEFAULT_DIALOG_SIZE.width() * 0.65F * this->scale()));
-    const int minHeight = std::max(
-        180, int(DEFAULT_DIALOG_SIZE.height() * 0.65F * this->scale()));
-    const int defaultWidth =
-        std::max(minWidth, int(DEFAULT_DIALOG_SIZE.width() * this->scale()));
-    const int defaultHeight =
-        std::max(minHeight, int(DEFAULT_DIALOG_SIZE.height() * this->scale()));
+    if (this->mainLayout_ == nullptr)
+    {
+        return;
+    }
+    const auto scale = contentScale(this->scale());
+    const auto layoutMinimum = this->mainLayout_->minimumSize();
+    const int minWidth = std::max(metric(scale, 392), layoutMinimum.width());
+    const int minHeight = std::max(metric(scale, 325), layoutMinimum.height());
 
     int maxWidth = QWIDGETSIZE_MAX;
     int maxHeight = QWIDGETSIZE_MAX;
@@ -324,7 +398,7 @@ void ChannelPointsChartDialog::applySizeConstraints()
     if (screen != nullptr)
     {
         const auto available = screen->availableGeometry();
-        const int margin = std::max(12, int(16 * this->scale()));
+        const int margin = std::max(12, metric(scale, 12));
         maxWidth = std::max(minWidth, available.width() - margin * 2);
         maxHeight = std::max(minHeight, available.height() - margin * 2);
     }
@@ -332,12 +406,6 @@ void ChannelPointsChartDialog::applySizeConstraints()
     this->setMinimumSize(minWidth, minHeight);
     this->setMaximumSize(maxWidth, maxHeight);
     this->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-
-    if (this->width() <= 0 || this->height() <= 0)
-    {
-        this->resize(defaultWidth, defaultHeight);
-        return;
-    }
 
     this->resize(qBound(minWidth, this->width(), maxWidth),
                  qBound(minHeight, this->height(), maxHeight));

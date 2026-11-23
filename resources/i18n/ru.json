@@ -3153,5 +3153,17 @@
   "Channel event messages in chat. Requires Twitch device login (Settings → Sign-in for extra features → Authentication), experimental EventSub enabled under Settings → System settings, and an app restart after turning EventSub on.": "Для событий канала в чате войдите в Twitch по коду устройства в разделе «Настройки → Вход для закрепов и опросов», включите экспериментальный EventSub в разделе «Система» и перезапустите приложение.",
   "Show a follow/unfollow button on usercards. Requires Twitch device login (Settings → Sign-in for extra features → Authentication).": "Показывать кнопку подписки и отписки в карточке пользователя. Войдите в Twitch по коду устройства в разделе «Настройки → Вход для закрепов и опросов».",
   "The Device login tab enables channel points, pinned messages, and other mod features. The usual login below is enough for chat.": "Вкладка «Вход по коду» включает баллы канала, закрепления и другие функции модерации. Для чата достаточно обычного входа ниже.",
-  "Sign in with Twitch device login in Settings > Sign-in for extra features to send GIFs with the selected account.": "Чтобы отправлять GIF с выбранного аккаунта, войдите в Twitch по коду устройства в разделе «Настройки → Вход для закрепов и опросов»."
+  "Sign in with Twitch device login in Settings > Sign-in for extra features to send GIFs with the selected account.": "Чтобы отправлять GIF с выбранного аккаунта, войдите в Twitch по коду устройства в разделе «Настройки → Вход для закрепов и опросов».",
+  "Drag or scroll to zoom the time range.": "Выделите участок или прокрутите колесо для масштаба.",
+  "Last recorded balance": "Последний баланс",
+  "Net change": "Изменение",
+  "Recorded range": "Мин. — макс.",
+  "Account of older records is unknown.": "Аккаунт старых записей неизвестен.",
+  "Shaded intervals: no observations.": "Затенённые интервалы: нет данных.",
+  "No observations in this interval.": "За этот интервал нет данных.",
+  "Rewards account": "Аккаунт баллов",
+  "Older data": "Старые данные",
+  "History": "История",
+  "Difference between the first and last recorded balance.": "Разница между первым и последним записанным балансом.",
+  "Recorded while Noctis is open · local time": "Запись только при открытом Noctis · местное время"
 }

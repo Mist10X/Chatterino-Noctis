@@ -687,15 +687,16 @@ TwitchChannel::TwitchChannel(const QString &name, bool anonymous)
                 this->followingStatusChanged.invoke();
             }
         }
+        this->channelPointsIdentityGeneration_.fetch_add(1);
         this->channelPointsFetchInFlight_.store(false);
         this->lastChannelPointsRefreshAt_ = QDateTime();
         this->lastChannelPointsUpdateAt_ = QDateTime();
-        const bool hadPointsError = !this->lastChannelPointsError_.isEmpty();
         this->lastChannelPointsError_.clear();
-        if (this->channelPoints_.exchange(-1) != -1 || hadPointsError)
-        {
-            this->channelPointsChanged.invoke();
-        }
+        this->channelPoints_.store(-1);
+        ChannelPointsChartStore::markGap(this->roomId());
+        // Reload the chart for an account change even if neither account has
+        // supplied its balance yet.
+        this->channelPointsChanged.invoke();
     };
 
     this->signalHolder_.managedConnect(
@@ -886,33 +887,37 @@ TwitchChannel::TwitchChannel(const QString &name, bool anonymous)
 
     this->signalHolder_.managedConnect(
         getApp()->getTwitchPubSub()->userPoints.updated, [this](const auto &d) {
-            auto account = getApp()->getAccounts()->twitch.getCurrent();
-            if (account)
+            const auto channelId = getUserPointsChannelId(d);
+            if (channelId.isEmpty() || channelId != this->roomId())
             {
+                return;
+            }
+            const auto payload = d;
+            const auto weak = this->weak_from_this();
+            const auto generation = this->channelPointsIdentityGeneration_.load();
+            runInGuiThread([weak, payload, generation] {
+                auto channel = std::dynamic_pointer_cast<TwitchChannel>(weak.lock());
+                auto account = getApp()->getAccounts()->twitch.getCurrent();
+                if (!channel || !account || account->isAnon() ||
+                    channel->channelPointsIdentityGeneration_.load() != generation)
+                {
+                    return;
+                }
+
                 const auto auth = MoltorinoAuth::resolveCurrentUserToken();
                 const auto expectedUserId =
                     auth.userId.isEmpty() ? account->getUserId() : auth.userId;
-                if (expectedUserId.isEmpty() ||
-                    !d["topic"].toString().endsWith(expectedUserId))
+                // Compare the full topic and re-evaluate the effective token
+                // on the GUI thread. A queued event from a previous login
+                // must not update the new account's balance or history.
+                if (!auth.hasToken() || expectedUserId.isEmpty() ||
+                    payload.value("topic").toString() !=
+                        QStringLiteral("community-points-user-v1.%1").arg(expectedUserId))
                 {
                     return;
                 }
-
-                const auto channelId = getUserPointsChannelId(d);
-                if (channelId.isEmpty() || channelId != this->roomId())
-                {
-                    return;
-                }
-
-                const auto payload = d;
-                const auto weak = this->weak_from_this();
-                runInGuiThread([this, weak, payload] {
-                    if (auto shared = weak.lock())
-                    {
-                        this->handleUserPointsUpdate(payload);
-                    }
-                });
-            }
+                channel->handleUserPointsUpdate(payload, auth.userId);
+            });
         });
 
     this->ownRestrictionProbe_.setSingleShot(true);
@@ -5642,7 +5647,8 @@ void TwitchChannel::handleRaidUpdate(const QJsonObject &payload)
     this->setActiveRaid(std::move(event));
 }
 
-void TwitchChannel::handleUserPointsUpdate(const QJsonObject &payload)
+void TwitchChannel::handleUserPointsUpdate(const QJsonObject &payload,
+                                           const QString &observedAccountId)
 {
     assertInGuiThread();
 
@@ -5690,26 +5696,29 @@ void TwitchChannel::handleUserPointsUpdate(const QJsonObject &payload)
         return;
     }
 
-    const auto balanceField = balanceObj.value("balance");
-    if (!balanceField.isDouble())
+    const auto newBalance = balanceObj.value("balance").toInteger(-1);
+    if (newBalance < 0)
     {
         qCWarning(chatterinoTwitch)
             << "[Points] Ignoring malformed PubSub payload for"
-            << this->getName() << "type:" << type << "missing numeric balance";
+            << this->getName() << "type:" << type << "invalid integer balance";
         return;
     }
 
-    const qint64 newBalance = balanceField.toInteger();
-
+    const bool recorded = ChannelPointsChartStore::recordSample(
+        channelId, observedAccountId, newBalance);
     if (this->channelPoints_.load() == newBalance)
     {
+        if (recorded)
+        {
+            this->channelPointsChanged.invoke();
+        }
         return;
     }
 
     qCDebug(chatterinoTwitch) << "[Points] PubSub update for" << this->getName()
                               << "type:" << type << "balance:" << newBalance;
 
-    ChannelPointsChartStore::recordSample(channelId, newBalance);
     this->setChannelPointBalance(newBalance);
 }
 
@@ -6335,10 +6344,13 @@ void TwitchChannel::refreshChannelPoints()
     const auto now = QDateTime::currentDateTimeUtc();
     auto clearUnavailablePoints = [this, now](bool resetRefreshGate = false,
                                               bool forceSignal = false) {
+        this->channelPointsIdentityGeneration_.fetch_add(1);
+        this->channelPointsFetchInFlight_.store(false);
         this->lastChannelPointsRefreshAt_ = now;
         const bool hadError = !this->lastChannelPointsError_.isEmpty();
         this->lastChannelPointsError_.clear();
         const auto previousBalance = this->channelPoints_.load();
+        ChannelPointsChartStore::markGap(this->roomId());
         this->setChannelPointBalance(-1);
         if (resetRefreshGate)
         {
@@ -6393,18 +6405,20 @@ void TwitchChannel::refreshChannelPoints()
 
     const auto weak = this->weak_from_this();
     const auto requestToken = auth.token;
+    const auto requestChannelId = this->roomId();
+    const auto generation = this->channelPointsIdentityGeneration_.load();
 
     TwitchGql::getChannelPoints(
         this->getName(), auth.token,
-        [weak, requestToken](qint64 points, QString iconUrl) {
-            runInGuiThread([weak, requestToken, points, iconUrl]() {
+        [weak, requestToken, requestChannelId, generation](qint64 points, QString iconUrl) {
+            runInGuiThread([weak, requestToken, requestChannelId, generation, points, iconUrl]() {
                 auto shared = weak.lock();
                 if (!shared)
                 {
                     return;
                 }
                 auto *channel = dynamic_cast<TwitchChannel *>(shared.get());
-                if (!channel)
+                if (!channel || channel->channelPointsIdentityGeneration_.load() != generation)
                 {
                     return;
                 }
@@ -6412,7 +6426,8 @@ void TwitchChannel::refreshChannelPoints()
                 const auto currentAuth =
                     MoltorinoAuth::resolveCurrentUserToken();
                 if (!currentAuth.hasToken() ||
-                    currentAuth.token != requestToken)
+                    currentAuth.token != requestToken ||
+                    channel->roomId() != requestChannelId)
                 {
                     channel->refreshChannelPointsIfStale(true);
                     return;
@@ -6423,23 +6438,23 @@ void TwitchChannel::refreshChannelPoints()
                     << "[Points] Got" << points << "channel points for"
                     << channel->getName();
                 */
+                ChannelPointsChartStore::recordSample(requestChannelId,
+                                                      currentAuth.userId, points);
                 channel->setChannelPointBalance(points);
                 channel->channelPointsIconUrl_ = iconUrl;
-                ChannelPointsChartStore::recordSample(channel->roomId(),
-                                                      points);
                 channel->lastChannelPointsError_.clear();
                 channel->channelPointsChanged.invoke();
             });
         },
-        [weak, requestToken](const QString &error) {
-            runInGuiThread([weak, requestToken, error]() {
+        [weak, requestToken, requestChannelId, generation](const QString &error) {
+            runInGuiThread([weak, requestToken, requestChannelId, generation, error]() {
                 auto shared = weak.lock();
                 if (!shared)
                 {
                     return;
                 }
                 auto *channel = dynamic_cast<TwitchChannel *>(shared.get());
-                if (!channel)
+                if (!channel || channel->channelPointsIdentityGeneration_.load() != generation)
                 {
                     return;
                 }
@@ -6447,12 +6462,14 @@ void TwitchChannel::refreshChannelPoints()
                 const auto currentAuth =
                     MoltorinoAuth::resolveCurrentUserToken();
                 if (!currentAuth.hasToken() ||
-                    currentAuth.token != requestToken)
+                    currentAuth.token != requestToken ||
+                    channel->roomId() != requestChannelId)
                 {
                     channel->refreshChannelPointsIfStale(true);
                     return;
                 }
 
+                ChannelPointsChartStore::markGap(requestChannelId);
                 channel->lastChannelPointsError_ = normalizeMoltorinoAuthError(
                     "loading channel points", error);
                 qCWarning(chatterinoTwitch)

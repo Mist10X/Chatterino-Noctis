@@ -36,8 +36,8 @@ using namespace chatterino;
 class OfflineApp : public mock::BaseApplication
 {
 public:
-    OfflineApp()
-        : mock::BaseApplication(QStringLiteral("{}"))
+    explicit OfflineApp(const QString &customTheme = {})
+        : mock::BaseApplication(QStringLiteral("{}"), false, customTheme)
         , windows(this->args, this->paths_, this->settings, this->theme,
                   this->fonts)
     {
@@ -118,6 +118,8 @@ public:
 #include <QPushButton>
 #include <QMessageBox>
 #include <QTemporaryDir>
+#include "ChannelPointsChartChecks.hpp"
+#include "ChannelPointsStoreChecks.hpp"
 namespace chatterino {
 class ChannelPointsDialogTestAccess
 {
@@ -143,13 +145,35 @@ int main(int argc, char **argv)
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication qt(argc, argv);
-    if (argc != 2)
+    const bool chartOnly = argc == 3 && QByteArray(argv[2]) == "--chart-only";
+    if (argc != 2 && !chartOnly)
         return 20;
     initResources();
     initializeUiLanguage("ru");
-    OfflineApp app;
+    const auto chartTheme = chartOnly ? qEnvironmentVariable("NOCTIS_CHART_THEME") : QString{};
+    OfflineApp app(chartTheme);
     if (qEnvironmentVariableIsSet("NOCTIS_PICKER_UI_SCALE"))
         app.settings.uiScale.setValue(qEnvironmentVariable("NOCTIS_PICKER_UI_SCALE").toFloat());
+    if (chartOnly)
+    {
+        if (!chartTheme.isEmpty())
+            app.theme.themeName.setValue(QFileInfo(chartTheme).fileName());
+        QJsonArray checks;
+        int failures = 0;
+        const auto check = [&](bool ok, const QString &name) {
+            checks.append(QJsonObject{{"name", name}, {"pass", ok}});
+            failures += !ok;
+        };
+        preview::checkChannelPointsStore(check);
+        const auto reportPath = QString::fromLocal8Bit(argv[1]);
+        preview::checkChannelPointsChart(QFileInfo(reportPath).dir().filePath("chart.png"), check);
+        QFile out(reportPath);
+        if (!out.open(QIODevice::WriteOnly)) return 21;
+        out.write(QJsonDocument(QJsonObject{{"checks", checks}, {"failed", failures},
+                                            {"passed", checks.size() - failures}}).toJson());
+        markAppAboutToQuit();
+        return failures ? 1 : 0;
+    }
     auto channel = std::make_shared<TwitchChannel>("offline-rewards");
     channel->setChannelPointBalance(1000);
     // Real popups own themselves and can close on focus loss. Keep the

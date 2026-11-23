@@ -460,7 +460,7 @@ bool readInteger(const rapidjson::Value &value, qint64 &out)
     if (value.IsInt64())
     {
         out = value.GetInt64();
-        return true;
+        return out >= 0;
     }
     if (value.IsUint64())
     {
@@ -475,8 +475,8 @@ bool readInteger(const rapidjson::Value &value, qint64 &out)
     if (value.IsDouble())
     {
         const auto raw = value.GetDouble();
-        if (!std::isfinite(raw) || raw < 0 ||
-            raw > double(std::numeric_limits<qint64>::max()))
+        if (!std::isfinite(raw) || raw < 0 || std::floor(raw) != raw ||
+            raw >= double(std::numeric_limits<qint64>::max()))
         {
             return false;
         }

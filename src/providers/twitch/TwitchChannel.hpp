@@ -364,7 +364,8 @@ public:
     /// predictions-user-v1: the own bet was placed (here or elsewhere) or
     /// paid out.
     void handlePredictionUserEvent(const QJsonObject &payload);
-    void handleUserPointsUpdate(const QJsonObject &payload);
+    void handleUserPointsUpdate(const QJsonObject &payload,
+                                const QString &observedAccountId = {});
     void refreshPrediction(bool force = false);
     SharedAccessGuard<const std::optional<PollEvent>> accessPoll() const;
     void setActivePoll(std::optional<PollEvent> poll);
@@ -833,6 +834,7 @@ private:
     QString shownChatWarningMessageId_;
     std::atomic<qint64> channelPoints_{-1};
     std::atomic<bool> channelPointsFetchInFlight_{false};
+    std::atomic<quint64> channelPointsIdentityGeneration_{0};
     QDateTime lastChannelPointsRefreshAt_;
     QDateTime lastChannelPointsUpdateAt_;
     QString lastChannelPointsError_;

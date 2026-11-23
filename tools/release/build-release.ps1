@@ -47,6 +47,11 @@ function Test-CompiledMarker([string] $Marker) {
 if (-not (Test-CompiledMarker ("ChatterinoNoctis/$Version" + [char]0))) {
     throw "The executable has a different Noctis update version than $Version."
 }
+foreach ($marker in @('Qt6Charts.dll', 'Qt5Charts.dll', 'QtCharts')) {
+    if (Test-CompiledMarker $marker) {
+        throw "The executable still depends on the removed Qt Charts module: $marker"
+    }
+}
 foreach ($marker in @('twitch-auto-replies.json', 'NoctisCategoryTracker.exe',
                       'archive-bridge.json', 'archive-card', '/archive/socketName',
                       'ArchiveBanPopup', 'UsercardArchiveToggle', 'panel-control.txt',
@@ -68,10 +73,16 @@ if ($launcherInfo.ProductName -ne 'Chatterino Noctis' -or
 New-Item -ItemType Directory -Force $staging, $dist | Out-Null
 
 # 1. Program: the built exe and the runtime it needs (allowlist).
+$qtRuntime = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $Runtime 'Qt6Core.dll'))
+$qtVersion = "{0}.{1}.{2}" -f $qtRuntime.FileMajorPart, $qtRuntime.FileMinorPart, $qtRuntime.FileBuildPart
+$qtSources = Get-Content -LiteralPath (Join-Path $repo 'LICENSES\Qt-sources.md') -Raw
+if (-not $qtSources.Contains("Windows $qtVersion)")) {
+    throw "Update the Qt runtime corresponding-source and license manifest before packaging Qt $qtVersion."
+}
 [IO.File]::WriteAllBytes((Join-Path $staging 'Chatterino Noctis.exe'), $exeBytes)
 Copy-Item -LiteralPath $launcher -Destination $staging
 $runtimeFiles = @(
-    'Qt6Charts.dll', 'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Network.dll', 'Qt6OpenGL.dll',
+    'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Network.dll', 'Qt6OpenGL.dll',
     'Qt6OpenGLWidgets.dll', 'Qt6Svg.dll', 'Qt6Widgets.dll',
     'D3Dcompiler_47.dll', 'dxcompiler.dll', 'dxil.dll',
     'libcrypto-3-x64.dll', 'libssl-3-x64.dll',

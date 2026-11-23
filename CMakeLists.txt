@@ -180,7 +180,6 @@ find_package(Qt${MAJOR_QT_VERSION} REQUIRED
     Network
     Svg
     Concurrent
-    Charts
 )
 
 find_package(Qt${MAJOR_QT_VERSION} COMPONENTS WidgetsPrivate QUIET)

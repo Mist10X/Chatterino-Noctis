@@ -20,14 +20,14 @@ public:
     explicit ChannelPointsChartView(QWidget *parent = nullptr);
 
     void setSamples(const QVector<ChannelPointsChartSample> &samples);
+    void setSampleHistories(const QVector<ChannelPointsChartSample> &current,
+                            const QVector<ChannelPointsChartSample> &legacy);
     void reloadFromStore(const QString &channelId);
     void applyTheme(const Theme &theme);
+    void setChartScale(float scale);
     void resetTimeRange();
 
     ~ChannelPointsChartView() override;
-
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     class Private;

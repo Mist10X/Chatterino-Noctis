@@ -76,6 +76,10 @@ Filename: "{app}\{#AppExe}"; Description: "Запустить {#AppName}"; Flags
 ; Started from the program's own update (/AUTOUPDATE=1): start it again.
 Filename: "{app}\{#AppExe}"; Flags: nowait; Check: IsAutoUpdate
 
+[InstallDelete]
+; Obsolete chart backend shipped with earlier Noctis versions.
+Type: files; Name: "{app}\Qt6Charts.dll"
+
 [UninstallDelete]
 ; Files the program itself creates next to it that are not settings.
 Type: filesandordirs; Name: "{app}\Cache"

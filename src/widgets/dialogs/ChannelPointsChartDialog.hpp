@@ -9,17 +9,21 @@
 #    include <pajlada/signals/scoped-connection.hpp>
 #    include <QPointer>
 #    include <QVector>
+#    include <memory>
 
 class QLabel;
-class QPushButton;
+class QPaintEvent;
+class QResizeEvent;
 class QVBoxLayout;
 
 namespace chatterino {
 
 class Button;
+class ChannelAvatarLabel;
 class ChannelPointsChartView;
 class SvgButton;
 class TwitchChannel;
+class UsercardResizeGrip;
 
 class ChannelPointsChartDialog : public DraggablePopup
 {
@@ -29,6 +33,8 @@ public:
     static void showDialog(TwitchChannel *channel, QWidget *parent = nullptr);
 
 protected:
+    void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
     void themeChangedEvent() override;
     void scaleChangedEvent(float scale) override;
     void showEvent(QShowEvent *event) override;
@@ -40,14 +46,18 @@ private:
     void applySizeConstraints();
     void scheduleUnpinParentOnClose(QWidget *parent);
 
-    TwitchChannel *channel_{};
+    // A pinned chart remains valid even when the tab that opened it is closed.
+    std::shared_ptr<TwitchChannel> channel_;
     QVBoxLayout *mainLayout_{};
     QWidget *headerWidget_{};
     QLabel *headerTitleLabel_{};
+    QLabel *headerChannelLabel_{};
     QLabel *headerSubtitleLabel_{};
+    ChannelAvatarLabel *headerAvatar_{};
     Button *pinButton_{};
     SvgButton *closeButton_{};
     ChannelPointsChartView *chartView_{};
+    UsercardResizeGrip *resizeGrip_{};
     bool parentUnpinScheduled_ = false;
 
     pajlada::Signals::ScopedConnection channelPointsConnection_;
