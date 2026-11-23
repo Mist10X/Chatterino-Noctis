@@ -2,7 +2,7 @@
 Builds a release of Chatterino Noctis: the installer, a portable zip and
 SHA256SUMS.txt.
 
-  .\build-release.ps1 -Version 1.0.0 -Exe <built Chatterino Noctis.exe> -Runtime <folder with the Qt/OpenSSL/VC runtime> -Out <folder>
+  .\build-release.ps1 -Version 1.0.0 -Exe <built Chatterino Noctis.exe> -Runtime <folder with the Qt/OpenSSL/VC runtime> -QtSourceBundle <Qt-6.9.3-corresponding-source.zip> -Out <folder>
 
 The runtime folder is a working installation (or a fresh deployment); only the
 files on the allowlist below are taken from it, never a profile (Settings,
@@ -13,6 +13,7 @@ param(
     [Parameter(Mandatory)] [string] $Exe,
     [Parameter(Mandatory)] [string] $Runtime,
     [Parameter(Mandatory)] [string] $Out,
+    [string] $QtSourceBundle,
     [string] $Iscc = 'D:\devtools\InnoSetup6\ISCC.exe'
 )
 $ErrorActionPreference = 'Stop'
@@ -70,6 +71,28 @@ if ($launcherInfo.ProductName -ne 'Chatterino Noctis' -or
     $launcherInfo.ProductVersion -ne $Version) {
     throw "Expected the compatibility launcher beside the main executable."
 }
+if ([string]::IsNullOrWhiteSpace($QtSourceBundle) -or -not (Test-Path -LiteralPath $QtSourceBundle -PathType Leaf)) {
+    throw "Provide the matching Qt corresponding-source ZIP with -QtSourceBundle."
+}
+if ((Split-Path -Leaf $QtSourceBundle) -ne 'Qt-6.9.3-corresponding-source.zip') {
+    throw "Unexpected Qt source archive; review the matching runtime source manifest."
+}
+$qtSourceHashes = @{
+    'qtbase-everywhere-src-6.9.3.tar.xz' = 'c5a1a2f660356ec081febfa782998ae5ddbc5925117e64f50e4be9cd45b8dc6e'
+    'qtsvg-everywhere-src-6.9.3.tar.xz' = 'db76aa3358cbbe6fce7da576ff4669cb9801920188c750d3b12783bbe97026e2'
+    'qtimageformats-everywhere-src-6.9.3.tar.xz' = '4fb26bdbfbd4b8e480087896514e11c33aba7b6b39246547355ea340c4572ffe'
+}
+$zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $QtSourceBundle).Path)
+try {
+    foreach ($name in $qtSourceHashes.Keys) {
+        $entry = $zip.GetEntry($name)
+        if ($null -eq $entry) { throw "Missing Qt corresponding source: $name" }
+        $stream = $entry.Open()
+        try { $digest = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.ToLower() }
+        finally { $stream.Dispose() }
+        if ($digest -ne $qtSourceHashes[$name]) { throw "Qt source checksum mismatch: $name" }
+    }
+} finally { $zip.Dispose() }
 New-Item -ItemType Directory -Force $staging, $dist | Out-Null
 
 # 1. Program: the built exe and the runtime it needs (allowlist).
@@ -144,6 +167,7 @@ Copy-Item (Join-Path $dist "ChatterinoNoctis-Setup-$Version.exe") (Join-Path $di
 Copy-Item (Join-Path $dist "$portableName.zip") (Join-Path $dist "ChatterinoByMist1X-$Version-portable.zip")
 
 # 6. Checksums.
+Copy-Item -LiteralPath $QtSourceBundle -Destination $dist
 $sums = Get-ChildItem $dist -File | Where-Object Name -ne 'SHA256SUMS.txt' | Sort-Object Name | ForEach-Object {
     '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
 }
