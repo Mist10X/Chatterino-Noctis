@@ -1102,7 +1102,7 @@ int main(int argc, char **argv)
                     QByteArray status = "200 OK", etag = "\"fixture-v1\"";
                     QByteArray body = R"([{"tag_name":"v1.3.8"},{"tag_name":"v3.0.0-beta.1","prerelease":true},{"tag_name":"v2.0.2","draft":false}])";
                     if (requests == 2) { status = "304 Not Modified"; body.clear(); }
-                    else if (requests == 3) { body = R"([{"tag_name":"v2.0.2"}])"; etag = "\"fixture-v2\""; }
+                    else if (requests == 3) { body = R"([{"tag_name":"v2.0.3"}])"; etag = "\"fixture-v2\""; }
                     else if (requests >= 4) { status = "429 Too Many Requests"; body = R"({"message":"rate limited"})"; }
                     socket->write("HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nETag: " + etag +
                                   "\r\nConnection: close\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\n\r\n" + body);
@@ -1136,14 +1136,14 @@ int main(int argc, char **argv)
         check(conditional && updates.getStatus() == Updates::UpdateAvailable && updates.getOnlineVersion() == "2.0.2" && requests == 2,
               "conditional 304 retains confirmed update and does not create duplicate request");
         updates.checkForUpdates();
-        check(wait([&]{return updates.getOnlineVersion()=="2.0.2";},18000) && updates.getStatus()==Updates::UpdateAvailable,
+        check(wait([&]{return updates.getOnlineVersion()=="2.0.3";},18000) && updates.getStatus()==Updates::UpdateAvailable,
               "new release discovered while prior update still visible");
         updates.checkForUpdates();
         check(wait([&]{return requests>=4;},18000), "rate-limit response received");
         pause(500);
         updates.checkForUpdates();
         pause(1000);
-        check(requests==4 && updates.getOnlineVersion()=="2.0.2" && updates.getStatus()==Updates::UpdateAvailable,
+        check(requests==4 && updates.getOnlineVersion()=="2.0.3" && updates.getStatus()==Updates::UpdateAvailable,
               "rate limit keeps update visible and prevents immediate repeat");
         markAppAboutToQuit();
         NetworkManager::deinit();
