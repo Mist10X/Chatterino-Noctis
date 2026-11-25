@@ -77,8 +77,18 @@ public:
 
     static bool isAppCaption(const QString &text)
     {
-        return text == Version::instance().fullVersion() ||
-               text == Version::instance().fullVersion() + QStringLiteral(" (safe mode)");
+        const auto base = Version::instance().fullVersion();
+        const auto suffix = text.startsWith(base) ? text.mid(base.size()) : QStringLiteral("invalid");
+        return suffix.isEmpty() || suffix == QStringLiteral(" (safe mode)") ||
+               suffix == QStringLiteral(" (Mods)") ||
+               suffix == QStringLiteral(" (Mods) (safe mode)");
+    }
+
+    static QString shortCaption(const QString &text)
+    {
+        if (text.contains(QStringLiteral(" (Mods)")))
+            return QStringLiteral("Noctis (Mods)");
+        return QStringLiteral("Noctis");
     }
 
     void setCaptionText(const QString &text)
@@ -97,12 +107,13 @@ protected:
         {
             const auto metrics = this->getFontMetrics();
             const auto area = this->textRect();
-            const auto shortName = QStringLiteral("Noctis");
+            const auto shortName = shortCaption(this->getText());
             QString visibleTitle = this->getText();
             if (metrics.horizontalAdvance(visibleTitle) > area.width())
             {
                 visibleTitle = metrics.horizontalAdvance(shortName) <= area.width()
-                                   ? shortName : QString();
+                                   ? shortName : (metrics.horizontalAdvance(QStringLiteral("Noctis")) <= area.width()
+                                       ? QStringLiteral("Noctis") : QString());
             }
 
             QPainter painter(this);
@@ -1114,7 +1125,7 @@ void BaseWindow::calcButtonsSizes()
     const auto fits = [&](float candidate) {
         const auto metrics = getApp()->getFonts()->getFontMetrics(FontStyle::UiTabs, candidate);
         int width = CaptionLabel::isAppCaption(this->windowTitle())
-                        ? qRound(38 * candidate + metrics.horizontalAdvance(QStringLiteral("Noctis"))) + 2
+                        ? qRound(38 * candidate + metrics.horizontalAdvance(CaptionLabel::shortCaption(this->windowTitle()))) + 2
                         : qRound(28 * candidate);
         for (auto *button : this->ui_.buttons)
         {

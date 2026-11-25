@@ -21,6 +21,8 @@ namespace {
 constexpr int MIN_THUMB_HEIGHT = 10;
 
 constexpr qreal SCROLL_DELTA = 5.0;
+constexpr int SCROLL_DURATION_MS = 150;
+constexpr int JUMP_DURATION_MS = 210;
 
 bool areClose(auto a, auto b)
 {
@@ -38,11 +40,20 @@ Scrollbar::Scrollbar(size_t messagesLimit, ChannelView *parent)
     , messageLimit_(messagesLimit)
 {
     this->resize(static_cast<int>(16 * this->scale()), 100);
-    this->currentValueAnimation_.setDuration(150);
+    this->currentValueAnimation_.setDuration(SCROLL_DURATION_MS);
     this->currentValueAnimation_.setEasingCurve(
         QEasingCurve(QEasingCurve::OutCubic));
     connect(&this->currentValueAnimation_, &QAbstractAnimation::finished, this,
-            &Scrollbar::resetBounds);
+            [this] {
+                if (this->jumpingToBottom_)
+                {
+                    this->jumpingToBottom_ = false;
+                    // The chat may have received messages or changed page
+                    // height while the animation was running.
+                    this->scrollToBottom(false);
+                }
+                this->resetBounds();
+            });
 
     this->setMouseTracking(true);
 
@@ -122,6 +133,15 @@ void Scrollbar::scrollToBottom(bool animate)
     this->setDesiredValue(this->getBottom(), animate);
 }
 
+void Scrollbar::jumpToBottom()
+{
+    if (this->jumpingToBottom_)
+        return;
+    this->currentValueAnimation_.stop();
+    this->jumpingToBottom_ = true;
+    this->setDesiredValue(this->getBottom(), true);
+}
+
 void Scrollbar::scrollToTop(bool animate)
 {
     this->setDesiredValue(this->minimum_, animate);
@@ -194,17 +214,25 @@ void Scrollbar::setPageSize(qreal value)
 void Scrollbar::setDesiredValue(qreal value, bool animated)
 {
     value = std::max(this->minimum_, std::min(this->getBottom(), value));
+    if (this->jumpingToBottom_ && !areClose(this->getBottom(), value))
+    {
+        // A deliberate scroll away from the bottom interrupts the jump.
+        this->jumpingToBottom_ = false;
+        this->currentValueAnimation_.stop();
+    }
     // already there - unless an animation is still heading somewhere else
     // (past a bottom that has moved up since: blank space under the chat)
     if (areClose(this->currentValue_, value) &&
         this->currentValueAnimation_.state() == QPropertyAnimation::Stopped)
     {
+        this->jumpingToBottom_ = false;
         this->desiredValue_ = value;
         this->atBottom_ = areClose(this->getBottom(), value);
         return;
     }
     if (areClose(this->currentValue_, value))
     {
+        this->jumpingToBottom_ = false;
         this->currentValueAnimation_.stop();
         this->desiredValue_ = value;
         this->atBottom_ = areClose(this->getBottom(), value);
@@ -218,9 +246,25 @@ void Scrollbar::setDesiredValue(qreal value, bool animated)
 
     this->atBottom_ = areClose(this->getBottom(), value);
 
-    if (animated && getSettings()->enableSmoothScrolling)
+    if (this->jumpingToBottom_)
+    {
+        if (this->currentValueAnimation_.state() == QPropertyAnimation::Running)
+        {
+            // New chat messages retarget the existing jump, without resetting
+            // its elapsed time or extending the animation indefinitely.
+            if (!areClose(this->currentValueAnimation_.endValue().toReal(), value))
+                this->currentValueAnimation_.setEndValue(value);
+            return;
+        }
+        this->currentValueAnimation_.setDuration(JUMP_DURATION_MS);
+        this->currentValueAnimation_.setStartValue(this->currentValue_);
+        this->currentValueAnimation_.setEndValue(value);
+        this->currentValueAnimation_.start();
+    }
+    else if (animated && getSettings()->enableSmoothScrolling)
     {
         this->currentValueAnimation_.stop();
+        this->currentValueAnimation_.setDuration(SCROLL_DURATION_MS);
         this->currentValueAnimation_.setStartValue(this->currentValue_);
         this->currentValueAnimation_.setEndValue(value);
         this->currentValueAnimation_.start();

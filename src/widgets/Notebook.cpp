@@ -123,6 +123,24 @@ Notebook::Notebook(QWidget *parent)
     // width when computing the maximum width occupied per column in vertical
     // tab rendering.
     this->resizeAddButton();
+    getSettings()->showWhispersTab.connect([this] {
+        if (!getSettings()->showWhispersTab && this->selectedPage_ &&
+            !this->canClosePage(this->selectedPage_))
+        {
+            for (const auto &item : this->items_)
+                if (this->canClosePage(item.page))
+                {
+                    this->select(item.page);
+                    break;
+                }
+            if (this->selectedPage_ && !this->canClosePage(this->selectedPage_))
+                this->select(nullptr, false);
+        }
+        else if (getSettings()->showWhispersTab && !this->selectedPage_ &&
+                 !this->items_.empty())
+            this->select(this->items_.front().page, false);
+        this->refresh();
+    }, this->signalHolder_, false);
     this->signalHolder_.managedConnect(getApp()->getFonts()->fontChanged, [this] {
         this->scaleChangedEvent(this->scale());
         this->update();
@@ -197,8 +215,17 @@ void Notebook::removePage(QWidget *page)
         else if (countVisible == 1)
         {
             // Closing the only visible tab, try to select any tab (even if not visible)
-            int nextIndex = (removingIndex + 1) % this->items_.count();
-            this->select(this->items_[nextIndex].page, true, false);
+            QWidget *next = nullptr;
+            for (int step = 1; step < this->items_.count(); ++step)
+            {
+                auto *candidate = this->items_[(removingIndex + step) % this->items_.count()].page;
+                if (this->canClosePage(candidate) || getSettings()->showWhispersTab)
+                {
+                    next = candidate;
+                    break;
+                }
+            }
+            this->select(next, true, false);
         }
         else if (visibleIndex == countVisible - 1)
         {
@@ -302,7 +329,7 @@ int Notebook::indexOf(QWidget *page) const
 
 int Notebook::visibleIndexOf(QWidget *page) const
 {
-    if (!this->tabVisibilityFilter_)
+    if (!this->tabVisibilityFilter_ && getSettings()->showWhispersTab)
     {
         return this->indexOf(page);
     }
@@ -310,15 +337,14 @@ int Notebook::visibleIndexOf(QWidget *page) const
     int i = 0;
     for (const auto &item : this->items_)
     {
+        if ((!this->canClosePage(item.page) && !getSettings()->showWhispersTab) ||
+            (this->tabVisibilityFilter_ && !this->tabVisibilityFilter_(item.tab)))
+            continue;
         if (item.page == page)
         {
-            assert(this->tabVisibilityFilter_(item.tab));
             return i;
         }
-        if (this->tabVisibilityFilter_(item.tab))
-        {
-            ++i;
-        }
+        ++i;
     }
 
     return -1;
@@ -326,7 +352,7 @@ int Notebook::visibleIndexOf(QWidget *page) const
 
 int Notebook::getVisibleTabCount() const
 {
-    if (!this->tabVisibilityFilter_)
+    if (!this->tabVisibilityFilter_ && getSettings()->showWhispersTab)
     {
         return this->items_.count();
     }
@@ -334,7 +360,8 @@ int Notebook::getVisibleTabCount() const
     int i = 0;
     for (const auto &item : this->items_)
     {
-        if (this->tabVisibilityFilter_(item.tab))
+        if ((this->canClosePage(item.page) || getSettings()->showWhispersTab) &&
+            (!this->tabVisibilityFilter_ || this->tabVisibilityFilter_(item.tab)))
         {
             ++i;
         }
@@ -575,7 +602,7 @@ void Notebook::selectIndex(int index, bool focusPage)
 
 void Notebook::selectVisibleIndex(int index, bool focusPage)
 {
-    if (!this->tabVisibilityFilter_)
+    if (!this->tabVisibilityFilter_ && getSettings()->showWhispersTab)
     {
         this->selectIndex(index, focusPage);
         return;
@@ -584,7 +611,8 @@ void Notebook::selectVisibleIndex(int index, bool focusPage)
     int i = 0;
     for (auto &item : this->items_)
     {
-        if (this->tabVisibilityFilter_(item.tab))
+        if ((this->canClosePage(item.page) || getSettings()->showWhispersTab) &&
+            (!this->tabVisibilityFilter_ || this->tabVisibilityFilter_(item.tab)))
         {
             if (i == index)
             {
@@ -600,6 +628,21 @@ void Notebook::selectVisibleIndex(int index, bool focusPage)
 void Notebook::selectNextTab(bool focusPage, bool recordInHistory)
 {
     const int size = this->items_.size();
+    if (!getSettings()->showWhispersTab)
+    {
+        if (size == 0) return;
+        const int start = this->indexOf(this->selectedPage_);
+        for (int step = 1; step <= size; ++step)
+        {
+            const auto &item = this->items_[(start + step) % size];
+            if (this->canClosePage(item.page) && (!this->tabVisibilityFilter_ || this->tabVisibilityFilter_(item.tab)))
+            {
+                this->select(item.page, focusPage, recordInHistory);
+                return;
+            }
+        }
+        return;
+    }
 
     if (!this->tabVisibilityFilter_)
     {
@@ -631,6 +674,21 @@ void Notebook::selectNextTab(bool focusPage, bool recordInHistory)
 void Notebook::selectPreviousTab(bool focusPage, bool recordInHistory)
 {
     const int size = this->items_.size();
+    if (!getSettings()->showWhispersTab)
+    {
+        if (size == 0) return;
+        const int start = std::max(0, this->indexOf(this->selectedPage_));
+        for (int step = 1; step <= size; ++step)
+        {
+            const auto &item = this->items_[(start + size - step) % size];
+            if (this->canClosePage(item.page) && (!this->tabVisibilityFilter_ || this->tabVisibilityFilter_(item.tab)))
+            {
+                this->select(item.page, focusPage, recordInHistory);
+                return;
+            }
+        }
+        return;
+    }
 
     if (!this->tabVisibilityFilter_)
     {
@@ -667,7 +725,7 @@ void Notebook::selectPreviousTab(bool focusPage, bool recordInHistory)
 
 void Notebook::selectLastTab(bool focusPage)
 {
-    if (!this->tabVisibilityFilter_)
+    if (!this->tabVisibilityFilter_ && getSettings()->showWhispersTab)
     {
         const auto size = this->items_.size();
         if (size <= 1)
@@ -682,7 +740,8 @@ void Notebook::selectLastTab(bool focusPage)
     // find first tab permitted by filter starting from the end
     for (auto it = this->items_.rbegin(); it != this->items_.rend(); ++it)
     {
-        if (this->tabVisibilityFilter_(it->tab))
+        if ((this->canClosePage(it->page) || getSettings()->showWhispersTab) &&
+            (!this->tabVisibilityFilter_ || this->tabVisibilityFilter_(it->tab)))
         {
             this->select(it->page, focusPage);
             return;
@@ -740,12 +799,16 @@ QWidget *Notebook::tabAt(QPoint point, int &index, int maxWidth)
 
 void Notebook::rearrangePage(QWidget *page, int index)
 {
-    if (this->isNotebookLayoutLocked())
+    if (this->isNotebookLayoutLocked() || !this->canClosePage(page))
     {
         return;
     }
 
-    this->items_.move(this->indexOf(page), index);
+    const int first = !this->items_.empty() && !this->canClosePage(this->items_.front().page) ? 1 : 0;
+    const auto from = this->indexOf(page);
+    if (from < 0 || first >= this->items_.size())
+        return;
+    this->items_.move(from, std::clamp(index, first, int(this->items_.size()) - 1));
 
     this->performLayout(true);
     this->afterPageMoved();
@@ -903,28 +966,18 @@ void Notebook::resizeEvent(QResizeEvent *)
 
 void Notebook::performLayout(bool animated)
 {
+    // Normalize restored layouts, even when rearranging tabs is locked.
+    for (int i = 1; !this->items_.empty() && this->canClosePage(this->items_.front().page) && i < this->items_.size(); ++i)
+        if (!this->canClosePage(this->items_[i].page))
+        {
+            this->items_.move(i, 0);
+            break;
+        }
     std::vector<Item> filteredItems;
     filteredItems.reserve(this->items_.size());
-    if (!this->showTabs_)
-    {
-        std::copy_if(this->items_.begin(), this->items_.end(),
-                     std::back_inserter(filteredItems),
-                     [this](const auto &item) {
-                         return !this->canClosePage(item.page);
-                     });
-    }
-    else if (this->tabVisibilityFilter_)
-    {
-        std::copy_if(this->items_.begin(), this->items_.end(),
-                     std::back_inserter(filteredItems),
-                     [this](const auto &item) {
-                         return this->tabVisibilityFilter_(item.tab);
-                     });
-    }
-    else
-    {
-        filteredItems.assign(this->items_.begin(), this->items_.end());
-    }
+    std::copy_if(this->items_.begin(), this->items_.end(),
+                 std::back_inserter(filteredItems),
+                 [this](const auto &item) { return this->shouldShowTab(item.tab); });
 
     const auto scale = this->tabScale();
     const auto tabHeight = int(NOTEBOOK_TAB_HEIGHT * scale);
@@ -1483,7 +1536,7 @@ bool Notebook::shouldShowTab(const NotebookTab *tab) const
 {
     if (!this->canClosePage(tab->page))
     {
-        return true;
+        return getSettings()->showWhispersTab.getValue();
     }
     if (!this->showTabs_)
     {
@@ -1502,7 +1555,9 @@ void Notebook::sortTabsAlphabetically()
 {
     assert(!this->isNotebookLayoutLocked() &&
            "sortTabsAlphabetically called while notebook layout is locked");
-    std::ranges::sort(this->items_, [](const Item &a, const Item &b) {
+    std::ranges::sort(this->items_, [this](const Item &a, const Item &b) {
+        if (this->canClosePage(a.page) != this->canClosePage(b.page))
+            return !this->canClosePage(a.page);
         const QString &lhs = a.tab->getTitle();
         const QString &rhs = b.tab->getTitle();
         return lhs.compare(rhs, Qt::CaseInsensitive) < 0;
@@ -1892,6 +1947,12 @@ void SplitNotebook::ensureWhispersTab()
                                        Channel::Type::TwitchWhispers))
         {
             container->setPermanentWhispersTab();
+            if (!getSettings()->showWhispersTab && this->getSelectedPage() == container)
+            {
+                this->selectNextTab(false);
+                if (this->getSelectedPage() == container)
+                    this->select(nullptr, false);
+            }
             this->refresh();
             return;
         }
@@ -1901,6 +1962,12 @@ void SplitNotebook::ensureWhispersTab()
     auto *split = container->appendNewSplit(false);
     split->setChannel(IndirectChannel(getApp()->getTwitch()->getWhispersChannel()));
     container->setPermanentWhispersTab();
+    if (!getSettings()->showWhispersTab && this->getSelectedPage() == container)
+    {
+        this->selectNextTab(false);
+        if (this->getSelectedPage() == container)
+            this->select(nullptr, false);
+    }
     this->refresh();
 }
 

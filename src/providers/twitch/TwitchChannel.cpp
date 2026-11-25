@@ -4905,7 +4905,15 @@ void TwitchChannel::setActivePoll(std::optional<PollEvent> poll)
                 poll->pointsPerVote = previous.pointsPerVote;
             }
 
-            if (poll->selfVotes.empty())
+            // Event-only snapshots do not include the voter. Preserve the
+            // confirmed choice from the same account, never another login's.
+            if (poll->currentUserId.isEmpty() && poll->selfVotes.empty())
+            {
+                poll->selfVotes = previous.selfVotes;
+                poll->currentUserId = previous.currentUserId;
+            }
+            else if (poll->selfVotes.empty() &&
+                     poll->currentUserId == previous.currentUserId)
             {
                 poll->selfVotes = previous.selfVotes;
             }

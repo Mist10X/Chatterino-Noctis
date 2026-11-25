@@ -9,10 +9,13 @@
 #include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/Settings.hpp"
 #include "widgets/dialogs/PredictionDialog.hpp"
+#include "widgets/dialogs/PollDialog.hpp"
+#include "widgets/splits/InputCompletionPopup.hpp"
 #include "widgets/splits/Split.hpp"
 
 #include <QDateTime>
 #include <QLocale>
+#include <QScrollArea>
 
 namespace chatterino {
 
@@ -148,6 +151,114 @@ inline int runPredictionDemo(chatterino::Split &split,
         std::fprintf(stderr, "prediction check: %s %s\n", ok ? "ok" : "FAIL",
                      name);
     };
+    TwitchChannel::PollEvent poll;
+    poll.id = QStringLiteral("poll-style-fixture");
+    poll.title = QStringLiteral("Что смотрим?");
+    poll.status = QStringLiteral("ACTIVE");
+    poll.endsAt = QDateTime::currentDateTimeUtc().addSecs(90);
+    poll.totalVotes = 100;
+    poll.choices = {{.id = "first", .title = "Первый", .totalVotes = 20},
+                    {.id = "second", .title = "Второй", .totalVotes = 65},
+                    {.id = "third", .title = "Третий", .totalVotes = 15}};
+    poll.selfVotes = {{.choiceId = "first", .freeVotes = 1}};
+    auto *pollDialog = new PollDialog(channel.get(), &split);
+    pollDialog->setPoll(poll);
+    pollDialog->show();
+    pump(150);
+    const auto labelText = [pollDialog](const char *name) {
+        auto *label = pollDialog->findChild<QLabel *>(QString::fromLatin1(name));
+        return label ? label->text() : QString();
+    };
+    check("active poll countdown uses untranslated protocol status",
+          labelText("PollCountdown").startsWith(uiText("Ending in %1").section("%1", 0, 0)) &&
+          labelText("PollHeaderSubtitle").contains(uiText("Active")) &&
+          labelText("PollSectionTitle") == uiText("Vote Submitted"));
+    auto ownMarkIs = [pollDialog](const QString &id) {
+        auto marks = pollDialog->findChildren<QLabel *>("PollOwnVoteMark");
+        return marks.size() == 1 && marks.first()->parentWidget()->property("choiceId").toString() == id;
+    };
+    check("confirmed non-leading vote marked separately from leading choice", ownMarkIs("first"));
+    const auto allChoicesFit = [pollDialog] {
+        auto *area = pollDialog->findChild<QScrollArea *>("PollOutcomesScrollArea");
+        auto *contents = pollDialog->findChild<QWidget *>("PollOutcomesContent");
+        return area && contents && area->viewport()->height() >= contents->minimumSizeHint().height() - 2 &&
+               area->viewport()->height() >= 70;
+    };
+    check("active poll shows every option without unnecessary scrolling", allChoicesFit());
+    pollDialog->grab().save(screenshotBase + "-poll-active.png");
+    poll.status = QStringLiteral("active");
+    poll.endsAt.reset();
+    pollDialog->setPoll(poll);
+    pump(100);
+    check("active snapshot without duration never claims voting ended",
+          labelText("PollCountdown") == uiText("Voting in progress") && ownMarkIs("first"));
+    poll.status = QStringLiteral("COMPLETED");
+    pollDialog->setPoll(poll);
+    pump(100);
+    check("completed poll displays ended and retains own vote",
+          labelText("PollCountdown") == uiText("Voting ended") && ownMarkIs("first"));
+    check("finished poll still fits outcomes and has only one visible footer",
+          allChoicesFit() && std::ranges::count_if(pollDialog->findChildren<QWidget *>("PollBottomBar"), [](const auto *footer) { return footer->isVisible(); }) == 1);
+    pollDialog->grab().save(screenshotBase + "-poll-ended.png");
+    poll.currentUserId = QStringLiteral("other-fixture-user");
+    pollDialog->setPoll(poll);
+    pump(60);
+    check("a different account's vote is not marked as mine",
+          pollDialog->findChildren<QLabel *>("PollOwnVoteMark").isEmpty());
+    poll.currentUserId.clear();
+    poll.id = QStringLiteral("another-poll");
+    poll.status = QStringLiteral("ACTIVE");
+    poll.selfVotes.clear();
+    pollDialog->setPoll(poll);
+    pump(100);
+    check("new poll does not retain prior vote marker",
+          pollDialog->findChildren<QLabel *>("PollOwnVoteMark").isEmpty());
+    pollDialog->close();
+    delete pollDialog;
+    pump(50);
+    poll.currentUserId = QStringLiteral("fixture-account-one");
+    poll.selfVotes = {{.choiceId = "first", .freeVotes = 1}};
+    channel->setActivePoll(poll);
+    auto eventOnly = poll;
+    eventOnly.currentUserId.clear();
+    eventOnly.selfVotes.clear();
+    channel->setActivePoll(eventOnly);
+    {
+        const auto snapshot = channel->accessPoll();
+        check("event-only poll updates preserve confirmed voter identity",
+              *snapshot && snapshot->value().currentUserId == poll.currentUserId &&
+              snapshot->value().selfVotes.size() == 1);
+    }
+    eventOnly.currentUserId = QStringLiteral("fixture-account-two");
+    channel->setActivePoll(eventOnly);
+    {
+        const auto snapshot = channel->accessPoll();
+        check("poll update for a new account does not inherit others' vote",
+              *snapshot && snapshot->value().selfVotes.empty());
+    }
+    channel->setActivePoll(std::nullopt);
+
+    channel->addRecentChatter(QStringLiteral("fixtureuser"));
+    channel->addRecentChatter(QStringLiteral("fixtureother"));
+    auto *completion = new InputCompletionPopup(&split);
+    QString accepted;
+    completion->setInputAction([&](const QString &text) { accepted = text; });
+    completion->updateCompletion("fixture", CompletionKind::User, channel);
+    completion->show();
+    pump(70);
+    const int twoHeight = completion->height();
+    completion->updateCompletion("fixtureuser", CompletionKind::User, channel);
+    pump(70);
+    auto *list = completion->findChild<GenericListView *>();
+    check("completion shrinks to one result and uses readable font",
+          completion->hasResults() && completion->height() < twoHeight &&
+          list && list->font().weight() >= QFont::Medium && list->sizeHintForRow(0) >= list->fontMetrics().height() + 8);
+    completion->grab().save(screenshotBase + "-completion.png");
+    QKeyEvent tabEvent(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+    completion->eventFilter(&split, &tabEvent);
+    check("completion accepts the selected user with Tab", accepted.contains("fixtureuser"));
+    delete completion;
+
     // Deliver the actual failed-bet callback into the production dialog,
     // without attempting a bet on Twitch or altering the dialog's sizing.
     auto unavailable = samplePrediction(2, QStringLiteral("ACTIVE"), false);

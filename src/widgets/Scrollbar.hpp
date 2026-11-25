@@ -34,6 +34,8 @@ public:
     void setMessageLimit(size_t limit);
 
     void scrollToBottom(bool animate = false);
+    /// Explicit user action: animate independently of automatic chat scrolling.
+    void jumpToBottom();
     void scrollToTop(bool animate = false);
     bool isAtBottom() const;
     /// Shown past the end (the page grew under it, e.g. messages got
@@ -108,6 +110,7 @@ private:
     MouseLocation locationOfMouseEvent(QMouseEvent *event) const;
 
     QPropertyAnimation currentValueAnimation_;
+    bool jumpingToBottom_ = false;
 
     boost::circular_buffer<ScrollbarHighlight> highlights_;
 

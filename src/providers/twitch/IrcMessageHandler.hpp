@@ -30,6 +30,7 @@ struct AddMessageArgs {
     bool isSub = false;
     bool isAction = false;
     bool isSpecial = false;
+    bool allowModeratorAutoReply = false;
 };
 
 class IrcMessageHandler
@@ -45,7 +46,8 @@ public:
     void handlePrivMessage(Communi::IrcPrivateMessage *message,
                            ITwitchIrcServer &twitchServer);
     static void parsePrivMessageInto(Communi::IrcPrivateMessage *message,
-                                     MessageSink &sink, TwitchChannel *channel);
+                                     MessageSink &sink, TwitchChannel *channel,
+                                     bool live = false);
 
     void handleRoomStateMessage(Communi::IrcMessage *message);
     void handleClearChatMessage(Communi::IrcMessage *message);

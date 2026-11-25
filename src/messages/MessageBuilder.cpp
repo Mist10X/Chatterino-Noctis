@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "messages/MessageBuilder.hpp"
+#include "providers/twitch/ModeratorAutoReplies.hpp"
 #include "widgets/helper/HighlightToast.hpp"
 #include "util/PostToThread.hpp"
 
@@ -2127,6 +2128,12 @@ std::pair<MessagePtrMut, HighlightAlert> MessageBuilder::makeIrcMessage(
     const auto hasContent = !content.isEmpty();
 
     auto *twitchChannel = dynamic_cast<TwitchChannel *>(channel);
+
+    if (args.allowModeratorAutoReply && twitchChannel)
+    {
+        if (auto *moderator = ModeratorAutoReplies::existing())
+            moderator->maybeReply(*twitchChannel, tags, content);
+    }
 
     auto userID = tags.getOrEmpty("user-id");
 

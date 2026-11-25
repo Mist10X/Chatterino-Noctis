@@ -4,10 +4,18 @@
 #include "controllers/completion/strategies/ClassicEmoteStrategy.hpp"
 #include "controllers/completion/strategies/ClassicUserStrategy.hpp"
 #include "controllers/completion/strategies/SmartEmoteStrategy.hpp"
+#include "Application.hpp"
+#include "singletons/Fonts.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "util/LayoutCreator.hpp"
 #include "widgets/splits/InputCompletionItem.hpp"
+
+#include <QLayout>
+#include <QPainter>
+#include <QScreen>
+
+#include <algorithm>
 
 namespace chatterino {
 
@@ -17,6 +25,8 @@ InputCompletionPopup::InputCompletionPopup(QWidget *parent)
                 parent)
     , model_(this)
 {
+    this->setAttribute(Qt::WA_TranslucentBackground);
+    this->setAutoFillBackground(false);
     this->initLayout();
     this->themeChangedEvent();
 
@@ -49,6 +59,7 @@ void InputCompletionPopup::updateCompletion(const QString &text,
     if (this->model_.rowCount() != 0)
     {
         this->ui_.listView->setCurrentIndex(this->model_.index(0));
+        this->updatePopupSize();
     }
 }
 
@@ -131,6 +142,48 @@ void InputCompletionPopup::themeChangedEvent()
     BasePopup::themeChangedEvent();
 
     this->ui_.listView->refreshTheme(*getTheme());
+    this->update();
+}
+
+void InputCompletionPopup::paintEvent(QPaintEvent *)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(getTheme()->splits.header.border);
+    painter.setBrush(getTheme()->window.background);
+    const auto radius = 9.0 * std::max(1.F, this->scale());
+    painter.drawRoundedRect(QRectF(this->rect()).adjusted(.5, .5, -.5, -.5), radius, radius);
+}
+
+void InputCompletionPopup::scaleChangedEvent(float scale)
+{
+    BasePopup::scaleChangedEvent(scale);
+    if (this->ui_.listView)
+        this->updatePopupSize();
+}
+
+void InputCompletionPopup::updatePopupSize()
+{
+    const auto scale = std::max(1.F, this->scale());
+    auto *list = this->ui_.listView;
+    auto font = getApp()->getFonts()->getFont(FontStyle::UiMedium, scale);
+    font.setWeight(std::max(font.weight(), QFont::Medium));
+    list->setFont(font);
+    const int inset = qRound(7 * scale);
+    this->layout()->setContentsMargins(inset, inset, inset, inset);
+    const int rows = std::min(6, this->model_.rowCount());
+    int height = 2 * inset;
+    for (int row = 0; row < rows; ++row)
+        height += std::max(list->sizeHintForRow(row), list->fontMetrics().height() + 8);
+    const auto *screen = this->parentWidget() ? this->parentWidget()->screen() : this->screen();
+    if (screen)
+    {
+        const auto available = screen->availableGeometry();
+        height = std::min(height, std::max(1, available.height() / 2));
+        this->resize(std::min(qRound(300 * scale), available.width()), height);
+    }
+    else
+        this->resize(qRound(300 * scale), height);
 }
 
 void InputCompletionPopup::initLayout()
@@ -140,6 +193,10 @@ void InputCompletionPopup::initLayout()
     auto listView =
         creator.emplace<GenericListView>().assign(&this->ui_.listView);
     listView->setInvokeActionOnTab(true);
+    listView->setProperty("noctisInputCompletion", true);
+    listView->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    listView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    listView->setSpacing(0);
 
     listView->setModel(&this->model_);
     QObject::connect(listView.getElement(), &GenericListView::closeRequested,

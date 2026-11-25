@@ -55,7 +55,7 @@ constexpr int CHOICE_LIMIT = 25;
 constexpr int MIN_CHOICES = 2;
 constexpr int MAX_CHOICES = 5;
 constexpr int CREATE_VISIBLE_RESPONSE_ROWS = 5;
-constexpr QSize DEFAULT_DIALOG_SIZE(332, 360);
+constexpr QSize DEFAULT_DIALOG_SIZE(350, 360);
 constexpr float CONTENT_SCALE_MULTIPLIER = 1.30F;
 constexpr int HEADER_SEPARATOR_HEIGHT = 8;
 
@@ -150,7 +150,8 @@ protected:
             QRectF fill = bounds;
             fill.setWidth(bounds.width() * this->fillProgress_);
             QPainterPath body;
-            body.addRoundedRect(bounds, 2.0, 2.0);
+            const auto radius = std::min<qreal>(bounds.height() / 2, 6.0);
+            body.addRoundedRect(bounds, radius, radius);
             QPainterPath progress;
             progress.addRect(fill);
             // Paint the actual intersection, not a binary raster clip, so
@@ -164,7 +165,7 @@ protected:
                 QRectF(this->rect()).adjusted(0.5, 0.5, -0.5, -0.5);
             painter.setPen(QPen(this->outlineColor_, 1.25));
             painter.setBrush(Qt::NoBrush);
-            painter.drawRoundedRect(outline, 2.0, 2.0);
+            painter.drawRoundedRect(outline, 7.0, 7.0);
         }
     }
 
@@ -172,6 +173,32 @@ private:
     double fillProgress_ = 0.0;
     QColor fillColor_;
     QColor outlineColor_;
+};
+
+class PollVoteMark : public QLabel
+{
+public:
+    PollVoteMark(const QColor &color, QWidget *parent)
+        : QLabel(parent), color_(color)
+    {
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(this->color_, std::max(1.5, width() / 8.0),
+                            Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        QPainterPath mark;
+        mark.moveTo(width() * .18, height() * .52);
+        mark.lineTo(width() * .42, height() * .74);
+        mark.lineTo(width() * .82, height() * .27);
+        painter.drawPath(mark);
+    }
+
+private:
+    QColor color_;
 };
 
 QEasingCurve pollChoiceFillCurve()
@@ -291,13 +318,13 @@ QString pollStatusLabel(const QString &status)
 {
     if (status.compare("ACTIVE", Qt::CaseInsensitive) == 0)
     {
-        return "active";
+        return uiText("Active");
     }
     if (status.compare("COMPLETED", Qt::CaseInsensitive) == 0 ||
         status.compare("TERMINATED", Qt::CaseInsensitive) == 0 ||
         status.compare("ARCHIVED", Qt::CaseInsensitive) == 0)
     {
-        return "ended";
+        return uiText("Poll finished");
     }
     return status.toLower();
 }
@@ -310,10 +337,13 @@ PollDialog::PollDialog(TwitchChannel *channel, QWidget *parent)
     : DraggablePopup(true, parent)
     , channel_(channel ? channel->sharedFromThis() : nullptr)
 {
+    this->setAttribute(Qt::WA_TranslucentBackground);
+    this->setAutoFillBackground(false);
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->setObjectName("PollDialog");
     this->setWindowTitle(uiText("Poll"));
-    this->setScaleIndependentSize(DEFAULT_DIALOG_SIZE);
+    this->setScaleIndependentWidth(DEFAULT_DIALOG_SIZE.width());
+    this->resize(this->width(), qRound(DEFAULT_DIALOG_SIZE.height() * this->scale()));
     this->ensureDraft();
     this->currentPoll_ = *this->channel_->accessPoll();
     this->pollSnapshotAt_ = QDateTime::currentDateTimeUtc();
@@ -363,7 +393,7 @@ PollDialog::PollDialog(TwitchChannel *channel, QWidget *parent)
 
     this->mainLayout_->addWidget(this->headerWidget_);
 
-    auto *separator = new Line(false);
+    auto *separator = new QFrame(container);
     separator->setObjectName("PollDialogSeparator");
     separator->setFixedHeight(scaledSeparatorHeight(this->scale()));
     this->mainLayout_->addWidget(separator);
@@ -406,6 +436,13 @@ PollDialog::PollDialog(TwitchChannel *channel, QWidget *parent)
                 this->updateUi();
             }
         }));
+    this->accountChangedConnection_ =
+        getApp()->getAccounts()->twitch.currentUserChanged.connect([this] {
+            this->selectedChoiceId_.clear();
+            this->suppressSelectedChoiceOutline_ = false;
+            this->updateUi();
+            this->channel_->refreshPollIfStale(true);
+        });
 
     this->refreshHeader();
     this->refreshStyle();
@@ -479,6 +516,7 @@ void PollDialog::setPoll(const std::optional<TwitchChannel::PollEvent> &poll)
     }
     if (!samePoll)
     {
+        this->selectedChoiceId_.clear();
         this->pollChoiceFillProgress_.clear();
         this->suppressSelectedChoiceOutline_ = false;
     }
@@ -514,7 +552,18 @@ void PollDialog::setPoll(const std::optional<TwitchChannel::PollEvent> &poll)
 
 void PollDialog::themeChangedEvent()
 {
+    DraggablePopup::themeChangedEvent();
     this->refreshStyle();
+}
+
+void PollDialog::paintEvent(QPaintEvent *)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(this->theme->splits.header.border);
+    painter.setBrush(this->theme->window.background);
+    const qreal radius = 10 * this->scale();
+    painter.drawRoundedRect(QRectF(rect()).adjusted(.5, .5, -.5, -.5), radius, radius);
 }
 
 void PollDialog::scaleChangedEvent(float)
@@ -563,15 +612,16 @@ void PollDialog::refreshHeader()
     this->headerTitleLabel_->setText(uiText("Poll"));
     const bool votingEnded = this->currentPoll_->status.compare(
                                  "ACTIVE", Qt::CaseInsensitive) == 0 &&
-                             this->remainingPollSeconds() <= 0;
+                             this->remainingPollSeconds() == 0;
     const auto status =
         votingEnded ? QString("COMPLETED") : this->currentPoll_->status;
     this->headerSubtitleLabel_->setText(
-        uiText(QString("<span style=\"font-weight:400;\">%1</span>"
-                " <span style=\"font-weight:400;\">•</span> "
-                "<span style=\"font-weight:700; color:%2;\">%3</span>"))
+        uiText(QString("<span style=\"font-weight:500;\">%1</span>"
+                " <span style=\"font-weight:500;\">•</span> "
+                "<span style=\"font-weight:600; color:%2;\">%3</span>"))
             .arg(this->channel_->getName().toHtmlEscaped(),
-                 statusColor(status).name(),
+                 (status.compare("ACTIVE", Qt::CaseInsensitive) == 0
+                      ? this->theme->accent : statusColor(status)).name(),
                  pollStatusLabel(status).toHtmlEscaped()));
 }
 
@@ -585,7 +635,9 @@ void PollDialog::ensureDraft()
 
 int PollDialog::currentUserTotalVotes() const
 {
-    if (!this->currentPoll_)
+    if (!this->currentPoll_ ||
+        (!this->currentPoll_->currentUserId.isEmpty() &&
+         this->currentPoll_->currentUserId != getApp()->getAccounts()->twitch.getCurrent()->getUserId()))
     {
         return 0;
     }
@@ -600,15 +652,15 @@ int PollDialog::currentUserTotalVotes() const
 
 int PollDialog::remainingPollSeconds() const
 {
-    if (!this->currentPoll_ || this->currentPoll_->status != "ACTIVE")
+    if (!this->currentPoll_ || this->currentPoll_->status.compare("ACTIVE", Qt::CaseInsensitive) != 0)
     {
         return 0;
     }
 
     if (this->currentPoll_->endsAt && this->currentPoll_->endsAt->isValid())
     {
-        return std::max(0, int(QDateTime::currentDateTimeUtc().secsTo(
-                               this->currentPoll_->endsAt->toUTC())));
+        return std::max(0, int(std::ceil(QDateTime::currentDateTimeUtc().msecsTo(
+                               this->currentPoll_->endsAt->toUTC()) / 1000.0)));
     }
 
     if (this->currentPoll_->createdAt.isValid() &&
@@ -619,13 +671,19 @@ int PollDialog::remainingPollSeconds() const
                                    QDateTime::currentDateTimeUtc())));
     }
 
+    if (this->currentPoll_->remainingDurationMilliseconds <= 0)
+    {
+        // An active snapshot may omit all timing fields. Do not claim that
+        // voting ended merely because the countdown is unavailable.
+        return -1;
+    }
     const auto elapsedMs =
         this->pollSnapshotAt_.isValid()
             ? this->pollSnapshotAt_.msecsTo(QDateTime::currentDateTimeUtc())
             : 0;
     return std::max(
-        0, int((this->currentPoll_->remainingDurationMilliseconds - elapsedMs) /
-               1000));
+        0, int(std::ceil((this->currentPoll_->remainingDurationMilliseconds - elapsedMs) /
+               1000.0)));
 }
 
 void PollDialog::updateCountdownLabel()
@@ -633,12 +691,13 @@ void PollDialog::updateCountdownLabel()
     if (this->countdownLabel_ != nullptr && this->currentPoll_)
     {
         const auto remaining = this->remainingPollSeconds();
-        this->countdownLabel_->setText(
-            this->currentPoll_->status == uiText("ACTIVE") && remaining > 0
-                ? uiText(QString("Ending in %1")).arg(formatRemainingTime(remaining))
-                : uiText(QString("Voting ended")));
+        const bool active = this->currentPoll_->status.compare("ACTIVE", Qt::CaseInsensitive) == 0;
+        this->countdownLabel_->setText(active && remaining != 0
+                ? (remaining < 0 ? uiText("Voting in progress")
+                    : uiText(QString("Ending in %1")).arg(formatRemainingTime(remaining)))
+                : uiText("Voting ended"));
 
-        if (this->currentPoll_->status == "ACTIVE" && remaining <= 0 &&
+        if (active && remaining == 0 &&
             !this->pollExpiryRefreshQueued_)
         {
             this->pollExpiryRefreshQueued_ = true;
@@ -661,7 +720,7 @@ void PollDialog::updateCountdownTimer()
     }
 
     const bool shouldRun = this->currentPoll_ &&
-                           this->currentPoll_->status == "ACTIVE" &&
+                           this->currentPoll_->status.compare("ACTIVE", Qt::CaseInsensitive) == 0 &&
                            this->remainingPollSeconds() > 0;
     if (shouldRun && !this->countdownTimer_->isActive())
     {
@@ -719,6 +778,8 @@ void PollDialog::updateUi()
 
     if (this->bottomWidget_ != nullptr)
     {
+        this->mainLayout_->removeWidget(this->bottomWidget_);
+        this->bottomWidget_->hide();
         this->bottomWidget_->deleteLater();
         this->bottomWidget_ = nullptr;
     }
@@ -773,8 +834,9 @@ void PollDialog::buildCreateUi()
     auto *layout = static_cast<QVBoxLayout *>(this->activeWidget_->layout());
     const float rawScale = this->scale();
     const float effectiveScale = contentScale(rawScale);
-    const auto uiFont =
+    auto uiFont =
         getApp()->getFonts()->getFont(FontStyle::UiMedium, effectiveScale);
+    uiFont.setWeight(std::max(uiFont.weight(), QFont::Medium));
     const auto buttonFont =
         getApp()->getFonts()->getFont(FontStyle::UiMediumBold, effectiveScale);
     const QFontMetrics uiMetrics(uiFont);
@@ -1028,14 +1090,16 @@ void PollDialog::buildVoteUi()
     const bool broadcasterView = this->isBroadcasterView();
     const float rawScale = this->scale();
     const float effectiveScale = contentScale(rawScale);
-    const auto uiFont =
+    auto uiFont =
         getApp()->getFonts()->getFont(FontStyle::UiMedium, effectiveScale);
+    uiFont.setWeight(std::max(uiFont.weight(), QFont::Medium));
     const auto buttonFont =
         getApp()->getFonts()->getFont(FontStyle::UiMediumBold, effectiveScale);
     const auto titleFont = getApp()->getFonts()->getFont(
         FontStyle::UiMediumBold, effectiveScale * 1.18F);
-    const auto compactMetaFont = getApp()->getFonts()->getFont(
+    auto compactMetaFont = getApp()->getFonts()->getFont(
         FontStyle::UiMedium, effectiveScale * 0.82F);
+    compactMetaFont.setWeight(std::max(compactMetaFont.weight(), QFont::Medium));
     const auto compactPctFont = getApp()->getFonts()->getFont(
         FontStyle::UiMediumBold, effectiveScale * 1.00F);
     const QFontMetrics uiMetrics(uiFont);
@@ -1051,7 +1115,7 @@ void PollDialog::buildVoteUi()
                  uiMetrics.height() + std::max(6, int(7 * effectiveScale))));
     const int accentHeight =
         std::max(12, outcomeRowHeight - std::max(6, int(8 * effectiveScale)));
-    const int visibleRows = MAX_CHOICES;
+    const int visibleRows = std::clamp(static_cast<int>(poll.choices.size()), MIN_CHOICES, MAX_CHOICES);
     const int listHeight = visibleRows * outcomeRowHeight +
                            std::max(0, visibleRows - 1) * rowSpacing +
                            sectionPad * 2;
@@ -1141,7 +1205,11 @@ void PollDialog::buildVoteUi()
     endedTrailingFillColor.setAlpha(this->theme->isLightTheme() ? 22 : 34);
     const bool votingEnded =
         poll.status.compare("ACTIVE", Qt::CaseInsensitive) != 0 ||
-        this->remainingPollSeconds() <= 0;
+        this->remainingPollSeconds() == 0;
+    const bool canSelectChoice = !broadcasterView && !votingEnded &&
+        !this->actionInFlight_ && (this->currentUserTotalVotes() == 0 ||
+            (poll.channelPointsVotingEnabled && poll.pointsPerVote > 0));
+    const QColor ownVoteColor = this->theme->accent;
 
     for (int i = 0; i < static_cast<int>(poll.choices.size()); ++i)
     {
@@ -1155,11 +1223,12 @@ void PollDialog::buildVoteUi()
                             : 0;
 
         bool hasVotedForThis = false;
-        if (!broadcasterView)
+        if (!broadcasterView && this->currentUserTotalVotes() > 0)
         {
             for (const auto &selfVote : poll.selfVotes)
             {
-                if (selfVote.choiceId == choice.id)
+                if (selfVote.choiceId == choice.id &&
+                    selfVote.freeVotes + selfVote.channelPointsVotes > 0)
                 {
                     hasVotedForThis = true;
                     break;
@@ -1175,13 +1244,17 @@ void PollDialog::buildVoteUi()
 
         auto *rowButton = new PollChoiceButton(outcomesWidget);
         rowButton->setObjectName("PollChoiceButton");
-        rowButton->setCheckable(!broadcasterView);
-        rowButton->setChecked(!broadcasterView &&
-                              choice.id == this->selectedChoiceId_);
-        rowButton->setCursor(broadcasterView ? Qt::ArrowCursor
-                                             : Qt::PointingHandCursor);
+        rowButton->setProperty("ownVote", hasVotedForThis);
+        rowButton->setProperty("selectable", canSelectChoice);
+        rowButton->setProperty("choiceId", choice.id);
+        rowButton->setCheckable(canSelectChoice);
+        rowButton->setChecked(canSelectChoice && choice.id == this->selectedChoiceId_);
+        rowButton->setCursor(canSelectChoice ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        rowButton->setFocusPolicy(canSelectChoice ? Qt::StrongFocus : Qt::NoFocus);
         rowButton->setFixedHeight(outcomeRowHeight);
-        rowButton->setFillColor(
+        auto ownFillColor = ownVoteColor;
+        ownFillColor.setAlpha(this->theme->isLightTheme() ? 42 : 65);
+        rowButton->setFillColor(hasVotedForThis ? ownFillColor :
             votingEnded
                 ? (isWinner ? endedWinnerFillColor : endedTrailingFillColor)
                 : resultFillColor);
@@ -1191,13 +1264,9 @@ void PollDialog::buildVoteUi()
         this->pollChoiceFillProgress_.insert(choice.id, startFillProgress);
 
         QColor accentColor = neutralPillColor;
-        if (hasVotedForThis && isWinner)
+        if (hasVotedForThis)
         {
-            accentColor = QColor("#22c55e");
-        }
-        else if (hasVotedForThis)
-        {
-            accentColor = rowTextColor;
+            accentColor = ownVoteColor;
         }
         else if (isWinner)
         {
@@ -1205,19 +1274,15 @@ void PollDialog::buildVoteUi()
         }
 
         const bool isSelectedChoice =
-            !broadcasterView && choice.id == this->selectedChoiceId_;
+            canSelectChoice && choice.id == this->selectedChoiceId_;
         const bool showSelectedOutline =
             isSelectedChoice && !this->suppressSelectedChoiceOutline_;
-        if (showSelectedOutline ||
+        if (hasVotedForThis || showSelectedOutline ||
             (!isSelectedChoice && !hasVotedForThis && isWinner))
         {
             const QColor outlineColor =
-                showSelectedOutline ? rowTextColor : accentColor;
+                hasVotedForThis ? ownVoteColor : (showSelectedOutline ? rowTextColor : accentColor);
             rowButton->setOutlineColor(outlineColor);
-            rowButton->setStyleSheet(
-                QString("QPushButton#PollChoiceButton { border-color: %1; %2 }")
-                    .arg(outlineColor.name(),
-                         hasVotedForThis ? "border-width: 2px;" : ""));
         }
 
         if (!qFuzzyCompare(startFillProgress + 1.0, targetFillProgress + 1.0))
@@ -1263,6 +1328,17 @@ void PollDialog::buildVoteUi()
                                   .arg(std::max(1, accentWidth / 2)));
         rowLayout->addWidget(accent, 0, Qt::AlignVCenter);
         rowLayout->addSpacing(accentTextSpacing);
+
+        if (hasVotedForThis)
+        {
+            auto *mark = new PollVoteMark(ownVoteColor, rowButton);
+            mark->setObjectName("PollOwnVoteMark");
+            mark->setAccessibleName(uiText("Your vote"));
+            mark->setFixedSize(qRound(13 * effectiveScale), qRound(13 * effectiveScale));
+            mark->setAttribute(Qt::WA_TransparentForMouseEvents);
+            rowLayout->addWidget(mark, 0, Qt::AlignVCenter);
+            rowLayout->addSpacing(rowSpacing);
+        }
 
         auto *nameLabel = new QLabel(choice.title, rowButton);
         nameLabel->setObjectName("PollOutcomeName");
@@ -1328,7 +1404,7 @@ void PollDialog::buildVoteUi()
 
         rowLayout->addWidget(metaWidget, 0, Qt::AlignVCenter);
 
-        if (!broadcasterView)
+        if (canSelectChoice)
         {
             QObject::connect(rowButton, &QPushButton::clicked, this,
                              [this, choiceId = choice.id] {
@@ -1371,7 +1447,7 @@ void PollDialog::buildVoteUi()
 
     const bool votingOpen =
         poll.status.compare("ACTIVE", Qt::CaseInsensitive) == 0 &&
-        this->remainingPollSeconds() > 0;
+        this->remainingPollSeconds() != 0;
     const bool canBuyExtraVotes = poll.channelPointsVotingEnabled &&
                                   this->currentUserTotalVotes() > 0 &&
                                   poll.pointsPerVote > 0 && votingOpen;
@@ -1415,7 +1491,7 @@ void PollDialog::buildVoteUi()
             voteHeader = "Voting Ended";
         }
 
-        auto *leftInfo = new QLabel(voteHeader, bottomCard);
+        auto *leftInfo = new QLabel(uiText(voteHeader), bottomCard);
         leftInfo->setObjectName("PollSectionTitle");
         leftInfo->setFont(buttonFont);
         infoRow->addWidget(leftInfo);
@@ -1591,7 +1667,7 @@ void PollDialog::castVote(bool extraVote)
     }
     if (this->currentPoll_->status.compare("ACTIVE", Qt::CaseInsensitive) !=
             0 ||
-        this->remainingPollSeconds() <= 0)
+        this->remainingPollSeconds() == 0)
     {
         this->channel_->addSystemMessage("Voting has ended.");
         return;
@@ -1636,14 +1712,20 @@ void PollDialog::castVote(bool extraVote)
     QPointer<PollDialog> self = this;
     TwitchGql::voteInPoll(
         pollId, choiceId, userId, extraVote ? 1 : 0, pointsPerVote, auth.token,
-        [self, choiceId, extraVote] {
+        [self, pollId, choiceId, extraVote, userId] {
             if (!self)
             {
                 return;
             }
 
-            if (self->currentPoll_)
+            if (self->currentPoll_ && self->currentPoll_->id == pollId &&
+                getApp()->getAccounts()->twitch.getCurrent()->getUserId() == userId)
             {
+                if (self->currentPoll_->currentUserId != userId)
+                {
+                    self->currentPoll_->selfVotes.clear();
+                    self->currentPoll_->currentUserId = userId;
+                }
                 auto matched = false;
                 for (auto &vote : self->currentPoll_->selfVotes)
                 {
@@ -1831,7 +1913,7 @@ void PollDialog::fitVoteOptionsList()
     }
 
     const int available = contentHeight - reservedHeight;
-    const int fittedHeight = std::max(1, available);
+    const int fittedHeight = std::min(wanted, std::max(1, available));
     this->voteOutcomesPanel_->setMinimumHeight(fittedHeight);
     this->voteOutcomesPanel_->setMaximumHeight(fittedHeight);
     this->outcomesScrollArea_->setMinimumHeight(0);
@@ -1844,7 +1926,7 @@ void PollDialog::refreshStyle()
 {
     const float rawScale = this->scale();
     const float effectiveScale = contentScale(rawScale);
-    const int radius = std::max(1, int(2 * rawScale));
+    const int radius = std::max(4, int(7 * rawScale));
     const int inputPaddingY = 0;
     const int inputPaddingX = std::max(4, int(5 * effectiveScale));
     const int inputMinHeight = std::max(14, int(20 * effectiveScale));
@@ -1877,8 +1959,8 @@ void PollDialog::refreshStyle()
     this->headerWidget_->layout()->setSpacing(std::max(2, int(3 * rawScale)));
 
     this->mainLayout_->setContentsMargins(
-        std::max(3, int(5 * rawScale)), std::max(3, int(5 * rawScale)),
-        std::max(3, int(5 * rawScale)), std::max(3, int(5 * rawScale)));
+        std::max(7, int(8 * rawScale)), std::max(7, int(8 * rawScale)),
+        std::max(7, int(8 * rawScale)), std::max(7, int(8 * rawScale)));
     this->mainLayout_->setSpacing(0);
     if (auto *separator = this->findChild<QWidget *>("PollDialogSeparator"))
     {
@@ -1887,10 +1969,10 @@ void PollDialog::refreshStyle()
 
     this->setStyleSheet(QString(R"(
             QWidget#PollDialogRoot {
-                background: %1;
+                background: transparent;
             }
             QFrame#PollDialogSeparator {
-                background: %3;
+                background: transparent;
             }
             QWidget#PollCard,
             QWidget#PollQuestionCard {
@@ -1978,7 +2060,7 @@ void PollDialog::refreshStyle()
                 border-radius: %4px;
                 text-align: left;
             }
-            QPushButton#PollChoiceButton:hover {
+            QPushButton#PollChoiceButton[selectable="true"]:hover {
                 background: %16;
             }
             QPushButton:disabled {
@@ -2028,7 +2110,7 @@ void PollDialog::refreshStyle()
                             .arg(scrollbarMinHeight));
 }
 
-void PollDialog::applySizeConstraints(bool preserveCurrentPosition)
+void PollDialog::applySizeConstraints(bool /*preserveCurrentPosition*/)
 {
     auto *screen = this->screen();
     if (screen == nullptr)
@@ -2055,7 +2137,7 @@ void PollDialog::applySizeConstraints(bool preserveCurrentPosition)
     const int targetWidth =
         std::min(int(this->scaleIndependentWidth() * this->scale()), maxWidth);
     int targetHeight = std::min(
-        int(this->scaleIndependentHeight() * this->scale()), maxHeight);
+        int(DEFAULT_DIALOG_SIZE.height() * this->scale()), maxHeight);
 
     if (useContentDrivenHeight)
     {
@@ -2111,10 +2193,29 @@ void PollDialog::applySizeConstraints(bool preserveCurrentPosition)
         if (this->activeWidget_ != nullptr)
         {
             int activeHeight = 0;
-            if (auto *layout = this->activeWidget_->layout();
-                layout != nullptr && layout->hasHeightForWidth())
+            if (auto *layout = this->activeWidget_->layout(); layout != nullptr)
             {
-                activeHeight = layout->totalHeightForWidth(contentWidth);
+                if (this->voteOutcomesPanel_ != nullptr)
+                {
+                    // The fitted list height depends on the current viewport.
+                    // Use the requested rows instead, otherwise each layout
+                    // pass can shrink the window further until no rows fit.
+                    const auto margins = layout->contentsMargins();
+                    const int innerWidth = std::max(1, contentWidth - margins.left() - margins.right());
+                    activeHeight = margins.top() + margins.bottom();
+                    for (int i = 0; i < layout->count(); ++i)
+                    {
+                        auto *item = layout->itemAt(i);
+                        if (item->widget() == this->voteOutcomesPanel_)
+                            activeHeight += this->voteOutcomesPanel_->property("pollWantedHeight").toInt();
+                        else
+                            activeHeight += std::max(0, item->hasHeightForWidth()
+                                ? item->heightForWidth(innerWidth) : item->sizeHint().height());
+                    }
+                    activeHeight += std::max(0, layout->count() - 1) * layout->spacing();
+                }
+                else if (layout->hasHeightForWidth())
+                    activeHeight = layout->totalHeightForWidth(contentWidth);
             }
             if (activeHeight == 0)
             {
@@ -2148,14 +2249,8 @@ void PollDialog::applySizeConstraints(bool preserveCurrentPosition)
 
     if (this->width() != targetWidth || this->height() != targetHeight)
     {
-        if (preserveCurrentPosition)
-        {
-            this->resize(targetWidth, targetHeight);
-        }
-        else
-        {
-            this->setFixedSize(targetWidth, targetHeight);
-        }
+        this->setFixedWidth(targetWidth);
+        this->resize(targetWidth, targetHeight);
     }
 }
 

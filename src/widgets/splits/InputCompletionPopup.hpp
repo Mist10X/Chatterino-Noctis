@@ -39,9 +39,12 @@ protected:
     void hideEvent(QHideEvent *event) override;
 
     void themeChangedEvent() override;
+    void scaleChangedEvent(float scale) override;
+    void paintEvent(QPaintEvent *event) override;
 
 private:
     void initLayout();
+    void updatePopupSize();
     void beginCompletion(CompletionKind kind, ChannelPtr channel);
     void endCompletion();
 

@@ -8,6 +8,8 @@
 
 #include <QAbstractItemView>
 
+#include <algorithm>
+
 namespace chatterino {
 
 SwitcherItemDelegate::SwitcherItemDelegate(QObject *parent)
@@ -27,12 +29,29 @@ void SwitcherItemDelegate::paint(QPainter *painter,
 
     if (item)
     {
+        const bool completion = this->parent() &&
+            this->parent()->property("noctisInputCompletion").toBool();
+        painter->save();
+        painter->setFont(option.font);
+        painter->setPen(option.palette.text().color());
         if (option.state & QStyle::State_Selected)
         {
-            painter->fillRect(option.rect, option.palette.highlight());
+            if (completion)
+            {
+                painter->setRenderHint(QPainter::Antialiasing);
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(option.palette.highlight());
+                painter->drawRoundedRect(QRectF(option.rect).adjusted(1, 1, -1, -1), 6, 6);
+                painter->setPen(option.palette.text().color());
+            }
+            else
+            {
+                painter->fillRect(option.rect, option.palette.highlight());
+            }
         }
 
         item->paint(painter, option.rect);
+        painter->restore();
     }
     else
     {
@@ -58,7 +77,10 @@ QSize SwitcherItemDelegate::sizeHint(const QStyleOptionViewItem &option,
             }
         }
 
-        return item->sizeHint(rect);
+        auto size = item->sizeHint(rect);
+        if (this->parent() && this->parent()->property("noctisInputCompletion").toBool())
+            size.setHeight(std::max(size.height(), option.fontMetrics.height() + 8));
+        return size;
     }
 
     return QStyledItemDelegate::sizeHint(option, index);

@@ -15,6 +15,7 @@
 #include "controllers/accounts/AccountController.hpp"
 #include "controllers/hotkeys/HotkeyController.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
+#include "providers/twitch/ModeratorAutoReplies.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
 #include "singletons/Resources.hpp"
 #include "singletons/Settings.hpp"
@@ -257,6 +258,19 @@ void Window::addCustomTitlebarButtons()
             showWelcomeDialogIfNew(this);
         });
     }
+
+    auto &moderator = ModeratorAutoReplies::instance();
+    auto *autoReplies = this->addTitleBarLabel([this] {
+        ModeratorAutoReplies::instance().open(this);
+    });
+    autoReplies->setText(uiText("Auto-replies"));
+    autoReplies->setAccessibleName(autoReplies->text());
+    autoReplies->setObjectName("ModeratorAutoRepliesButton");
+    autoReplies->setVisible(moderator.hasGrant());
+    this->signalHolder_.managedConnect(moderator.changed, [this, autoReplies] {
+        autoReplies->setVisible(ModeratorAutoReplies::instance().hasGrant());
+        this->onAccountSelected();
+    });
 
     this->userLabel_ = this->addTitleBarLabel([this] {
         getApp()->getWindows()->showAccountSelectPopup(
@@ -822,6 +836,12 @@ void Window::onAccountSelected()
     auto user = getApp()->getAccounts()->twitch.getCurrent();
 
     QString windowTitle = Version::instance().fullVersion();
+    if (this->type_ == WindowType::Main)
+    {
+        const auto *module = ModeratorAutoReplies::existing();
+        if (module && module->hasGrant())
+            windowTitle += QStringLiteral(" (Mods)");
+    }
 
 #if defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
     if (user->isAnon())

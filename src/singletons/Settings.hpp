@@ -461,6 +461,7 @@ public:
         "/appearance/messages/showTimestampDateTooltip", false};
     FloatSetting boldScale = {"/appearance/boldScale", 63};
     BoolSetting showTabCloseButton = {"/appearance/showTabCloseButton", false};
+    BoolSetting showWhispersTab = {"/appearance/showWhispersTab", true};
     BoolSetting showTabLive = {"/appearance/showTabLiveButton", true};
     BoolSetting colorTabHighlightsByMessage = {
         "/appearance/tabs/colorHighlightsByMessage",
@@ -1035,10 +1036,10 @@ public:
 
     // Image Uploader
     BoolSetting imageUploaderEnabled = {"/external/imageUploader/enabled",
-                                        false};
+                                        true};
     BoolSetting imageUploaderKappaFallback = {
-        "/external/imageUploader/kappaFallback", false};
-    // kappa.lol unless set otherwise: only the switch is needed for Ctrl+V
+        "/external/imageUploader/kappaFallback", true};
+    // kappa.lol unless set otherwise; Ctrl+V uploads by default.
     QStringSetting imageUploaderUrl = {"/external/imageUploader/url",
                                        "https://kappa.lol/api/upload"};
     QStringSetting imageUploaderFormField = {
@@ -1114,7 +1115,7 @@ public:
     QStringSetting cachePath = {"/cache/path", ""};
     BoolSetting attachExtensionToAnyProcess = {
         "/misc/attachExtensionToAnyProcess", false};
-    BoolSetting askOnImageUpload = {"/misc/askOnImageUpload", true};
+    BoolSetting askOnImageUpload = {"/misc/askOnImageUpload", false};
     BoolSetting informOnTabVisibilityToggle = {"/misc/askOnTabVisibilityToggle",
                                                true};
     BoolSetting lockNotebookLayout = {"/misc/lockNotebookLayout", false};

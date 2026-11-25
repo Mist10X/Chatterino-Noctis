@@ -17,6 +17,7 @@ struct MessageParseArgs {
     bool allowIgnore = true;
     bool isAction = false;
     bool isGigantifiedEmote = false;
+    bool allowModeratorAutoReply = false;
     QString channelPointRewardId = "";
 };
 

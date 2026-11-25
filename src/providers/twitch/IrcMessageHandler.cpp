@@ -628,7 +628,7 @@ void IrcMessageHandler::handlePrivMessage(Communi::IrcPrivateMessage *message,
         return;
     }
 
-    parsePrivMessageInto(message, *twitchChannel, twitchChannel);
+    parsePrivMessageInto(message, *twitchChannel, twitchChannel, true);
 
     // a 7TV personal set the EventAPI did not announce (yet)
     SeventvPersonalLookup::instance().noteChatter(
@@ -637,7 +637,7 @@ void IrcMessageHandler::handlePrivMessage(Communi::IrcPrivateMessage *message,
 
 void IrcMessageHandler::parsePrivMessageInto(
     Communi::IrcPrivateMessage *message, MessageSink &sink,
-    TwitchChannel *channel)
+    TwitchChannel *channel, bool live)
 {
     auto currentUser = getApp()->getAccounts()->twitch.getCurrent();
     auto isCurrentUser = message->tag("user-id") == currentUser->getUserId();
@@ -668,6 +668,7 @@ void IrcMessageHandler::parsePrivMessageInto(
                                   *getApp()->getTwitch(),
                                   {
                                       .isAction = message->isAction(),
+                                      .allowModeratorAutoReply = live,
                                   });
 }
 
@@ -1533,6 +1534,8 @@ void IrcMessageHandler::addMessage(Communi::IrcMessage *message,
     args.isAction = isAction;
 
     auto tags = message->tags();
+    args.allowModeratorAutoReply = addArgs.allowModeratorAutoReply && !isAction && !isSub &&
+                                   !tags.has("historical");
     args.isGigantifiedEmote =
         tags.getOrEmpty("msg-id") == "gigantified-emote-message";
 

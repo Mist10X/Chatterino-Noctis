@@ -634,6 +634,10 @@ set(SOURCE_FILES
         providers/twitch/PubSubManager.cpp
         providers/twitch/PubSubManager.hpp
         providers/twitch/PubSubMessages.hpp
+        providers/twitch/ModeratorModule.cpp
+        providers/twitch/ModeratorModule.hpp
+        providers/twitch/ModeratorAutoReplies.cpp
+        providers/twitch/ModeratorAutoReplies.hpp
         providers/twitch/TwitchAccount.cpp
         providers/twitch/TwitchAccount.hpp
         providers/twitch/TwitchAccountManager.cpp

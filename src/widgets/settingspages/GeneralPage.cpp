@@ -290,6 +290,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         false, "Choose which tabs are visible in the notebook");
 
     SettingWidget::dropdown(uiText("Tab style"), s.tabStyle)->addTo(layout);
+    SettingWidget::checkbox(uiText("Show whispers tab"), s.showWhispersTab)->addTo(layout);
     SettingWidget::dropdown(uiText("Channel avatars on tabs"), s.tabAvatarStyle)
         ->setTooltip(uiText("Show the channel's avatar on its tab. Normal tabs "
                      "always show channel names. In Compact style, "

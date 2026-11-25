@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 #include "providers/twitch/IrcMessageHandler.hpp"
+#include "providers/twitch/ModeratorAutoReplies.hpp"
+#include "providers/twitch/ModeratorModule.hpp"
 
 #include "common/Literals.hpp"
 #include "controllers/accounts/AccountController.hpp"
@@ -41,6 +43,10 @@
 
 #include <IrcConnection>
 #include <QDebug>
+#include <QApplication>
+#include <QDialog>
+#include <QTabBar>
+#include <QTimer>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -55,6 +61,19 @@
 
 using namespace chatterino;
 using namespace literals;
+
+namespace chatterino {
+class ModeratorAutoRepliesTestAccess
+{
+public:
+    static void configure(ModeratorAutoReplies &module, const moderator::Policy &policy,
+                          const QString &roleAccount, const QStringList &channels,
+                          const QString &ruleChannel)
+    {
+        module.configureFixture(policy, roleAccount, channels, ruleChannel);
+    }
+};
+}
 
 namespace {
 
@@ -738,6 +757,86 @@ TEST(IrcMessageHandler, RecentMessagesDoNotUpdateCurrentUserState)
     ASSERT_EQ(liveSink.messages().size(), 1);
     EXPECT_TRUE(channel->isVip());
 }
+
+#ifdef CHATTERINO_HAVE_PLUGINS
+TEST(IrcMessageHandler, ModeratorAutoRepliesOnlyLiveVerifiedChannelAndAccount)
+{
+    MockApplication app(QString::fromUtf8(SETTINGS_DEFAULT));
+    initializeHelix(&app.helix);
+    app.settings.enablePinnedMessages = false;
+    auto &accounts = app.accounts.twitch;
+    accounts.accounts.append(
+        std::make_shared<TwitchAccount>("fixturemod", "", "", "1000"));
+    accounts.load();
+    accounts.currentUsername = "fixturemod";
+    ASSERT_EQ(accounts.getCurrent()->getUserId(), "1000");
+    auto module = std::unique_ptr<ModeratorAutoReplies>(&ModeratorAutoReplies::instance());
+    EXPECT_FALSE(module->hasGrant());
+    EXPECT_TRUE(module->channels().empty());
+    moderator::Policy policy;
+    policy.revision = 1;
+    policy.version = "1.0.0";
+    policy.expires = QDateTime::currentDateTimeUtc().addDays(1);
+    policy.allowed = {"1000"};
+    policy.source = "return function(text,rules) if text==rules[1].triggers[1] then return 1 end end";
+    ModeratorAutoRepliesTestAccess::configure(*module, policy, "1000",
+        {"example", "another"}, "example");
+    ASSERT_TRUE(module->hasGrant());
+    EXPECT_EQ(module->channels(), (QStringList{"another", "example"}));
+    bool correctTabs = false;
+    QTimer::singleShot(0, [&] {
+        for (auto *widget : QApplication::topLevelWidgets())
+        {
+            auto *dialog = qobject_cast<QDialog *>(widget);
+            if (!dialog || !dialog->isVisible()) continue;
+            auto *tabs = dialog->findChild<QTabBar *>();
+            correctTabs = tabs && tabs->count() == 2 &&
+                tabs->tabText(0) == "another" && tabs->tabText(1) == "example";
+            dialog->reject();
+        }
+    });
+    module->open(nullptr);
+    EXPECT_TRUE(correctTabs);
+
+    auto channel = std::make_shared<TwitchChannel>("example");
+    TwitchChannelTestAccess::setMod(*channel, true);
+    int sends = 0;
+    pajlada::Signals::ScopedConnection connection(channel->sendReplySignal.connect(
+        [&](const QString &text, const QString &id, bool &sent) {
+            ++sends;
+            EXPECT_EQ(text, "fixture answer");
+            EXPECT_EQ(id, "live-event");
+            sent = true;
+        }));
+    auto incoming = [&](const QByteArray &id, bool live, const QByteArray &badges = "") {
+        const auto data = "@id=" + id + ";tmi-sent-ts=1790452460376;room-id=11148817;"
+            "user-id=2000;display-name=viewer;badges=" + badges +
+            ";badge-info=;flags=;user-type=;emotes= :viewer!viewer@viewer.tmi.twitch.tv "
+            "PRIVMSG #example :fixture question";
+        std::unique_ptr<Communi::IrcMessage> message(Communi::IrcMessage::fromData(data, nullptr));
+        auto *priv = dynamic_cast<Communi::IrcPrivateMessage *>(message.get());
+        ASSERT_NE(priv, nullptr);
+        VectorMessageSink sink(channel->sinkTraits());
+        IrcMessageHandler::parsePrivMessageInto(priv, sink, channel.get(), live);
+    };
+    incoming("historical", false);
+    EXPECT_EQ(sends, 0);
+    incoming("moderator", true, "moderator/1");
+    EXPECT_EQ(sends, 0);
+    incoming("live-event", true);
+    EXPECT_EQ(sends, 1);
+    incoming("live-event", true);
+    EXPECT_EQ(sends, 1);
+    TwitchChannelTestAccess::setMod(*channel, false);
+    incoming("role-lost", true);
+    EXPECT_EQ(sends, 1);
+    policy.allowed.clear();
+    ModeratorAutoRepliesTestAccess::configure(*module, policy, "1000",
+        {"example"}, "example");
+    EXPECT_FALSE(module->hasGrant());
+    EXPECT_TRUE(module->channels().empty());
+}
+#endif
 
 TEST_P(TestIrcMessageHandlerP, CloneElements)
 {

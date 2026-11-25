@@ -4,6 +4,7 @@
 #include "widgets/DraggablePopup.hpp"
 
 #include <pajlada/signals/scoped-connection.hpp>
+#include <boost/signals2/connection.hpp>
 #include <QDateTime>
 #include <QHash>
 #include <QPointer>
@@ -49,6 +50,7 @@ protected:
     void themeChangedEvent() override;
     void scaleChangedEvent(float scale) override;
     void showEvent(QShowEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
@@ -104,6 +106,7 @@ private:
     int updateGuard_ = 0;
     int mainScrollValue_ = 0;
     std::vector<pajlada::Signals::ScopedConnection> managedConnections_;
+    boost::signals2::scoped_connection accountChangedConnection_;
 
     static std::vector<QPointer<PollDialog>> activeDialogs_;
 };

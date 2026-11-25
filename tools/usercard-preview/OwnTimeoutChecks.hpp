@@ -1600,7 +1600,34 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
         }
         if (jump != nullptr)
         {
+            check("new messages button is a compact centered control",
+                  jump->width() < view.width() * .85 &&
+                  jump->geometry().bottom() < view.height() &&
+                  jump->accessibleName() == uiText("More messages below"));
+            const auto painted = jump->grab().toImage();
+            const auto dpr = painted.devicePixelRatio();
+            QRect ink;
+            for (int y = int(3 * dpr); y < painted.height() - int(3 * dpr); ++y)
+            {
+                for (int x = int(3 * dpr); x < painted.width() - int(3 * dpr); ++x)
+                {
+                    if (painted.pixelColor(x, y).lightness() > 175)
+                    {
+                        ink = ink.united(QRect(x, y, 1, 1));
+                    }
+                }
+            }
+            check("jump button icon and text are visually centered",
+                  !ink.isEmpty() &&
+                  std::abs(ink.center().x() + .5 - painted.width() / 2.0) <= 2 * dpr &&
+                  std::abs(ink.center().y() + .5 - painted.height() / 2.0) <= 2 * dpr);
+            if (limit == 300)
+                view.grab().save(screenshotBase + "-jump-button.png");
+            const auto start = bar.getCurrentValue();
             Q_EMIT jump->leftClicked();
+            pump(55);
+            check("jump button immediately animates towards latest messages",
+                  bar.getCurrentValue() > start && bar.getCurrentValue() < bar.getBottom() && bar.isAtBottom());
         }
         for (int i = 0; i < 40; ++i)
         {

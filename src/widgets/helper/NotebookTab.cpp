@@ -643,8 +643,20 @@ int NotebookTab::normalTabWidthForHeight(int height) const
 
 void NotebookTab::refreshAndCommitSize(bool notify)
 {
+    const auto previousMinimum = this->computedMinimumSize;
     this->refreshSize();
-    this->commitSize(notify);
+    // A wrapped row can stretch the tab beyond its computed minimum.
+    // Even if its actual width stays unchanged, its new minimum must be
+    // reflected in the positions and wrapping of the neighbouring tabs.
+    if (notify && previousMinimum != this->computedMinimumSize)
+    {
+        this->commitSize(false);
+        this->notebook_->refresh();
+    }
+    else
+    {
+        this->commitSize(notify);
+    }
 }
 
 void NotebookTab::refreshSize()
@@ -1241,6 +1253,9 @@ void NotebookTab::moveAnimated(QPoint targetPos, bool animated)
 
     if (!animated || !this->notebook_->isVisible())
     {
+        // The latest layout is authoritative. An older drag/reorder move
+        // must not write its old position back on the next animation tick.
+        this->positionChangedAnimation_.stop();
         this->move(targetPos);
         return;
     }
@@ -1253,6 +1268,10 @@ void NotebookTab::moveAnimated(QPoint targetPos, bool animated)
     }
 
     this->positionChangedAnimation_.stop();
+    if (this->pos() == targetPos)
+    {
+        return;
+    }
     this->positionChangedAnimation_.setDuration(75);
     this->positionChangedAnimation_.setStartValue(this->pos());
     this->positionChangedAnimation_.setEndValue(targetPos);

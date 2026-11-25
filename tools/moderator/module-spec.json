@@ -1,0 +1,8 @@
+{
+  "revision": 1,
+  "module_version": "1.0.0",
+  "allowed_twitch_ids": [],
+  "min_cooldown_seconds": 5,
+  "max_rules": 100,
+  "engine": "matcher.lua"
+}

@@ -20,6 +20,12 @@
 #include "widgets/Notebook.hpp"
 #include "widgets/helper/NotebookTab.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
+#include "providers/twitch/ModeratorAutoReplies.hpp"
+#include "providers/twitch/ModeratorModule.hpp"
+#include "providers/twitch/api/Helix.hpp"
+#ifdef CHATTERINO_WITH_TESTS
+#include "mocks/Helix.hpp"
+#endif
 #include "widgets/splits/SplitHeader.hpp"
 #include "widgets/splits/SplitInput.hpp"
 #include "widgets/splits/Split.hpp"
@@ -28,6 +34,7 @@
 #include "widgets/buttons/LabelButton.hpp"
 #include "widgets/Label.hpp"
 #include <QLayout>
+#include <QTabBar>
 #include "controllers/accounts/AccountController.hpp"
 #include "controllers/commands/CommandController.hpp"
 #include "controllers/commands/Command.hpp"
@@ -121,6 +128,19 @@
 #include <memory>
 
 using namespace chatterino;
+#ifdef CHATTERINO_WITH_TESTS
+namespace chatterino {
+class ModeratorAutoRepliesTestAccess
+{
+public:
+    static void configure(ModeratorAutoReplies &module, const moderator::Policy &policy,
+                          const QString &id, const QStringList &channels)
+    {
+        module.configureFixture(policy, id, channels, "example");
+    }
+};
+}
+#endif
 namespace {
 class OfflineApp final : public mock::BaseApplication
 {
@@ -781,6 +801,67 @@ int main(int argc, char **argv)
         app.theme.themeName.setValue(previewTheme);
     }
     installMenuStyle();
+#if defined(CHATTERINO_WITH_TESTS) && defined(CHATTERINO_HAVE_PLUGINS)
+    if (argc > 2 && QByteArray(argv[2]) == "--moderator-fixture")
+    {
+        initializeUiLanguage("ru");
+        mock::Helix helix;
+        initializeHelix(&helix);
+        auto &accounts = app.accounts.twitch;
+        accounts.accounts.append(std::make_shared<TwitchAccount>("fixturemod", "", "", "1000"));
+        accounts.load();
+        accounts.currentUsername = "fixturemod";
+        auto main = std::make_unique<Window>(WindowType::Main, nullptr);
+        main->setAttribute(Qt::WA_DontShowOnScreen);
+        main->resize(1000, 500);
+        main->show();
+        qt.processEvents();
+        auto *button = dynamic_cast<LabelButton *>(main->findChild<QWidget *>("ModeratorAutoRepliesButton"));
+        check(button && button->isHidden() && !main->windowTitle().contains(" (Mods)"),
+              "ordinary signed-in user has no button or Mods caption");
+        main->grab().save(output+"/ordinary.png");
+        auto &module = ModeratorAutoReplies::instance();
+        moderator::Policy policy;
+        policy.revision = 1;
+        policy.version = "1.0.0";
+        policy.expires = QDateTime::currentDateTimeUtc().addDays(1);
+        policy.allowed = {"1000"};
+        policy.source = "return function(text,rules) return nil end";
+        ModeratorAutoRepliesTestAccess::configure(module, policy, "1000", {"example", "another"});
+        qt.processEvents();
+        check(button && button->isVisible() && main->windowTitle().endsWith(" (Mods)"),
+              "approved account has moderator button and Mods caption");
+        main->grab().save(output+"/approved.png");
+        QTimer::singleShot(0, [&] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!dialog)
+                for (auto *window : QApplication::topLevelWidgets())
+                    if (auto *candidate = qobject_cast<QDialog *>(window); candidate && candidate->isVisible())
+                        dialog = candidate;
+            if (dialog)
+            {
+                auto *tabs = dialog->findChild<QTabBar *>();
+                check(tabs && tabs->count() == 2 && tabs->tabText(0) == "another" &&
+                      tabs->tabText(1) == "example", "approved dialog contains verified channels only");
+                dialog->grab().save(output+"/moderator-dialog.png");
+                dialog->reject();
+            }
+        });
+        if (button)
+            Q_EMIT button->leftClicked();
+        policy.allowed.clear();
+        ModeratorAutoRepliesTestAccess::configure(module, policy, "1000", {"example"});
+        qt.processEvents();
+        check(button && button->isHidden() && !main->windowTitle().contains(" (Mods)"),
+              "revocation hides both button and caption immediately");
+        main.reset();
+        delete &module;
+        QFile report(output+"/ui-results.json");
+        report.open(QIODevice::WriteOnly | QIODevice::Truncate);
+        report.write(QJsonDocument(QJsonObject{{"checks", checks}, {"failures", failures}}).toJson());
+        return failures ? 1 : 0;
+    }
+#endif
     if (argc > 2 && QByteArray(argv[2]) == "--reply-thread")
     {
         Split split(nullptr);
@@ -1509,6 +1590,13 @@ int main(int argc, char **argv)
             };
             checkFrame("before native show");
             main.resize(900,600);main.show();qt.processEvents();
+            if (main.hasCustomWindowFrame())
+            {
+                auto *modButton = main.findChild<QWidget *>("ModeratorAutoRepliesButton");
+                check(modButton && modButton->isHidden() && !main.windowTitle().contains(" (Mods)") &&
+                      !main.windowTitle().contains(" (Owner)"),
+                      language+" ordinary account has no moderator button or edition badge");
+            }
             auto checkHeader = [&](const QString &phase) {
                 if (!main.hasCustomWindowFrame())return;
                 const int height=main.layout()->itemAt(0)->geometry().height();
@@ -1577,7 +1665,7 @@ int main(int argc, char **argv)
                 const int originalPages = notebook.getPageCount();
                 notebook.ensureWhispersTab();
                 auto *whispers = dynamic_cast<SplitContainer *>(
-                    notebook.getPageAt(notebook.getPageCount() - 1));
+                    notebook.getPageAt(0));
                 check(whispers && whispers->isPermanentWhispersTab() &&
                           notebook.getPageCount() == originalPages + 1,
                       "permanent whispers tab created automatically");
@@ -1620,6 +1708,25 @@ int main(int argc, char **argv)
                     notebook.showAllTabsAction->trigger();
                     app.settings.informOnTabVisibilityToggle.setValue(originalTabInfo);
                     auto *ordinaryPage = notebook.addPage(false);
+                    notebook.rearrangePage(whispers, notebook.getPageCount() - 1);
+                    notebook.rearrangePage(ordinaryPage, 0);
+                    check(notebook.getPageAt(0) == whispers,
+                          "whispers stays first when moved or another page is dragged left");
+                    notebook.select(whispers, false);
+                    app.settings.showWhispersTab.setValue(false);
+                    qt.processEvents();
+                    check(whispers->getTab()->isHidden() && notebook.getSelectedPage() != whispers &&
+                          notebook.getPageAt(0) == whispers,
+                          "hiding whispers preserves the permanent page and exits the tab");
+                    notebook.selectNextTab(false);
+                    check(notebook.getSelectedPage() != whispers, "hidden whispers is skipped in next tab");
+                    notebook.selectVisibleIndex(0, false);
+                    check(notebook.getSelectedPage() != whispers && notebook.visibleIndexOf(notebook.getSelectedPage()) == 0,
+                          "hidden whispers is skipped by numbered tab shortcuts");
+                    app.settings.showWhispersTab.setValue(true);
+                    qt.processEvents();
+                    check(whispers->getTab()->isVisible() && notebook.getPageAt(0) == whispers,
+                          "restored whispers remains the leftmost tab");
                     const bool savedCloseButton = app.settings.showTabCloseButton.getValue();
                     app.settings.showTabCloseButton.setValue(false);
                     notebook.select(whispers, false);
@@ -1736,6 +1843,21 @@ int main(int argc, char **argv)
                     check(activeTab->minimumTabWidth() == fullFirst &&
                               secondTab->minimumTabWidth() == fullSecond,
                           "normal tab names remain expanded after switching channels");
+                    // A title update or resize can interrupt the 75 ms tab move
+                    // after reordering. The newest notebook layout must win.
+                    const int secondIndex = notebook.indexOf(secondPage);
+                    notebook.rearrangePage(secondPage, notebook.indexOf(ordinaryPage));
+                    secondTab->setCustomTitle(QStringLiteral("A much wider channel title"));
+                    const auto firstTarget = activeTab->getDesiredRect();
+                    const auto secondTarget = secondTab->getDesiredRect();
+                    settle(130);
+                    check(activeTab->geometry() == firstTarget &&
+                              secondTab->geometry() == secondTarget &&
+                              !activeTab->geometry().intersects(secondTab->geometry()),
+                          "interrupted tab move cannot overwrite the new title layout");
+                    notebook.rearrangePage(secondPage, secondIndex);
+                    secondTab->resetCustomTitle();
+                    settle(130);
                     app.settings.tabAvatarStyle.setValue(QStringLiteral("off"));
                     settle(180);
                     check(activeTab->minimumTabWidth() > activeTab->height() &&
@@ -1776,6 +1898,45 @@ int main(int argc, char **argv)
                     }
                     check(accessible && wrapPages.back()->getTab()->y() >= activeTab->y() + activeTab->height(),
                           "half-scale wrapped rows use their full visible click and drag targets");
+                    const bool savedGrow = app.settings.growWrappedNotebookLines.getValue();
+                    const auto wideSize = main.size();
+                    main.resize(340, wideSize.height());
+                    app.settings.growWrappedNotebookLines.setValue(true);
+                    app.settings.tabStyle.setValue(QStringLiteral("compact"));
+                    app.settings.tabAvatarStyle.setValue(QStringLiteral("avataronly"));
+                    for (auto *page : wrapPages)
+                        page->getTab()->setAvatarLogin(QStringLiteral("fixture"));
+                    settle(180);
+                    bool consistentLayout = wrapPages.front()->getTab()->y() !=
+                                            wrapPages.back()->getTab()->y();
+                    auto checkLayout = [&] {
+                        std::vector<QRect> before;
+                        for (auto *page : wrapPages)
+                            before.push_back(page->getTab()->geometry());
+                        notebook.refresh();
+                        for (size_t i = 0; i < wrapPages.size(); ++i)
+                        {
+                            const auto *tab = wrapPages[i]->getTab();
+                            consistentLayout &= tab->geometry() == before[i];
+                            for (size_t j = 0; j < i; ++j)
+                                consistentLayout &= !before[i].intersects(before[j]);
+                        }
+                    };
+                    for (auto *page : wrapPages)
+                    {
+                        notebook.select(page, false);
+                        settle(35);
+                        checkLayout();
+                    }
+                    settle(180);
+                    checkLayout();
+                    check(consistentLayout,
+                          "rapid compact tab expansion keeps all wrapped row geometry consistent");
+                    notebook.select(ordinaryPage, false);
+                    app.settings.growWrappedNotebookLines.setValue(savedGrow);
+                    app.settings.tabStyle.setValue(savedTabStyle);
+                    app.settings.tabAvatarStyle.setValue(savedAvatarStyle);
+                    main.resize(wideSize);
                     for (auto *page : wrapPages)
                         notebook.removePage(page);
                     fixtureChat->addMessage(makeSystemMessage(QStringLiteral("Всем привет!")), MessageContext::Repost);

@@ -53,7 +53,7 @@
 #include "util/QMagicEnum.hpp"
 #include "util/Twitch.hpp"
 #include "util/Variant.hpp"
-#include "widgets/buttons/LabelButton.hpp"
+#include "widgets/buttons/Button.hpp"
 #include "widgets/dialogs/ReplyThreadPopup.hpp"
 #include "widgets/dialogs/SettingsDialog.hpp"
 #include "widgets/dialogs/UserInfoPopup.hpp"
@@ -1204,16 +1204,62 @@ ChannelView::ChannelView(InternalCtor /*tag*/, QWidget *parent, Split *split,
 
 void ChannelView::initializeLayout()
 {
-    this->goToBottom_ = new LabelButton(uiText("More messages below"), this);
-    this->goToBottom_->setStyleSheet(
-        "background-color: rgba(0,0,0,0.66); color: #FFF;");
+    class JumpToLatestButton final : public Button
+    {
+    public:
+        explicit JumpToLatestButton(ChannelView *view)
+            : Button(view)
+        {
+            this->setCursor(Qt::PointingHandCursor);
+            this->setAccessibleName(uiText("More messages below"));
+        }
+
+    protected:
+        void paintEvent(QPaintEvent *) override
+        {
+            QPainter painter(this);
+            painter.setRenderHint(QPainter::Antialiasing);
+            auto fill = this->theme->splits.header.background;
+            if (this->underMouse())
+                fill = this->theme->tabs.selected.backgrounds.regular;
+            painter.setBrush(fill);
+            painter.setPen(QPen(this->theme->accent, 1.0));
+            const auto radius = std::min<qreal>(this->height() / 2.0, 9 * this->scale());
+            painter.drawRoundedRect(QRectF(this->rect()).adjusted(.5, .5, -.5, -.5), radius, radius);
+            const auto scale = std::max(1.F, this->scale());
+            const qreal iconWidth = 9 * scale;
+            const qreal gap = 6 * scale;
+            const qreal inset = 12 * scale;
+            painter.setFont(this->font());
+            const QFontMetricsF metrics(this->font());
+            const auto fullText = this->accessibleName();
+            const auto textWidth = std::max<qreal>(0, this->width() - 2 * inset - iconWidth - gap);
+            const auto text = metrics.horizontalAdvance(fullText) <= textWidth
+                ? fullText : metrics.elidedText(fullText, Qt::ElideRight, textWidth);
+            const auto ink = metrics.tightBoundingRect(text);
+            const auto groupWidth = iconWidth + (text.isEmpty() ? 0 : gap + ink.width());
+            const auto left = (this->width() - groupWidth) / 2.0;
+            const auto middle = this->height() / 2.0;
+            const QPointF center(left + iconWidth / 2.0, middle - .25 * scale);
+            painter.setPen(QPen(this->theme->window.text, 1.5 * scale,
+                                Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.drawLine(center + QPointF(-3.5 * scale, -1.5 * scale), center + QPointF(0, 2 * scale));
+            painter.drawLine(center + QPointF(0, 2 * scale), center + QPointF(3.5 * scale, -1.5 * scale));
+            painter.setPen(this->theme->window.text);
+            painter.drawText(QPointF(left + iconWidth + gap - ink.left(),
+                middle - ink.center().y()), text);
+        }
+
+        void paintContent(QPainter &) override {}
+    };
+    this->goToBottom_ = new JumpToLatestButton(this);
+    auto font = getApp()->getFonts()->getFont(FontStyle::UiMedium, std::max(1.F, this->scale()));
+    font.setWeight(std::max(font.weight(), QFont::DemiBold));
+    this->goToBottom_->setFont(font);
     this->goToBottom_->setVisible(false);
 
     QObject::connect(this->goToBottom_, &Button::leftClicked, this, [this] {
-        QTimer::singleShot(180, this, [this] {
-            this->scrollBar_->scrollToBottom(
-                getSettings()->enableSmoothScrollingNewMessages.getValue());
-        });
+        this->scrollBar_->jumpToBottom();
     });
 }
 
@@ -1446,6 +1492,11 @@ void ChannelView::themeChangedEvent()
 {
     BaseWidget::themeChangedEvent();
 
+    if (this->goToBottom_)
+    {
+        this->goToBottom_->update();
+    }
+
     this->setupHighlightAnimationColors();
     this->messageColors_.applyTheme(getTheme(), this->isOverlay_,
                                     getSettings()->overlayBackgroundOpacity);
@@ -1540,8 +1591,9 @@ void ChannelView::scaleChangedEvent(float scale)
                  std::max<float>(
                      0.01, this->logicalDpiX() * this->devicePixelRatioF());
 #endif
-        this->goToBottom_->setFont(
-            getApp()->getFonts()->getFont(FontStyle::UiMedium, factor));
+        auto font = getApp()->getFonts()->getFont(FontStyle::UiMedium, std::max(1.F, factor));
+        font.setWeight(std::max(font.weight(), QFont::DemiBold));
+        this->goToBottom_->setFont(font);
     }
 
     this->updateScrollWidgetGeometries();
@@ -1560,9 +1612,18 @@ void ChannelView::updateScrollWidgetGeometries()
 
     if (this->goToBottom_)
     {
-        const auto goToBottomHeight = int(this->scale() * 26);
-        this->goToBottom_->setGeometry(0, this->height() - goToBottomHeight,
-                                       this->width(), goToBottomHeight);
+        const auto scale = std::max(1.F, this->scale());
+        const int gap = qRound(5 * scale);
+        const int goToBottomHeight = std::max(qRound(scale * 26),
+            this->goToBottom_->fontMetrics().height() + qRound(8 * scale));
+        const int availableWidth = std::max(1, this->width() - qRound(16 * this->scale()) - gap * 2);
+        const QFontMetricsF metrics(this->goToBottom_->font());
+        const auto text = this->goToBottom_->accessibleName();
+        const int buttonWidth = std::min(availableWidth,
+            int(std::ceil(std::max(metrics.horizontalAdvance(text),
+                metrics.tightBoundingRect(text).width()) + 41 * scale)));
+        this->goToBottom_->setGeometry(gap + (availableWidth - buttonWidth) / 2,
+            std::max(0, this->height() - goToBottomHeight - gap), buttonWidth, goToBottomHeight);
     }
 }
 

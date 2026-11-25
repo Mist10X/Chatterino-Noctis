@@ -11,6 +11,10 @@ public:
     {
         channel.setRoomId(roomId);
     }
+    static void setMod(TwitchChannel &channel, bool value)
+    {
+        channel.setMod(value);
+    }
 };
 
 }  // namespace chatterino
