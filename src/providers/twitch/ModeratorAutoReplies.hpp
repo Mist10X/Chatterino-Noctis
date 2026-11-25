@@ -23,6 +23,7 @@ public:
     void open(QWidget *parent);
     void maybeReply(TwitchChannel &channel, Communi::TagsRef tags,
                     const QString &text);
+    void observeStream(TwitchChannel &channel);
     pajlada::Signals::NoArgSignal changed;
 private:
 #ifdef CHATTERINO_WITH_TESTS
@@ -30,7 +31,10 @@ private:
     // Only callable by the isolated test fixture, never by production UI,
     // settings, networking, or a command-line argument.
     void configureFixture(const moderator::Policy &policy, const QString &roleAccount,
-                          const QStringList &roles, const QString &ruleChannel);
+                          const QStringList &roles, const QString &ruleChannel,
+                          unsigned senderMask = 1, const QString &reply = QStringLiteral("fixture answer"),
+                          bool allWords = false, int cooldownSeconds = 5);
+    void reloadFixtureRules();
 #endif
     explicit ModeratorAutoReplies(QObject *parent);
     struct Impl;

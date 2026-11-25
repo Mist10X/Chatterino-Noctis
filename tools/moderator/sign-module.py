@@ -108,6 +108,11 @@ def main():
                    allowed_twitch_ids=sorted(set(ids)), engine=source,
                    min_cooldown_seconds=spec["min_cooldown_seconds"],
                    max_rules=spec["max_rules"])
+    if "min_channel_cooldown_seconds" in spec:
+        floor = spec["min_channel_cooldown_seconds"]
+        if type(floor) is not int or not 0 <= floor <= 300:
+            raise ValueError("Invalid channel cooldown floor")
+        payload["min_channel_cooldown_seconds"] = floor
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     signed = dict(payload=b64(raw), signature=b64(sign(pem, raw, args.key_dir)))
     args.output.parent.mkdir(parents=True, exist_ok=True)

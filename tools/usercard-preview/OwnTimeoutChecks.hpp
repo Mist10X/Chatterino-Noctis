@@ -1473,18 +1473,54 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
 
     // 19. "/w <name> " at the start of the input is a «DM to <name>» chip
     {
+        const QString target = QStringLiteral("oneshkof");
+        static const QPixmap recipientPixmap = [] {
+            QPixmap pixmap(42, 28);
+            pixmap.fill(QColor(0, 255, 0));
+            return pixmap;
+        }();
+        auto room = std::make_shared<TwitchChannel>(QStringLiteral("whisper_selection_fixture"));
+        auto emotes = std::make_shared<EmoteMap>();
+        emotes->emplace(EmoteName(target), std::make_shared<Emote>(Emote{
+            .name = EmoteName(target), .images = ImageSet{Image::fromResourcePixmap(recipientPixmap)}}));
+        room->setBttvEmotes(emotes);
         ResizingTextEdit box;
         box.setFont(edit != nullptr ? edit->font() : box.font());
         box.resize(520, 36);
         InputHighlighter highlighter(*getApp()->getSpellChecker(), nullptr);
+        highlighter.setEmotePreviewEnabled(true);
         highlighter.setDocument(box.document());
+        highlighter.setChannel(room);
         box.paintOverlay = [&](QPainter &painter) {
+            highlighter.paintEmotes(painter, box);
             highlighter.paintWhisperChip(painter, box);
         };
         box.setPlainText(QStringLiteral("/w oneshkof ну шо работает?"));
         box.show();
         pump(100);
         const int prefix = highlighter.whisperPrefix();
+        check("a recipient matching an emote name is never rendered as an emote",
+              !highlighter.showsEmotes());
+        auto selection = QTextCursor(box.document());
+        selection.setPosition(prefix, QTextCursor::KeepAnchor);
+        box.setTextCursor(selection);
+        box.setFocus();
+        pump(30);
+        const auto formats = box.document()->firstBlock().layout()->formats();
+        const auto hidden = std::ranges::find_if(formats, [&](const auto &range) {
+            return range.start == 0 && range.length == prefix;
+        });
+        check("selected whisper prefix is reserved without negative spacing and retains raw copy text",
+              hidden != formats.end() && hidden->format.fontLetterSpacing() >= 0 &&
+              box.textCursor().selectedText() == QStringLiteral("/w oneshkof "));
+        if (!screenshotBase.isEmpty())
+            box.grab().save(screenshotBase + "-whisper-chip-selected.png", "PNG");
+        box.setPlainText(QStringLiteral("/w oneshkof oneshkof "));
+        pump(30);
+        check("same emote name is still previewed in the whisper body",
+              highlighter.showsEmotes() && highlighter.whisperPrefix() == prefix);
+        box.setPlainText(QStringLiteral("/w oneshkof ну шо работает?"));
+        pump(30);
         if (!screenshotBase.isEmpty())
         {
             box.grab().save(screenshotBase + "-whisper-chip.png", "PNG");

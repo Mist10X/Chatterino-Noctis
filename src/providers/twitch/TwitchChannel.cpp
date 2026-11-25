@@ -4,6 +4,7 @@
 
 #include "common/UiLanguage.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
+#include "providers/twitch/ModeratorAutoReplies.hpp"
 
 #include "Application.hpp"
 #include "common/Common.hpp"
@@ -1462,6 +1463,7 @@ void TwitchChannel::updateStreamStatus(
         {
             this->onLiveStatusChanged(true, isInitialUpdate);
         }
+        if (auto *moderator = ModeratorAutoReplies::existing()) moderator->observeStream(*this);
         this->streamStatusChanged.invoke();
     }
     else
@@ -1563,6 +1565,7 @@ void TwitchChannel::updateStreamGame(const QString &gameName,
             streamStart = status->startedAt;
         }
     }
+    if (auto *moderator = ModeratorAutoReplies::existing()) moderator->observeStream(*this);
     this->streamStatusChanged.invoke();
 }
 

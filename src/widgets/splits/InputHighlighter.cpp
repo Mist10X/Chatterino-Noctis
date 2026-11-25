@@ -307,6 +307,13 @@ QString whisperChipText(const QString &target)
     return uiText("DM to %1").arg(target);
 }
 
+QRegularExpressionMatch whisperPrefixMatch(const QString &text)
+{
+    static const QRegularExpression whisper(
+        QStringLiteral("^/(?:w|whisper)\\s+@?([A-Za-z0-9_]{2,25})\\s"));
+    return whisper.match(text);
+}
+
 }  // namespace
 
 void InputHighlighter::highlightWhisper(const QString &text)
@@ -316,9 +323,7 @@ void InputHighlighter::highlightWhisper(const QString &text)
         return;
     }
     // the name is followed by a space: it is typed out (or completed)
-    static const QRegularExpression whisper(
-        QStringLiteral("^/(?:w|whisper)\\s+@?([A-Za-z0-9_]{2,25})\\s"));
-    const auto match = whisper.match(text);
+    const auto match = whisperPrefixMatch(text);
     if (!match.hasMatch())
     {
         this->whisperPrefix_ = 0;
@@ -338,9 +343,15 @@ void InputHighlighter::highlightWhisper(const QString &text)
     const auto prefix = match.captured(0);
     QTextCharFormat format;
     format.setForeground(Qt::transparent);
+    // Selection can override the transparent foreground. Reserve width
+    // with compressed glyphs, never overlapping negative letter spacing.
+    auto hidden = base;
+    hidden.setStretch(1);
+    const QFontMetricsF hiddenMetrics(hidden);
+    format.setFont(hidden);
     format.setFontLetterSpacingType(QFont::AbsoluteSpacing);
-    format.setFontLetterSpacing((chip + 6 - metrics.horizontalAdvance(prefix)) /
-                                prefix.size());
+    format.setFontLetterSpacing(std::max<qreal>(0, chip + 6 -
+        hiddenMetrics.horizontalAdvance(prefix)) / prefix.size());
     this->setFormat(0, this->whisperPrefix_, format);
 }
 
@@ -366,12 +377,27 @@ void InputHighlighter::paintWhisperChip(QPainter &painter,
     const QRectF chip(from.left() + 1, from.center().y() - metrics.height() / 2,
                       std::max<qreal>(10, to.left() - from.left() - 6),
                       metrics.height());
-    const QColor teal(93, 202, 165);
+    const auto selection = edit.textCursor();
+    const bool selected = selection.hasSelection() &&
+                          selection.selectionStart() < this->whisperPrefix_ &&
+                          selection.selectionEnd() > 0;
+    const QColor teal = selected ? edit.palette().color(QPalette::HighlightedText)
+                                 : QColor(93, 202, 165);
 
     painter.save();
+    painter.setClipRect(edit.viewport()->rect(), Qt::IntersectClip);
     painter.setRenderHint(QPainter::Antialiasing);
-    auto fill = teal;
-    fill.setAlpha(34);
+    if (selected)
+    {
+        // Qt draws the hidden /w prefix when selected. Mask its complete
+        // reserved slot, then draw the selected chip once over that mask.
+        auto background = edit.palette().color(QPalette::Base);
+        background.setAlpha(255);
+        painter.fillRect(QRectF(from.left(), from.top(),
+                                to.left() - from.left(), from.height()), background);
+    }
+    auto fill = selected ? edit.palette().color(QPalette::Highlight) : teal;
+    fill.setAlpha(selected ? 255 : 34);
     painter.setPen(Qt::NoPen);
     painter.setBrush(fill);
     painter.drawRoundedRect(chip, 4, 4);
@@ -470,9 +496,15 @@ void InputHighlighter::highlightEmotes(const QString &text)
     const QFontMetricsF tallMetrics(tall);
 
     auto it = this->tokenRegex.globalMatch(text);
+    const auto whisper = this->currentBlock().blockNumber() == 0
+        ? whisperPrefixMatch(text) : QRegularExpressionMatch{};
     while (it.hasNext())
     {
         const auto match = it.next();
+        // A Twitch login may also be a channel or personal emote name.
+        // The /w command and recipient belong to the chip, not the message.
+        if (whisper.hasMatch() && match.capturedStart() < whisper.capturedLength())
+            continue;
         // The word still being typed stays text until a space or Tab follows.
         if (match.capturedEnd() >= text.size())
         {
@@ -553,6 +585,8 @@ void InputHighlighter::paintEmotes(QPainter &painter,
         for (const auto &shown : data->emotes)
         {
             const auto from = block.position() + shown.start;
+            if (block.blockNumber() == 0 && from < this->whisperPrefix_)
+                continue;
             const auto end = shown.start + shown.length;
             const auto selected = selection.hasSelection() &&
                                   selection.selectionStart() <

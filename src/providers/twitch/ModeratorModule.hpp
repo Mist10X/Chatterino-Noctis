@@ -40,6 +40,8 @@ bool permitted(const Policy *policy, const QString &account,
 struct MatchRule {
     QStringList triggers;
     bool exact = true;
+    bool allWords = false;
+    QList<QStringList> wordSets;
 };
 
 // Sandboxed, signed matching logic; cannot actually send a message, touch

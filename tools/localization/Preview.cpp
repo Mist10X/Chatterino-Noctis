@@ -81,6 +81,8 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QComboBox>
+#include <QSpinBox>
+#include <QPlainTextEdit>
 #include <QDir>
 #include <QEventLoop>
 #include <QElapsedTimer>
@@ -137,6 +139,10 @@ public:
                           const QString &id, const QStringList &channels)
     {
         module.configureFixture(policy, id, channels, "example");
+    }
+    static void reload(ModeratorAutoReplies &module)
+    {
+        module.reloadFixtureRules();
     }
 };
 }
@@ -826,6 +832,7 @@ int main(int argc, char **argv)
         policy.version = "1.0.0";
         policy.expires = QDateTime::currentDateTimeUtc().addDays(1);
         policy.allowed = {"1000"};
+        policy.minimumCooldown = 0;
         policy.source = "return function(text,rules) return nil end";
         ModeratorAutoRepliesTestAccess::configure(module, policy, "1000", {"example", "another"});
         qt.processEvents();
@@ -840,15 +847,152 @@ int main(int argc, char **argv)
                         dialog = candidate;
             if (dialog)
             {
-                auto *tabs = dialog->findChild<QTabBar *>();
+                auto *tabs = dialog->findChild<QTabBar *>("ModeratorChannelTabs");
+                auto *primary = dialog->findChild<QTabBar *>("ModeratorReplyTabs");
                 check(tabs && tabs->count() == 2 && tabs->tabText(0) == "another" &&
                       tabs->tabText(1) == "example", "approved dialog contains verified channels only");
+                check(primary && primary->count() == 3 && primary->tabText(0) == uiText("Reply rules") &&
+                      primary->tabText(1) == uiText("Options") && primary->tabText(2) == uiText("Manual timer"),
+                      "moderator dialog has Owner-style Rules, Options and Timer pages");
+                auto *help = dialog->findChild<QPushButton *>("ModeratorHelpButton");
+                check(help && help->isVisible() && help->parentWidget() == dialog,
+                      "help button is inside the moderator dialog");
+                if (help)
+                {
+                    QTimer::singleShot(0, [&] {
+                        auto *guide = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                        check(guide && guide->objectName() == "ModeratorHelpDialog",
+                              "help opens a dedicated guide");
+                        if (!guide || guide == dialog) { if (guide) guide->reject(); return; }
+                        QString text;
+                        for (auto *label : guide->findChildren<QLabel *>()) text += label->text() + u'\n';
+                        bool complete = text.contains(uiText("Full match")) && text.contains(uiText("Contains phrase")) &&
+                            text.contains(uiText("All words"));
+                        for (auto token : {"{game}", "{game_time}", "{game_since}", "{game_total}", "{timer}"})
+                            complete &= text.contains(token);
+                        check(complete, "guide documents all matching modes and variables");
+                        auto *scroll = guide->findChild<QScrollArea *>("ModeratorHelpScroll");
+                        check(scroll && scroll->horizontalScrollBar()->maximum() == 0 &&
+                              scroll->verticalScrollBar()->maximum() > 0, "guide wraps text and offers vertical scrolling");
+                        guide->grab().save(output+"/moderator-help.png");
+                        if (scroll) { scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum()); qt.processEvents(); }
+                        guide->grab().save(output+"/moderator-help-bottom.png");
+                        guide->accept();
+                    });
+                    help->click();
+                }
+                if (tabs) tabs->setCurrentIndex(1);
+                auto *group = dialog->findChild<QLineEdit *>("ModeratorGroupName");
+                auto *reply = dialog->findChild<QPlainTextEdit *>("ModeratorReplyText");
+                auto *trigger = dialog->findChild<QPlainTextEdit *>("ModeratorTriggerVariants");
+                auto *status = dialog->findChild<QLabel *>("ModeratorReplyStatus");
+                auto *save = dialog->findChild<QPushButton *>("SaveRules");
+                auto *matchMode = dialog->findChild<QComboBox *>("ModeratorMatchMode");
+                check(matchMode && matchMode->count() == 3 && matchMode->currentIndex() == 0,
+                      "three matching modes, legacy exact remains default");
+                check(group && group->isEnabled() && reply && save, "moderator rule has group and variable editor");
+                if (group && reply && save && trigger && status)
+                {
+                    group->setText("Fixture group");
+                    reply->setPlainText("Playing {game} {timer}");
+                    trigger->setPlainText("fixture question\n\n  FIXTURE   QUESTION  ");
+                    save->click();
+                    check(status->text().contains("FIXTURE QUESTION") && status->text().contains("Fixture group") &&
+                          trigger->textCursor().blockNumber() == 2 && trigger->textCursor().selectedText().trimmed() == "FIXTURE   QUESTION",
+                          "moderator duplicate reports the group and real editor line, including blanks");
+                    dialog->grab().save(output+"/moderator-conflict.png");
+                    if (matchMode)
+                    {
+                        matchMode->setCurrentIndex(2);
+                        trigger->setPlainText(QStringLiteral("давно пузатую смотрите\n\nсмотрите пузатую давно?"));
+                        save->click();
+                        check(status->text().contains(QStringLiteral("смотрите пузатую давно?")) &&
+                              trigger->textCursor().blockNumber() == 2 && trigger->textCursor().hasSelection(),
+                              "permuted word-set conflict reports exact line");
+                        trigger->setPlainText(QStringLiteral("давно пузатую смотрите\n?!"));
+                        save->click();
+                        check(trigger->textCursor().selectedText() == "?!" && status->text().contains("2"),
+                              "punctuation-only word variant rejected");
+                    }
+                    trigger->setPlainText(QStringLiteral("давно пузатую смотрите\nкогда фильм начали"));
+                    save->click();
+                }
                 dialog->grab().save(output+"/moderator-dialog.png");
+                if (primary)
+                {
+                    primary->setCurrentIndex(1);
+                    qt.processEvents();
+                    auto *viewers = dialog->findChild<QCheckBox *>("ModeratorSenderRole_viewer");
+                    auto *vip = dialog->findChild<QCheckBox *>("ModeratorSenderRole_vip");
+                    auto *mods = dialog->findChild<QCheckBox *>("ModeratorSenderRole_moderator");
+                    auto *owner = dialog->findChild<QCheckBox *>("ModeratorSenderRole_owner");
+                    auto *cooldown = dialog->findChild<QSpinBox *>("ModeratorReplyCooldown");
+                    check(cooldown && cooldown->minimum() == 0 && cooldown->maximum() == 300,
+                          "signed optional floor permits zero through 300 seconds");
+                    if (cooldown) cooldown->setValue(0);
+                    check(cooldown && cooldown->text() == uiText("No extra pause"),
+                          "zero indicates no additional channel pause");
+                    check(viewers && viewers->isChecked() && vip && mods && owner && !vip->isChecked(),
+                          "viewer default and all four role choices are available");
+                    if (vip) vip->click();
+                    dialog->grab().save(output+"/moderator-options.png");
+                    primary->setCurrentIndex(2);
+                    qt.processEvents();
+                    auto *channels = dialog->findChild<QComboBox *>("ModeratorTimerChannel");
+                    auto *minutes = dialog->findChild<QSpinBox *>("ModeratorTimerMinutes");
+                    auto *action = dialog->findChild<QPushButton *>("ModeratorTimerAction");
+                    auto *elapsed = dialog->findChild<QLabel *>("ModeratorTimerElapsed");
+                    check(channels && channels->count() == 2 && channels->currentText() == "example" && minutes && action && elapsed,
+                          "timer uses only verified channels and follows selected rule tab");
+                    if (minutes && action && elapsed)
+                    {
+                        minutes->setValue(20);
+                        action->click();
+                        check(elapsed->text().startsWith("0:20:"), "manual timer starts twenty minutes in the past");
+                        qt.processEvents();
+                        check(action->width() >= action->fontMetrics().horizontalAdvance(action->text()) + 8,
+                              "timer action remains readable after start changes its label");
+                    }
+                    dialog->grab().save(output+"/moderator-timer.png");
+                }
                 dialog->reject();
             }
         });
         if (button)
             Q_EMIT button->leftClicked();
+        ModeratorAutoRepliesTestAccess::reload(module);
+        QTimer::singleShot(0, [&] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!dialog)
+                for (auto *widget : QApplication::topLevelWidgets())
+                    if (auto *candidate = qobject_cast<QDialog *>(widget); candidate && candidate->isVisible()) dialog = candidate;
+            if (!dialog) return;
+            auto *primary = dialog->findChild<QTabBar *>("ModeratorReplyTabs");
+            auto *tabs = dialog->findChild<QTabBar *>("ModeratorChannelTabs");
+            auto *vip = dialog->findChild<QCheckBox *>("ModeratorSenderRole_vip");
+            auto *cooldown = dialog->findChild<QSpinBox *>("ModeratorReplyCooldown");
+            check(cooldown && cooldown->value() == 0, "zero pause survives profile reload");
+            check(vip && vip->isChecked(), "selected roles survive rule-profile reload");
+            if (tabs) tabs->setCurrentIndex(1);
+            auto *group = dialog->findChild<QLineEdit *>("ModeratorGroupName");
+            auto *reply = dialog->findChild<QPlainTextEdit *>("ModeratorReplyText");
+            auto *matchMode = dialog->findChild<QComboBox *>("ModeratorMatchMode");
+            auto *trigger = dialog->findChild<QPlainTextEdit *>("ModeratorTriggerVariants");
+            check(matchMode && matchMode->currentIndex() == 2 && trigger &&
+                  trigger->toPlainText() == QStringLiteral("давно пузатую смотрите\nкогда фильм начали"),
+                  "word mode and alternative word sets survive profile reload");
+            check(group && group->text() == "Fixture group" && reply && reply->toPlainText() == "Playing {game} {timer}",
+                  "group title and template survive rule-profile reload");
+            if (primary) primary->setCurrentIndex(2);
+            auto *elapsed = dialog->findChild<QLabel *>("ModeratorTimerElapsed");
+            auto *action = dialog->findChild<QPushButton *>("ModeratorTimerAction");
+            check(elapsed && elapsed->text().startsWith("0:20:") && action && action->text() == uiText("Stop timer"),
+                  "timer start survives rule-profile reload");
+            if (action) action->click();
+            check(elapsed && elapsed->text() == uiText("Timer stopped"), "timer can be stopped after reload");
+            dialog->reject();
+        });
+        if (button) Q_EMIT button->leftClicked();
         policy.allowed.clear();
         ModeratorAutoRepliesTestAccess::configure(module, policy, "1000", {"example"});
         qt.processEvents();

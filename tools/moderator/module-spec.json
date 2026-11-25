@@ -3,6 +3,7 @@
   "module_version": "1.0.0",
   "allowed_twitch_ids": [],
   "min_cooldown_seconds": 5,
+  "min_channel_cooldown_seconds": 0,
   "max_rules": 100,
   "engine": "matcher.lua"
 }

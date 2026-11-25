@@ -638,6 +638,8 @@ set(SOURCE_FILES
         providers/twitch/ModeratorModule.hpp
         providers/twitch/ModeratorAutoReplies.cpp
         providers/twitch/ModeratorAutoReplies.hpp
+        providers/twitch/ModeratorReplyFeatures.hpp
+        providers/twitch/ReplyQuestionConflicts.hpp
         providers/twitch/TwitchAccount.cpp
         providers/twitch/TwitchAccount.hpp
         providers/twitch/TwitchAccountManager.cpp

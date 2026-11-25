@@ -1,4 +1,5 @@
 #include "providers/twitch/ModeratorModule.hpp"
+#include "providers/twitch/AutoReplyWords.hpp"
 
 #include <QCryptographicHash>
 #include <QJsonArray>
@@ -7,6 +8,7 @@
 #include <QRegularExpression>
 #include <openssl/evp.h>
 #include <cstdlib>
+#include <algorithm>
 
 #ifdef CHATTERINO_HAVE_PLUGINS
 #include <lua.h>
@@ -90,13 +92,19 @@ std::optional<Policy> verifyPolicy(const QByteArray &envelope,
     p.revision = revision;
     p.expires = expires;
     p.version = payload.value("module_version").toString();
-    p.minimumCooldown = payload.value("min_cooldown_seconds").toInt();
+    const auto legacyCooldown = payload.value("min_cooldown_seconds").toInt(-1);
+    // Keep the legacy floor for v2.0.4 clients; the signed optional field
+    // authorizes a separate per-channel floor for newer clients.
+    p.minimumCooldown = payload.contains("min_channel_cooldown_seconds")
+        ? payload.value("min_channel_cooldown_seconds").toInt(-1)
+        : legacyCooldown;
     p.maximumRules = payload.value("max_rules").toInt();
     p.source = payload.value("engine").toString().toUtf8();
     p.digest = QCryptographicHash::hash(data, QCryptographicHash::Sha256);
     static const QRegularExpression versionRe(QStringLiteral("\\A[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}\\z"));
     if (!versionRe.match(p.version).hasMatch() ||
-        p.minimumCooldown < 3 || p.minimumCooldown > 300 ||
+        legacyCooldown < 3 || legacyCooldown > 300 ||
+        p.minimumCooldown < 0 || p.minimumCooldown > 300 ||
         p.maximumRules < 1 || p.maximumRules > 200 ||
         p.source.isEmpty() || p.source.size() > MAX_SOURCE ||
         !payload.value("allowed_twitch_ids").isArray())
@@ -237,13 +245,52 @@ std::optional<size_t> Matcher::match(const QString &text, const std::vector<Matc
     const QByteArray inputText = text.simplified().toCaseFolded().toUtf8();
     std::vector<std::pair<std::vector<QByteArray>, bool>> normalized;
     normalized.reserve(rules.size());
-    for (const auto &rule : rules)
+    std::vector<size_t> originalIndices;
+    originalIndices.reserve(rules.size());
+    std::vector<std::pair<qsizetype, size_t>> wordMatches;
+    std::optional<QStringList> messageWords;
+    for (size_t index = 0; index < rules.size(); ++index)
     {
+        const auto &rule = rules[index];
+        if (rule.allWords)
+        {
+            if (!messageWords)
+                messageWords = autoreplywords::tokens(text);
+            qsizetype specificity = 0;
+            const auto consider = [&](const QStringList &words) {
+                if (!words.isEmpty() && words.size() > specificity &&
+                    std::includes(messageWords->cbegin(), messageWords->cend(), words.cbegin(), words.cend()))
+                    specificity = words.size();
+            };
+            if (rule.wordSets.isEmpty())
+                for (const auto &phrase : rule.triggers)
+                    consider(autoreplywords::tokens(phrase));
+            else
+                for (const auto &words : rule.wordSets)
+                    consider(words);
+            if (specificity > 0)
+                wordMatches.emplace_back(specificity, index);
+            continue;
+        }
         auto &entry = normalized.emplace_back();
         entry.second = rule.exact;
         for (const auto &phrase : rule.triggers)
             entry.first.push_back(phrase.simplified().toCaseFolded().toUtf8());
+        originalIndices.push_back(index);
     }
+    // The signed matcher receives only eligible word sets and makes exactly
+    // one selection. Represent them as a full-message partial match AFTER
+    // ordinary rules: legacy exact/shortest-partial priority stays intact.
+    // Equal-length word candidates are ordered by specificity, then input order.
+    std::stable_sort(wordMatches.begin(), wordMatches.end(),
+        [](const auto &a, const auto &b) { return a.first > b.first; });
+    for (const auto &[specificity, index] : wordMatches)
+    {
+        normalized.emplace_back(std::vector<QByteArray>{inputText}, false);
+        originalIndices.push_back(index);
+    }
+    if (normalized.empty())
+        return {};
     const Impl::Input input{&inputText, &normalized, i.function};
     auto *L = i.state;
     i.remaining = 100;
@@ -253,8 +300,8 @@ std::optional<size_t> Matcher::match(const QString &text, const std::vector<Matc
     if (lua_pcall(L, 1, 1, 0) == LUA_OK && lua_isinteger(L, -1))
     {
         const auto index = lua_tointeger(L, -1);
-        if (index > 0 && static_cast<size_t>(index) <= rules.size())
-            result = static_cast<size_t>(index - 1);
+        if (index > 0 && static_cast<size_t>(index) <= originalIndices.size())
+            result = originalIndices[static_cast<size_t>(index - 1)];
     }
     lua_settop(L, 0);
     return result;

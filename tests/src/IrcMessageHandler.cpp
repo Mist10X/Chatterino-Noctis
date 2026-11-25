@@ -5,6 +5,8 @@
 #include "providers/twitch/IrcMessageHandler.hpp"
 #include "providers/twitch/ModeratorAutoReplies.hpp"
 #include "providers/twitch/ModeratorModule.hpp"
+#include <QThread>
+#include "providers/twitch/ModeratorReplyFeatures.hpp"
 
 #include "common/Literals.hpp"
 #include "controllers/accounts/AccountController.hpp"
@@ -68,9 +70,11 @@ class ModeratorAutoRepliesTestAccess
 public:
     static void configure(ModeratorAutoReplies &module, const moderator::Policy &policy,
                           const QString &roleAccount, const QStringList &channels,
-                          const QString &ruleChannel)
+                          const QString &ruleChannel, unsigned senderMask = 1,
+                          const QString &reply = "fixture answer", bool allWords = false,
+                          int cooldownSeconds = 5)
     {
-        module.configureFixture(policy, roleAccount, channels, ruleChannel);
+        module.configureFixture(policy, roleAccount, channels, ruleChannel, senderMask, reply, allWords, cooldownSeconds);
     }
 };
 }
@@ -778,9 +782,10 @@ TEST(IrcMessageHandler, ModeratorAutoRepliesOnlyLiveVerifiedChannelAndAccount)
     policy.version = "1.0.0";
     policy.expires = QDateTime::currentDateTimeUtc().addDays(1);
     policy.allowed = {"1000"};
+    policy.minimumCooldown = 0;
     policy.source = "return function(text,rules) if text==rules[1].triggers[1] then return 1 end end";
     ModeratorAutoRepliesTestAccess::configure(*module, policy, "1000",
-        {"example", "another"}, "example");
+        {"example", "another"}, "example", 1, "fixture answer", true, 0);
     ASSERT_TRUE(module->hasGrant());
     EXPECT_EQ(module->channels(), (QStringList{"another", "example"}));
     bool correctTabs = false;
@@ -789,7 +794,7 @@ TEST(IrcMessageHandler, ModeratorAutoRepliesOnlyLiveVerifiedChannelAndAccount)
         {
             auto *dialog = qobject_cast<QDialog *>(widget);
             if (!dialog || !dialog->isVisible()) continue;
-            auto *tabs = dialog->findChild<QTabBar *>();
+            auto *tabs = dialog->findChild<QTabBar *>("ModeratorChannelTabs");
             correctTabs = tabs && tabs->count() == 2 &&
                 tabs->tabText(0) == "another" && tabs->tabText(1) == "example";
             dialog->reject();
@@ -805,14 +810,15 @@ TEST(IrcMessageHandler, ModeratorAutoRepliesOnlyLiveVerifiedChannelAndAccount)
         [&](const QString &text, const QString &id, bool &sent) {
             ++sends;
             EXPECT_EQ(text, "fixture answer");
-            EXPECT_EQ(id, "live-event");
+            EXPECT_EQ(id, sends == 1 ? "live-event" : "second-event");
             sent = true;
         }));
-    auto incoming = [&](const QByteArray &id, bool live, const QByteArray &badges = "") {
+    auto incoming = [&](const QByteArray &id, bool live, const QByteArray &badges = "",
+                        const QByteArray &text = "question for the fixture") {
         const auto data = "@id=" + id + ";tmi-sent-ts=1790452460376;room-id=11148817;"
             "user-id=2000;display-name=viewer;badges=" + badges +
             ";badge-info=;flags=;user-type=;emotes= :viewer!viewer@viewer.tmi.twitch.tv "
-            "PRIVMSG #example :fixture question";
+            "PRIVMSG #example :" + text;
         std::unique_ptr<Communi::IrcMessage> message(Communi::IrcMessage::fromData(data, nullptr));
         auto *priv = dynamic_cast<Communi::IrcPrivateMessage *>(message.get());
         ASSERT_NE(priv, nullptr);
@@ -823,18 +829,83 @@ TEST(IrcMessageHandler, ModeratorAutoRepliesOnlyLiveVerifiedChannelAndAccount)
     EXPECT_EQ(sends, 0);
     incoming("moderator", true, "moderator/1");
     EXPECT_EQ(sends, 0);
+    incoming("missing-word", true, "", "fixture questions");
+    EXPECT_EQ(sends, 0);
     incoming("live-event", true);
     EXPECT_EQ(sends, 1);
     incoming("live-event", true);
     EXPECT_EQ(sends, 1);
+    incoming("too-fast", true);
+    EXPECT_EQ(sends, 1);
+    QThread::msleep(1100);
+    // The account-wide anti-flood remains; no deferred answer for a repeat.
+    incoming("too-fast", true);
+    EXPECT_EQ(sends, 1);
+    incoming("live-event", true);
+    EXPECT_EQ(sends, 1);
+    incoming("second-event", true);
+    EXPECT_EQ(sends, 2);
     TwitchChannelTestAccess::setMod(*channel, false);
     incoming("role-lost", true);
-    EXPECT_EQ(sends, 1);
+    EXPECT_EQ(sends, 2);
     policy.allowed.clear();
     ModeratorAutoRepliesTestAccess::configure(*module, policy, "1000",
         {"example"}, "example");
     EXPECT_FALSE(module->hasGrant());
     EXPECT_TRUE(module->channels().empty());
+}
+
+TEST(IrcMessageHandler, ModeratorAutoRepliesSelectedRoleAndCategoryReply)
+{
+    MockApplication app(QString::fromUtf8(SETTINGS_DEFAULT));
+    initializeHelix(&app.helix);
+    auto &accounts = app.accounts.twitch;
+    accounts.accounts.append(std::make_shared<TwitchAccount>("fixturemod", "", "", "1000"));
+    accounts.load();
+    accounts.currentUsername = "fixturemod";
+    ASSERT_EQ(accounts.getCurrent()->getUserId(), "1000");
+    auto module = std::unique_ptr<ModeratorAutoReplies>(&ModeratorAutoReplies::instance());
+    moderator::Policy policy;
+    policy.revision = 1;
+    policy.version = "1.0.0";
+    policy.expires = QDateTime::currentDateTimeUtc().addDays(1);
+    policy.allowed = {"1000"};
+    policy.source = "return function(text,rules) if #rules>0 and text==rules[1].triggers[1] then return 1 end end";
+    ModeratorAutoRepliesTestAccess::configure(*module, policy, "1000", {"example"}, "example",
+        static_cast<unsigned>(moderator::SenderRole::Vip), "Playing {game}");
+    auto channel = std::make_shared<TwitchChannel>("example");
+    TwitchChannelTestAccess::setRoomId(*channel, "3000");
+    TwitchChannelTestAccess::setMod(*channel, true);
+    int sends = 0;
+    pajlada::Signals::ScopedConnection connection(channel->sendReplySignal.connect(
+        [&](const QString &text, const QString &id, bool &sent) {
+            ++sends;
+            EXPECT_EQ(text, "Playing Fixture Game");
+            EXPECT_EQ(id, "vip-live");
+            sent = true;
+        }));
+    Communi::TagsRef::MapType tags{{"id", "offline"}, {"user-id", "2000"}, {"room-id", "3000"}, {"badges", "vip/1"}};
+    auto incoming = [&] { module->maybeReply(*channel, Communi::TagsRef(tags), "fixture question"); };
+    incoming();
+    EXPECT_EQ(sends, 0);
+    HelixStream stream;
+    stream.id = "4000";
+    stream.gameId = "5000";
+    stream.gameName = "Fixture Game";
+    stream.startedAt = QDateTime::currentDateTimeUtc().addSecs(-30).toString(Qt::ISODate);
+    TwitchChannelTestAccess::setLiveStream(*channel, stream);
+    tags["id"] = "viewer-live"; tags["badges"] = "";
+    incoming(); EXPECT_EQ(sends, 0);
+    tags["id"] = "moderator-live"; tags["badges"] = "moderator/1";
+    incoming(); EXPECT_EQ(sends, 0);
+    tags["id"] = "own-live"; tags["user-id"] = "1000"; tags["badges"] = "vip/1";
+    incoming(); EXPECT_EQ(sends, 0);
+    tags["id"] = "vip-live"; tags["user-id"] = "2000";
+    incoming(); EXPECT_EQ(sends, 1);
+    incoming(); EXPECT_EQ(sends, 1);
+    TwitchChannelTestAccess::setMod(*channel, false);
+    tags["id"] = "after-role-loss";
+    incoming(); EXPECT_EQ(sends, 1);
 }
 #endif
 
