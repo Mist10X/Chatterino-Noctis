@@ -94,6 +94,8 @@ public:
 
     void forEachChannel(std::function<void(ChannelPtr)> func) override
     {
+        for (const auto &[name, weak] : this->mockChannels)
+            if (auto channel = weak.lock()) func(channel);
     }
 
     void forEachChannelAndSpecialChannels(

@@ -1,4 +1,5 @@
 #include "providers/twitch/ModeratorAutoReplies.hpp"
+#include "providers/twitch/AutoModeration.hpp"
 #include "providers/twitch/ModeratorModule.hpp"
 #include "providers/twitch/ModeratorReplyFeatures.hpp"
 #include "providers/twitch/ReplyQuestionConflicts.hpp"
@@ -541,6 +542,15 @@ void ModeratorAutoReplies::reloadFixtureRules()
 }
 #endif
 bool ModeratorAutoReplies::hasGrant() const { return impl_->granted(); }
+bool ModeratorAutoReplies::canAutomoderate(TwitchChannel &channel) const
+{
+    return impl_->permittedChannel(channel);
+}
+bool permittedAutoModeration(TwitchChannel &channel)
+{
+    auto *module = ModeratorAutoReplies::existing();
+    return module && module->canAutomoderate(channel);
+}
 QStringList ModeratorAutoReplies::channels() const
 {
     if (!impl_->rolesValid())
@@ -664,6 +674,10 @@ void ModeratorAutoReplies::open(QWidget *parent)
     header->addWidget(primary);
     header->addStretch();
     header->addWidget(help);
+    auto *moderation = new QPushButton(uiText("Automatic moderation"), &dialog);
+    moderation->setObjectName("AutoModerationButton");
+    QObject::connect(moderation, &QPushButton::clicked, &dialog, [&dialog] { openAutoModeration(&dialog); });
+    header->addWidget(moderation);
     header->addWidget(enabled);
     layout->addLayout(header);
     auto *pages = new QStackedWidget(&dialog);
@@ -1154,6 +1168,7 @@ QPushButton:focus { text-decoration:underline; }
 QPushButton#SaveRules { background:%5; color:%6; border-radius:4px; }
 QPushButton#ModeratorHelpButton { background:%3; color:%7; border:1px solid %4; border-radius:5px; padding:4px 10px; }
 QPushButton#ModeratorHelpButton:hover { border-color:%7; color:%2; }
+QPushButton#AutoModerationButton { background:%3; color:%7; border:1px solid %4; border-radius:5px; padding:4px 10px; }
 QDateTimeEdit, QSpinBox, QComboBox, QPlainTextEdit, QLineEdit { background:%9; color:%2; border:1px solid %4; border-radius:5px; padding:5px 7px; }
 QDateTimeEdit:focus, QSpinBox:focus, QComboBox:focus, QPlainTextEdit:focus, QLineEdit:focus { border-color:%7; }
 QPlainTextEdit#ModeratorTriggerVariants { padding:0; }

@@ -3,6 +3,15 @@
 // SPDX-License-Identifier: MIT
 
 #include "providers/twitch/IrcMessageHandler.hpp"
+#include "providers/twitch/AutoModeration.hpp"
+#include "providers/twitch/api/TwitchGql.hpp"
+#include <QComboBox>
+#include <QTableWidget>
+#include "providers/twitch/AutoModerationRules.hpp"
+#include <QCheckBox>
+#include <QPushButton>
+#include <QTabWidget>
+
 #include "providers/twitch/ModeratorAutoReplies.hpp"
 #include "providers/twitch/ModeratorModule.hpp"
 #include <QThread>
@@ -1001,3 +1010,178 @@ TEST(IrcMessageHandler, DuplicateChannelPointRewardIrcMessageIgnored)
     ASSERT_NE(channel->getLastMessage()->reward, nullptr);
     EXPECT_EQ(channel->getLastMessage()->reward->title, "my reward");
 }
+
+TEST(IrcMessageHandler, AutoModerationPilotUsesLiveEventsAndFiniteActions)
+{
+    using namespace automoderation;
+    MockApplication app(QString::fromUtf8(SETTINGS_DEFAULT));
+    initializeHelix(&app.helix);
+    auto &accounts = app.accounts.twitch;
+    accounts.accounts.append(std::make_shared<TwitchAccount>("fixturemoderator","","","730001"));
+    // A secondary account saved in the same installation must remain eligible.
+    accounts.accounts.append(std::make_shared<TwitchAccount>("alice","","","730003"));
+    accounts.load();
+    accounts.currentUsername = "fixturemoderator";
+    ASSERT_EQ(accounts.getCurrent()->getUserId(),"730001");
+    ASSERT_TRUE(TwitchChannel::isOwnAccountId("730003"));
+    auto module = std::unique_ptr<ModeratorAutoReplies>(&ModeratorAutoReplies::instance());
+    moderator::Policy policy;
+    policy.revision=1;policy.version="1.0.0";policy.expires=QDateTime::currentDateTimeUtc().addDays(1);
+    policy.allowed={"730001"};policy.source="return function(t,r) return nil end";
+    ModeratorAutoRepliesTestAccess::configure(*module,policy,"730001",{"automodtest"},"automodtest");
+    auto ch=std::make_shared<TwitchChannel>("automodtest");
+    TwitchChannelTestAccess::setRoomId(*ch,"730002");
+    TwitchChannelTestAccess::setMod(*ch,true);
+    app.twitch.mockChannels["automodtest"]=ch;
+    ASSERT_TRUE(permittedAutoModeration(*ch));
+
+    const QString mute="313969fe-cc9f-4a0a-83c6-172acbd96957";
+    const QString unmute="313969fe-cc9f-4a0a-83c6-172acbd96958";
+    Config config{"730002",true,false,{},{
+        {Kind::Words,"fixture phrase",{},600,"fixture word",true},
+        {Kind::RewardTimeout,mute,"Reward mute",120,"fixture reward",true},
+        {Kind::RewardUntimeout,unmute,"Reward unmute",1,"fixture unmute",true}
+    }};
+    const auto fileName=QDir(app.getPaths().settingsDirectory).filePath("noctis-auto-moderation-730001.json");
+    {
+        QFile file(fileName);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(QJsonDocument(QJsonObject{{"schema",1},{"channels",QJsonObject{{"automodtest",encode(config)}}},{"journal",QJsonArray{}}}).toJson());
+    }
+    int actions=0;
+    EXPECT_CALL(app.helix,banUser(QString("730002"),QString("730001"),QString("730003"),std::optional<int>(600),
+                                 QString("fixture word"),testing::_,testing::_))
+        .WillOnce([&](auto,auto,auto,auto,auto,auto done,auto){++actions;done();});
+    EXPECT_CALL(app.helix,banUser(QString("730002"),QString("730001"),QString("730004"),std::optional<int>(120),
+                                 QString("fixture reward"),testing::_,testing::_))
+        .WillOnce([&](auto,auto,auto,auto,auto,auto done,auto){++actions;done();});
+    EXPECT_CALL(app.helix,banUser(QString("730002"),QString("730001"),QString("730004"),std::optional<int>(1),
+                                 QString("fixture unmute"),testing::_,testing::_))
+        .WillOnce([&](auto,auto,auto,auto,auto,auto done,auto){++actions;done();});
+    EXPECT_CALL(app.helix,getUserByName(QString("bob"),testing::_,testing::_))
+        .Times(2).WillRepeatedly([](auto,auto success,auto){ success(HelixUser(QJsonObject{{"id","730004"},{"login","bob"}})); });
+    auto incoming=[&](const QByteArray &id,const QByteArray &author,const QByteArray &user,const QByteArray &text,
+                      const QByteArray &reward={},bool live=true,const QByteArray &badges={}) {
+        const auto raw="@id="+id+";room-id=730002;user-id="+user+";badges="+badges+
+            ";tmi-sent-ts="+QByteArray::number(QDateTime::currentMSecsSinceEpoch())+
+            (reward.isEmpty()?QByteArray{}:";custom-reward-id="+reward)+
+            " : "+author+"!"+author+"@"+author+".tmi.twitch.tv PRIVMSG #automodtest :"+text;
+        // Use a normal IRC prefix without the extra space after ':'.
+        QByteArray line=raw;line.replace(" : "," :");
+        std::unique_ptr<Communi::IrcMessage> message(Communi::IrcMessage::fromData(line,nullptr));
+        auto *priv=dynamic_cast<Communi::IrcPrivateMessage *>(message.get());
+        ASSERT_NE(priv,nullptr);
+        VectorMessageSink sink(ch->sinkTraits());
+        IrcMessageHandler::parsePrivMessageInto(priv,sink,ch.get(),live);
+    };
+    incoming("old","alice","730003","fixture phrase",{},false);
+    EXPECT_EQ(actions,0);
+    incoming("seen","bob","730004","hello");
+    incoming("live-word","alice","730003","fixture phrase");
+    EXPECT_EQ(actions,1);
+    QThread::msleep(1050);
+    incoming("live-word","alice","730003","fixture phrase");
+    EXPECT_EQ(actions,1);
+    incoming("reward-mute","buyer","730005","@bob",mute.toUtf8());
+    EXPECT_EQ(actions,2);
+    QThread::msleep(1050);
+    incoming("reward-unmute","buyer","730005","Bob",unmute.toUtf8());
+    EXPECT_EQ(actions,3);
+    // Persisted event reservation prevents reprocessing after the cooldown.
+    QThread::msleep(1050);
+    incoming("reward-unmute","buyer","730005","Bob",unmute.toUtf8());
+    EXPECT_EQ(actions,3);
+    incoming("wrong-target","buyer","730005","bob alice",mute.toUtf8());
+    EXPECT_EQ(actions,3);
+    // Actual dialog path: selecting Rewards fetches its eligible choices
+    // automatically, then switching to test mode persists the configuration.
+    int rewardFetchCalls=0;
+    const QString additional="313969fe-cc9f-4a0a-83c6-172acbd96959";
+    const QString textless="313969fe-cc9f-4a0a-83c6-172acbd96960";
+    QTimer::singleShot(0,[&]{
+        auto *dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        ASSERT_NE(dialog,nullptr);
+        auto *tabs=dialog->findChild<QTabWidget *>("AutoModerationTabs");
+        auto *dry=dialog->findChild<QCheckBox *>("AutoModerationDryRun");
+        auto *save=dialog->findChild<QPushButton *>("SaveRules");
+        EXPECT_TRUE(tabs && tabs->count()==3);
+        EXPECT_TRUE(dry && save);
+        if(tabs)
+        {
+            EXPECT_EQ(rewardFetchCalls,0);
+            tabs->setCurrentIndex(1);
+            EXPECT_EQ(rewardFetchCalls,1);
+            auto *table=dialog->findChild<QTableWidget *>("AutoModerationRewards");
+            auto *refresh=dialog->findChild<QPushButton *>("AutoModerationRefreshRewards");
+            EXPECT_TRUE(table && table->rowCount()==2 && refresh);
+            if(table && table->rowCount()==2 && refresh)
+            {
+                auto *picker=qobject_cast<QComboBox *>(table->cellWidget(0,1));
+                EXPECT_TRUE(picker);
+                if(picker)
+                {
+                    EXPECT_EQ(picker->currentData().toString(),mute);
+                    EXPECT_GT(picker->findData(additional),0);
+                    EXPECT_EQ(picker->findData(textless),-1);
+                    refresh->click();
+                    EXPECT_EQ(rewardFetchCalls,2);
+                    EXPECT_EQ(picker->currentData().toString(),mute);
+                    EXPECT_GT(picker->findData(additional),0);
+                }
+            }
+        }
+        if(dry&&save){dry->setChecked(true);save->click();}
+        if(const auto screenshot=qEnvironmentVariable("NOCTIS_AUTOMOD_SCREENSHOT");!screenshot.isEmpty())dialog->grab().save(screenshot);
+        dialog->reject();
+    });
+    openAutoModeration(nullptr,[&](const QString &name,auto success,auto) {
+        EXPECT_EQ(name,"automodtest");
+        ++rewardFetchCalls;
+        GqlChannelPointRewards result;
+        result.channelId="730002";
+        for(const auto &id:{mute,unmute,additional,textless})
+        {
+            GqlChannelPointReward reward;
+            reward.id=id;reward.title="Fixture "+id.right(2);
+            reward.isUserInputRequired=id!=textless;
+            result.rewards.append(reward);
+        }
+        success(std::move(result));
+    });
+    QThread::msleep(1050);
+    incoming("dry-word","alice","730003","fixture phrase");
+    EXPECT_EQ(actions,3);
+    QThread::msleep(1050);
+    // IRC updates our current moderator role from the sender's badges.
+    incoming("own-active","fixturemoderator","730001","fixture phrase",{},true,"moderator/1");
+    QThread::msleep(1050);
+    incoming("broadcaster","automodtest","730002","fixture phrase");
+    QThread::msleep(1050);
+    incoming("protected-vip","vipviewer","730006","fixture phrase",{},true,"vip/1");
+    EXPECT_EQ(actions,3);
+    QFile file(fileName);
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    const auto saved=QJsonDocument::fromJson(file.readAll()).object();
+    EXPECT_TRUE(saved["channels"].toObject()["automodtest"].toObject()["dryRun"].toBool());
+    QHash<QString,QString> journal;
+    for(auto item:saved["journal"].toArray())
+        journal.insert(item.toObject()["id"].toString(),item.toObject()["status"].toString());
+    EXPECT_EQ(journal.size(),8);
+    EXPECT_EQ(journal.value("730002/live-word"),"Action confirmed");
+    EXPECT_EQ(journal.value("730002/reward-mute"),"Action confirmed");
+    EXPECT_EQ(journal.value("730002/reward-unmute"),"Action confirmed");
+    EXPECT_EQ(journal.value("730002/wrong-target"),"Invalid target login");
+    EXPECT_EQ(journal.value("730002/dry-word"),"Test: would perform action");
+    EXPECT_EQ(journal.value("730002/own-active"),"Protected or excluded target");
+    EXPECT_EQ(journal.value("730002/broadcaster"),"Protected or excluded target");
+    EXPECT_EQ(journal.value("730002/protected-vip"),"Protected or excluded target");
+    TwitchChannelTestAccess::setMod(*ch,false);
+    EXPECT_FALSE(permittedAutoModeration(*ch));
+    // Finish queued UI/reward work while the mock application is still alive.
+    for (int n = 0; n < 8; ++n)
+    {
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    }
+}
+

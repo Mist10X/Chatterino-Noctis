@@ -624,6 +624,9 @@ set(SOURCE_FILES
         providers/links/ImagePreview.cpp
         providers/links/ImagePreview.hpp
         providers/twitch/IrcMessageHandler.cpp
+        providers/twitch/AutoModeration.cpp
+        providers/twitch/AutoModeration.hpp
+        providers/twitch/AutoModerationRules.hpp
         providers/twitch/IrcMessageHandler.hpp
         providers/twitch/PublicChatLogs.cpp
         providers/twitch/PublicChatLogs.hpp

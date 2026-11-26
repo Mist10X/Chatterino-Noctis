@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+#include "providers/twitch/AutoModeration.hpp"
 #include "providers/twitch/IrcMessageHandler.hpp"
 #include "providers/twitch/WhisperHistory.hpp"
 
@@ -670,6 +671,9 @@ void IrcMessageHandler::parsePrivMessageInto(
                                       .isAction = message->isAction(),
                                       .allowModeratorAutoReply = live,
                                   });
+    if (live && channel && !message->isAction())
+        observeAutoModerationMessage(*channel,message->tags(),message->nick(),
+                                      unescapeZeroWidthJoiner(message->content()));
 }
 
 void IrcMessageHandler::handleRoomStateMessage(Communi::IrcMessage *message)
@@ -753,6 +757,8 @@ void IrcMessageHandler::handleClearChatMessage(Communi::IrcMessage *message)
         return;
     }
 
+    if (auto *tc = dynamic_cast<TwitchChannel *>(chan.get()))
+        observeAutoModerationTimeout(*tc, message->tags());
     auto time = calculateMessageTime(message);
     // chat has been cleared by a moderator
     if (clearChat.disableAllMessages)

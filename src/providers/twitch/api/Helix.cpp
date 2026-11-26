@@ -2203,12 +2203,15 @@ void Helix::banUser(QString broadcasterID, QString moderatorID, QString userID,
 
     this->makePost("moderation/bans", urlQuery)
         .json(payload)
-        .onSuccess([successCallback](auto result) {
+        .singleUseUpload()
+        .onSuccess([successCallback, failureCallback](auto result) {
             if (result.status() != 200)
             {
                 qCWarning(chatterinoTwitch)
                     << "Success result for banning a user was"
                     << result.formatError() << "but we expected it to be 200";
+                failureCallback(Error::Unknown, result.formatError());
+                return;
             }
 
             successCallback();

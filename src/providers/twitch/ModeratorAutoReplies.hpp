@@ -19,6 +19,7 @@ public:
     static ModeratorAutoReplies *existing();
     ~ModeratorAutoReplies() override;
     bool hasGrant() const;
+    bool canAutomoderate(TwitchChannel &channel) const;
     QStringList channels() const;
     void open(QWidget *parent);
     void maybeReply(TwitchChannel &channel, Communi::TagsRef tags,
