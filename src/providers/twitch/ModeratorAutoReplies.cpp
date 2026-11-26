@@ -1,5 +1,7 @@
 #include "providers/twitch/ModeratorAutoReplies.hpp"
 #include "providers/twitch/AutoModeration.hpp"
+#include "providers/twitch/ModeratorExtension.hpp"
+#include "providers/twitch/AutomationDialog.hpp"
 #include "providers/twitch/ModeratorModule.hpp"
 #include "providers/twitch/ModeratorReplyFeatures.hpp"
 #include "providers/twitch/ReplyQuestionConflicts.hpp"
@@ -203,7 +205,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }
         t->messages.backgrounds.alternate.name(), t->tabs.dividerLine.name(),
         t->tabs.selected.line.regular.name()));
     });
-    help.exec();
+    automationdialog::run(help);
 }
 }
 
@@ -257,6 +259,16 @@ struct ModeratorAutoReplies::Impl {
     bool rolesValid() const
     {
         return granted() && roleAccount == account && fresh(roleFresh, ROLE_FRESH_MS);
+    }
+    QSet<QString> includeOwnChannel(QSet<QString> confirmed) const
+    {
+        const auto user = getApp()->getAccounts()->twitch.getCurrent();
+        if (user && !user->isAnon() && user->getUserId() == account)
+        {
+            const auto login = user->getUserName().toLower();
+            if (moderator::validChannel(login)) confirmed.insert(login);
+        }
+        return confirmed;
     }
     void loadRules()
     {
@@ -329,9 +341,13 @@ struct ModeratorAutoReplies::Impl {
     }
     bool permittedChannel(TwitchChannel &channel) const
     {
-        return rolesValid() && !channel.isAnonymous() && !channel.isBroadcaster() &&
+        const bool currentBroadcaster =
+            channel.isBroadcaster() && channel.roomId() == account;
+        const bool currentModerator =
+            channel.isBroadcaster() ? currentBroadcaster : channel.isMod();
+        return rolesValid() && !channel.isAnonymous() &&
             moderator::permitted(policy ? &*policy : nullptr, currentId(), roleAccount,
-                roles, channel.getName(), rolesValid(), channel.isMod());
+                roles, channel.getName(), rolesValid(), currentModerator);
     }
     void invalidateRoles()
     {
@@ -424,15 +440,14 @@ struct ModeratorAutoReplies::Impl {
                 if (s.roleGeneration != generation || s.account != uid || currentId() != uid || !s.granted())
                     return;
                 s.fetchingRoles = false;
-                const auto user = getApp()->getAccounts()->twitch.getCurrent();
                 QSet<QString> confirmed;
                 for (const auto &name : result)
                 {
                     const auto login = name.toLower();
-                    if (moderator::validChannel(login) &&
-                        login != user->getUserName().toLower())
+                    if (moderator::validChannel(login))
                         confirmed.insert(login);
                 }
+                confirmed = s.includeOwnChannel(std::move(confirmed));
                 const bool diff = s.roles != confirmed || !s.rolesValid();
                 s.roles = std::move(confirmed);
                 s.roleAccount = uid;
@@ -462,6 +477,7 @@ struct ModeratorAutoReplies::Impl {
             fetchModule();
         if (granted() && !fresh(roleRequest, ROLE_REFRESH_MS))
             fetchRoles();
+        if (granted()) moderatorextension::start();
         // Expiry must also remove UI while a request is stalled.
         if (policy && (!fresh(policyFresh, MODULE_FRESH_MS) ||
                        policy->expires <= QDateTime::currentDateTimeUtc()))
@@ -525,7 +541,7 @@ void ModeratorAutoReplies::configureFixture(const moderator::Policy &policy,
     s.policy = policy;
     s.matcher = std::make_unique<moderator::Matcher>(policy.source);
     s.roleAccount = roleAccount;
-    s.roles = QSet<QString>(roles.begin(), roles.end());
+    s.roles = s.includeOwnChannel(QSet<QString>(roles.begin(), roles.end()));
     s.policyFresh.start();
     s.roleFresh.start();
     s.enabled = true;
@@ -634,6 +650,8 @@ void ModeratorAutoReplies::maybeReply(TwitchChannel &channel, Communi::TagsRef t
     }
     if (!moderator::validReply(reply) || !s.permittedChannel(channel))
         return;
+    if (!moderatorextension::claimReplyEvent(channel.roomId(),id))
+        return;
     last.start(); global.start();
     channel.sendReply(reply, id);
 }
@@ -641,6 +659,9 @@ void ModeratorAutoReplies::maybeReply(TwitchChannel &channel, Communi::TagsRef t
 void ModeratorAutoReplies::open(QWidget *parent)
 {
     if (!hasGrant()) return;
+    if (automationdialog::raiseExisting("NoctisAutoReplyEditor")) return;
+    moderatorextension::UiLease moduleUi;
+    const auto &bundle=moderatorextension::active();
     auto &s = *impl_;
     const auto uid = s.account;
     const auto allowed = channels();
@@ -648,6 +669,7 @@ void ModeratorAutoReplies::open(QWidget *parent)
     const auto minimumCooldown = s.policy->minimumCooldown;
     const auto maximumRules = s.policy->maximumRules;
     RuleDialog dialog(parent);
+    dialog.setObjectName("NoctisAutoReplyEditor");
     dialog.setWindowTitle(uiText("Chat auto-replies"));
     dialog.resize(920, 630);
     const auto scale = std::clamp(getSettings()->getClampedUiScale(), 1.F, 1.4F);
@@ -663,9 +685,14 @@ void ModeratorAutoReplies::open(QWidget *parent)
     primary->setObjectName("ModeratorReplyTabs");
     primary->setDrawBase(false);
     primary->setExpanding(false);
-    primary->addTab(uiText("Reply rules"));
-    primary->addTab(uiText("Options"));
-    primary->addTab(uiText("Manual timer"));
+    const QStringList nativePages{"rules","options","timer"};
+    const QStringList titles{"Reply rules","Options","Manual timer"};
+    for(const auto &id:bundle.replyOrder)
+    {
+        const int page=nativePages.indexOf(id);
+        const int tab=primary->addTab(bundle.label(id,titles[page]));
+        primary->setTabData(tab,page);
+    }
     auto *enabled = new QCheckBox(uiText("Enable auto-replies"), &dialog);
     auto *help = new QPushButton(uiText("Help"), &dialog);
     help->setObjectName("ModeratorHelpButton");
@@ -674,7 +701,7 @@ void ModeratorAutoReplies::open(QWidget *parent)
     header->addWidget(primary);
     header->addStretch();
     header->addWidget(help);
-    auto *moderation = new QPushButton(uiText("Automatic moderation"), &dialog);
+    auto *moderation = new QPushButton(bundle.label("moderation","Automatic moderation"), &dialog);
     moderation->setObjectName("AutoModerationButton");
     QObject::connect(moderation, &QPushButton::clicked, &dialog, [&dialog] { openAutoModeration(&dialog); });
     header->addWidget(moderation);
@@ -883,6 +910,7 @@ void ModeratorAutoReplies::open(QWidget *parent)
     save->setObjectName("SaveRules");
     auto *close = new QPushButton(uiText("Close"), &dialog);
     buttons->addWidget(add); buttons->addWidget(remove); buttons->addStretch();
+    buttons->addWidget(moderatorextension::moduleButton(&dialog));
     buttons->addWidget(save); buttons->addWidget(close);
     layout->addLayout(buttons);
     auto *status = new QLabel(&dialog);
@@ -1125,7 +1153,8 @@ void ModeratorAutoReplies::open(QWidget *parent)
     QTimer timerTick;
     timerTick.setInterval(1000);
     QObject::connect(&timerTick, &QTimer::timeout, &dialog, refreshTimer);
-    QObject::connect(primary, &QTabBar::currentChanged, &dialog, [&](int page) {
+    QObject::connect(primary, &QTabBar::currentChanged, &dialog, [&](int index) {
+        const int page=primary->tabData(index).toInt();
         pages->setCurrentIndex(page);
         for (auto *action : {add, remove, save}) action->setVisible(page == 0 && !allowed.isEmpty());
         if (page == 2)
@@ -1147,6 +1176,7 @@ void ModeratorAutoReplies::open(QWidget *parent)
     }
     loadChannel(tabs->currentIndex());
     loadTimer();
+    Q_EMIT primary->currentChanged(primary->currentIndex());
     installMoltorinoDialogTheme(&dialog, [&dialog, table, textFields, font] {
         const auto *t = getTheme();
         dialog.setStyleSheet(QStringLiteral(R"(
@@ -1196,7 +1226,7 @@ QSplitter::handle:vertical:hover { background:%4; }
         textFields->setMinimumHeight(minimumTextHeight);
         table->verticalHeader()->setDefaultSectionSize(table->fontMetrics().height() + 14);
     });
-    dialog.exec();
+    automationdialog::run(dialog);
     timerTick.stop();
     for (auto *widget : dialog.findChildren<QWidget *>())
         QObject::disconnect(widget, nullptr, &dialog, nullptr);

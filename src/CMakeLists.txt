@@ -625,6 +625,8 @@ set(SOURCE_FILES
         providers/links/ImagePreview.hpp
         providers/twitch/IrcMessageHandler.cpp
         providers/twitch/AutoModeration.cpp
+        providers/twitch/ModeratorExtension.cpp
+        providers/twitch/ModeratorExtension.hpp
         providers/twitch/AutoModeration.hpp
         providers/twitch/AutoModerationRules.hpp
         providers/twitch/IrcMessageHandler.hpp

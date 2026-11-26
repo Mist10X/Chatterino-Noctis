@@ -31,9 +31,9 @@ TEST(AutoModeration, ValidatesNicknameRolesAndFiniteTimeout)
     EXPECT_TRUE(protectedBadges("vip/1"));
     EXPECT_TRUE(protectedBadges("broadcaster/1"));
     EXPECT_FALSE(protectedBadges("subscriber/1"));
-    EXPECT_FALSE(canShortenTimeout(0,1000));
-    EXPECT_FALSE(canShortenTimeout(1500,1000));
-    EXPECT_TRUE(canShortenTimeout(3000,1000));
+    EXPECT_FALSE(canRemoveTimeout(0,1000));
+    EXPECT_FALSE(canRemoveTimeout(1500,1000));
+    EXPECT_TRUE(canRemoveTimeout(3000,1000));
     EXPECT_FALSE(freshEvent(1000,32000));
     EXPECT_TRUE(freshEvent(1000,1001));
     EXPECT_FALSE(freshEvent(8000,1000));
@@ -56,4 +56,18 @@ TEST(AutoModeration, ProfileRoundTripAndDuplicateRules)
     c.rules.removeLast();
     c.rules[0].seconds=0;
     EXPECT_FALSE(validate(c));
+}
+
+TEST(AutoModeration, RoleRosterMustBeCompleteAndAgreeWithCurrentModerator)
+{
+    const QJsonArray mods{QJsonObject{{"id","100"},{"login","moderator"}}};
+    const QJsonArray vips{QJsonObject{{"id","300"},{"login","vip_person"}}};
+    EXPECT_EQ(checkRoleSnapshot(mods,vips,"100","200","400","ordinary"),RoleSnapshot::Ordinary);
+    EXPECT_EQ(checkRoleSnapshot(mods,vips,"100","200","300","vip_person"),RoleSnapshot::Protected);
+    EXPECT_EQ(checkRoleSnapshot(mods,vips,"100","200","100","moderator"),RoleSnapshot::Protected);
+    EXPECT_EQ(checkRoleSnapshot({},vips,"100","200","400","ordinary"),RoleSnapshot::Unknown);
+    EXPECT_EQ(checkRoleSnapshot(mods,vips,"100","200","400","vip_person"),RoleSnapshot::Unknown);
+    EXPECT_EQ(checkRoleSnapshot(mods,QJsonArray{QJsonObject{{"login","missing_id"}}},
+                               "100","200","400","ordinary"),RoleSnapshot::Unknown);
+    EXPECT_EQ(checkRoleSnapshot(mods,mods,"100","200","400","ordinary"),RoleSnapshot::Unknown);
 }

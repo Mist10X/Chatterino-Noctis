@@ -1,0 +1,55 @@
+{
+  "type": "noctis-moderator-extension",
+  "schema": 1,
+  "host_api": 2,
+  "revision": 3,
+  "version": "2.0.0",
+  "labels": {"rewards": {"en": "Channel rewards", "ru": "Награды за баллы"}},
+  "layout": {
+    "reply_tabs": ["rules", "timer", "options"],
+    "moderation_tabs": ["words", "rewards", "history"]
+  },
+  "pages": [
+    {
+      "title": {"en": "Workflow module", "ru": "Модуль сценариев"},
+      "body": {
+        "en": "The signed module defines action forms, conditions and tab order. Existing rules remain unchanged. Choose Adaptive reward to configure an action, then test it in dry-run mode.",
+        "ru": "Подписанный модуль определяет формы действий, условия и порядок вкладок. Старые правила сохранены. Выберите «Настраиваемая награда», задайте параметры и проверьте в тестовом режиме."
+      }
+    }
+  ],
+  "reward_actions": [
+    {
+      "id": "random-timeout-1-3-min",
+      "title": {"en": "Timeout: random 1–3 min", "ru": "Мут: случайно 1–3 мин"},
+      "minimum_seconds": 60,
+      "maximum_seconds": 180
+    },
+    {
+      "id": "adaptive-reward",
+      "title": {"en": "Adaptive reward", "ru": "Настраиваемая награда"},
+      "sources": ["reward"],
+      "fields": [
+        {
+          "id": "mode", "type": "choice",
+          "title": {"en": "Action", "ru": "Действие"},
+          "default": "timeout",
+          "choices": [
+            {"id": "timeout", "title": {"en": "Timeout", "ru": "Мут"}},
+            {"id": "untimeout", "title": {"en": "Remove timeout", "ru": "Размут"}},
+            {"id": "reply", "title": {"en": "Reply", "ru": "Ответ"}},
+            {"id": "skip", "title": {"en": "Skip", "ru": "Без действия"}}
+          ]
+        },
+        {"id": "min-seconds", "type": "integer", "title": {"en": "Minimum (s)", "ru": "Минимум, с"}, "default": 60, "minimum": 1, "maximum": 86400},
+        {"id": "max-seconds", "type": "integer", "title": {"en": "Maximum (s)", "ru": "Максимум, с"}, "default": 180, "minimum": 1, "maximum": 86400},
+        {"id": "message", "type": "text", "title": {"en": "Reply text", "ru": "Текст ответа"}, "default": "Награда обработана:", "maximum": 400}
+      ],
+      "program": {
+        "operation": {"param": "mode"},
+        "seconds": {"random": [{"param": "min-seconds"}, {"param": "max-seconds"}]},
+        "text": {"concat": [{"param": "message"}, " ", {"event": "target"}]}
+      }
+    }
+  ]
+}

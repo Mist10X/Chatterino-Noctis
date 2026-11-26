@@ -52,6 +52,8 @@ set(test_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/ChannelView.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/ReplyQuestionConflicts.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/AutoModeration.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/ModeratorExtension.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/NoctisDefaults.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/ModeratorModule.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/Commands.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/FlagsEnum.cpp

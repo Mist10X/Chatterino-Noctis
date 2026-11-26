@@ -1857,7 +1857,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
     routeSetting(layout, QStringLiteral("Chat input"),
                  QStringLiteral("Sending"));
     SettingWidget::dropdown(uiText("Chat send protocol"), s.chatSendProtocol)
-        ->setTooltip(uiText("Default prefers Helix if the account has the required permission; otherwise IRC. Helix confirms delivery through Twitch's API. Neither protocol retries a message automatically. IRC preserves client-nonce features."))
+        ->setTooltip(uiText("Default uses IRC. Helix uses Twitch's API for sending messages. Neither protocol retries a message automatically."))
         ->addTo(layout);
 
     routeSetting(layout, QStringLiteral("Chat input"),

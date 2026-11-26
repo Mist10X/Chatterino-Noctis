@@ -1,8 +1,11 @@
 #include "providers/twitch/AutoModeration.hpp"
 #include "providers/twitch/AutoModerationRules.hpp"
+#include "providers/twitch/ModeratorExtension.hpp"
+#include "providers/twitch/AutomationDialog.hpp"
 #include "Application.hpp"
 #include "common/UiLanguage.hpp"
 #include "controllers/accounts/AccountController.hpp"
+#include "providers/IvrApi.hpp"
 #include "providers/moltorino/MoltorinoAuth.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
@@ -38,6 +41,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <memory>
@@ -59,6 +63,7 @@ struct SeenTarget {
 struct TimeoutEvidence {
     qint64 until = 0;
     qint64 observedAt = 0;
+    std::weak_ptr<TwitchChannel> source;
 };
 struct State {
     QString uid;
@@ -71,11 +76,13 @@ struct State {
     QQueue<QString> skippedOrder;
     QHash<QString, SeenTarget> roles;
     QHash<QString, TimeoutEvidence> timeouts;
+    QHash<QString, qint64> timeoutEvidenceFloor;
     QElapsedTimer lastAction;
 };
 QHash<QString, std::shared_ptr<State>> states;
 boost::signals2::scoped_connection accountChanged;
 AccountController *watchedAccounts = nullptr;
+AutoModerationRoleFetcher fixtureRoleFetcher;
 
 QString activeUid()
 {
@@ -100,6 +107,7 @@ std::shared_ptr<State> stateFor(const QString &uid)
                 ++state->generation;
                 state->roles.clear();
                 state->timeouts.clear();
+                state->timeoutEvidenceFloor.clear();
             }
         });
     }
@@ -209,12 +217,15 @@ struct Intent {
     Rule rule;
     quint64 generation;
     qint64 at;
+    int moduleRevision;
+    QString message, buyer;
 };
 bool proceed(const Intent &i)
 {
     if (!i.state->healthy || activeUid() != i.state->uid ||
         i.generation != i.state->generation ||
-        !freshEvent(i.at, QDateTime::currentMSecsSinceEpoch()))
+        !freshEvent(i.at, QDateTime::currentMSecsSinceEpoch()) ||
+        (!i.rule.moduleAction.isEmpty() && i.moduleRevision!=moderatorextension::active().revision))
         return false;
     const auto c = i.state->configs.value(i.channel);
     if (!c.enabled || c.roomId != i.room) return false;
@@ -222,50 +233,146 @@ bool proceed(const Intent &i)
     auto *tc = dynamic_cast<TwitchChannel *>(channel.get());
     return tc && tc->roomId() == i.room && permittedAutoModeration(*tc);
 }
-void execute(const Intent &i, const QString &targetId, const QString &targetLogin)
+void execute(const Intent &i, const QString &targetId, const QString &targetLogin,
+             const std::optional<QString> &accountType = std::nullopt,
+             std::optional<moderatorextension::Decision> prepared = std::nullopt,
+             bool roleSnapshotConfirmed = false)
 {
     if (!proceed(i)) { finish(i.state,i.event,"Action canceled"); return; }
     const auto c = i.state->configs.value(i.channel);
     const auto now = QDateTime::currentMSecsSinceEpoch();
     const auto tk = targetKey(i.room,targetId);
     const auto known = i.state->roles.value(tk);
+    const auto observedChannel=std::dynamic_pointer_cast<TwitchChannel>(
+        getApp()->getTwitch()->getChannelOrEmpty(i.channel));
     // Only protect the account performing moderation, not other local accounts.
     if (!validId(targetId) || targetId == i.room || targetId == i.state->uid ||
         c.exceptions.contains(targetLogin) ||
-        (known.protectedRole && known.seenAt > 0))
+        (known.protectedRole && known.seenAt > 0) ||
+        (accountType && !accountType->isEmpty()))
     {
         finish(i.state,i.event,"Protected or excluded target"); return;
     }
-    const bool untimeout = i.rule.kind == Kind::RewardUntimeout;
-    if (untimeout && !canShortenTimeout(i.state->timeouts.value(tk).until, now))
+    using moderatorextension::Operation;
+    moderatorextension::Decision decision{
+        i.rule.kind==Kind::RewardUntimeout?Operation::Untimeout:Operation::Timeout,
+        i.rule.seconds,{}};
+    if(prepared)
+        decision=*prepared;
+    else if(!i.rule.moduleAction.isEmpty())
+    {
+        const auto profile=moderatorextension::active().rewardAction(i.rule.moduleAction);
+        const auto result=profile?moderatorextension::decide(*profile,i.rule.moduleParameters,
+            QJsonObject{{"source",i.rule.kind==Kind::Words?"message":"reward"},
+                         {"message",i.message.left(500)},{"target",i.targetLogin},
+                         {"channel",i.channel},{"buyer",i.buyer}}):std::nullopt;
+        if(!result){finish(i.state,i.event,"Module action unavailable");return;}
+        decision=*result;
+        if(decision.operation==Operation::Skip){finish(i.state,i.event,"Module condition did not match");return;}
+        for(auto &entry:i.state->journal)
+            if(entry.value("id").toString()==i.event)
+            {
+                if(decision.operation==Operation::Timeout)entry["duration"]=decision.seconds;
+                if(decision.operation==Operation::Reply)entry["reply"]=decision.reply;
+                break;
+            }
+    }
+    const bool untimeout = decision.operation==Operation::Untimeout;
+    const auto evidence=i.state->timeouts.value(tk);
+    if (untimeout && (!observedChannel || evidence.source.lock()!=observedChannel ||
+                      !canRemoveTimeout(evidence.until,now)))
     {
         finish(i.state,i.event,"No confirmed active timeout"); return;
     }
-    // For muting, require a recent live role observation; do not guess whether
-    // an unseen account is a moderator or VIP.
-    if (!untimeout && (known.seenAt <= 0 || now - known.seenAt > 30 * 60 * 1000 ||
-                       known.login != targetLogin))
+    // Recent IRC badge evidence remains the fast path. Reward targets may
+    // never have sent a message in this session, so request the channel's
+    // public role roster once instead of treating the missing evidence as a
+    // permanent failure. Keep all known protected-role observations.
+    if (decision.operation==Operation::Timeout && !roleSnapshotConfirmed &&
+        (known.seenAt <= 0 || now - known.seenAt > 30 * 60 * 1000 ||
+         known.login != targetLogin))
     {
-        finish(i.state,i.event,"Target role could not be confirmed"); return;
+        // A successful Twitch user lookup must explicitly report an ordinary
+        // global account type before a channel roster can establish eligibility.
+        if (i.rule.kind==Kind::Words || !accountType || !accountType->isEmpty())
+        { finish(i.state,i.event,"Target role could not be confirmed"); return; }
+        auto resolved=std::make_shared<bool>(false);
+        const auto succeeded=[i,targetId,targetLogin,accountType,decision,resolved]
+            (const QJsonArray &mods,const QJsonArray &vips) {
+            if(std::exchange(*resolved,true)) return;
+            if(!proceed(i)) {finish(i.state,i.event,"Action canceled");return;}
+            const auto status=checkRoleSnapshot(mods,vips,i.state->uid,i.room,targetId,targetLogin);
+            if(status==RoleSnapshot::Protected)
+            {finish(i.state,i.event,"Protected or excluded target");return;}
+            if(status!=RoleSnapshot::Ordinary)
+            {finish(i.state,i.event,"Target role could not be confirmed");return;}
+            // Revalidate current permission, generation, exclusions and any
+            // newer live badge observation before dispatch. No delayed retry.
+            execute(i,targetId,targetLogin,accountType,decision,true);
+        };
+        const auto failed=[i,resolved] {
+            if(std::exchange(*resolved,true)) return;
+            finish(i.state,i.event,"Target role list unavailable");
+        };
+        if(getApp()->isTest())
+        {
+            if(fixtureRoleFetcher) fixtureRoleFetcher(i.channel,succeeded,failed);
+            else failed();
+        }
+        else
+        {
+            getIvr()->getModVip(i.channel,[succeeded](const IvrModVip &roles) {
+                succeeded(roles.mods,roles.vips);
+            },failed);
+        }
+        return;
     }
     if (c.dryRun)
     {
         finish(i.state,i.event,"Test: would perform action"); return;
     }
-    // No permanent bans or DELETE /bans. A finite one-second timeout can
-    // shorten an existing timeout but Twitch rejects changing a permanent ban
-    // to a timeout. Never retry an ambiguous result.
+    // Twitch's DELETE removes both timeouts and bans. Require the latest
+    // live evidence of an active finite timeout in this channel instance and
+    // never retry an ambiguous result. A server-side concurrent change is
+    // still possible because the endpoint is not conditional.
     if (!proceed(i) || i.state->configs.value(i.channel).dryRun)
     { finish(i.state,i.event,"Action canceled"); return; }
-    const auto seconds = untimeout ? 1 : i.rule.seconds;
+    if(decision.operation==Operation::Reply)
+    {
+        if(!observedChannel || i.sender==i.state->uid)
+        {finish(i.state,i.event,"Action canceled");return;}
+        if(!moderatorextension::claimReplyEvent(i.room,i.event.mid(i.room.size()+1)))
+        {finish(i.state,i.event,"Reply already handled");return;}
+        observedChannel->sendReply(decision.reply,i.event.mid(i.room.size()+1));
+        finish(i.state,i.event,"Reply requested; not retried");
+        return;
+    }
+    const auto requestedAt=QDateTime::currentMSecsSinceEpoch();
+    const std::weak_ptr<TwitchChannel> source=observedChannel;
+    if (untimeout)
+    {
+        const auto latest=i.state->timeouts.value(tk);
+        if (latest.source.lock()!=observedChannel ||
+            !canRemoveTimeout(latest.until,requestedAt))
+        { finish(i.state,i.event,"No confirmed active timeout"); return; }
+        // Consume evidence before dispatch; an ambiguous response must not
+        // allow a later redemption to repeat the same removal.
+        i.state->timeouts.insert(tk,{0,std::max(i.at,latest.observedAt),source});
+        getHelix()->unbanUser(i.room,i.state->uid,targetId,
+            [i] { finish(i.state,i.event,"Action confirmed"); },
+            [i](auto,const QString &) { finish(i.state,i.event,"Action failed or unconfirmed; not retried"); });
+        return;
+    }
+    const auto seconds = decision.seconds;
     getHelix()->banUser(i.room, i.state->uid, targetId, seconds, i.rule.reason,
-        [i,tk,seconds,untimeout] {
-            if (untimeout) i.state->timeouts.remove(tk);
-            else
-            {
-                const auto at=QDateTime::currentMSecsSinceEpoch();
-                i.state->timeouts.insert(tk,{at+qint64(seconds)*1000,at});
-            }
+        [i,tk,seconds,requestedAt,source,evidence] {
+            // Do not overwrite a newer live clear-chat or permanent ban with
+            // a delayed acknowledgement of an earlier request.
+            const auto latest=i.state->timeouts.value(tk);
+            if (i.state->generation==i.generation && source.lock() &&
+                latest.observedAt==evidence.observedAt && latest.until==evidence.until)
+                i.state->timeouts.insert(tk,{requestedAt+qint64(seconds)*1000,
+                    std::max(i.at,latest.observedAt),source});
             finish(i.state,i.event,"Action confirmed");
         },
         [i](auto, const QString &) { finish(i.state,i.event,"Action failed or unconfirmed; not retried"); });
@@ -274,6 +381,11 @@ QString durationText(int seconds)
 {
     return QString::number(seconds) + uiText(" sec");
 }
+}
+
+void setAutoModerationRoleFetcherForTesting(AutoModerationRoleFetcher fetcher)
+{
+    if(getApp()->isTest()) fixtureRoleFetcher=std::move(fetcher);
 }
 
 void observeAutoModerationTimeout(TwitchChannel &channel, Communi::TagsRef tags)
@@ -286,14 +398,36 @@ void observeAutoModerationTimeout(TwitchChannel &channel, Communi::TagsRef tags)
     if (!validId(target) || room != channel.roomId()) return;
     bool valid = false;
     const auto timestamp = tags.getOrEmpty("tmi-sent-ts").toLongLong(&valid);
-    if (!valid || timestamp < sessionStart || !freshEvent(timestamp,QDateTime::currentMSecsSinceEpoch())) return;
+    if (!valid || timestamp < sessionStart ||
+        timestamp < s->timeoutEvidenceFloor.value(room) ||
+        !freshEvent(timestamp,QDateTime::currentMSecsSinceEpoch())) return;
     const auto key = targetKey(room,target);
     const auto seconds = tags.getOrEmpty("ban-duration").toInt(&valid);
-    if (valid && seconds > 0 && seconds <= 1209600)
-        s->timeouts.insert(key,{timestamp+qint64(seconds)*1000,timestamp});
-    else
-        s->timeouts.remove(key); // permanent ban, never shorten it
+    const auto previous=s->timeouts.value(key);
+    if (previous.observedAt > timestamp ||
+        (previous.observedAt==timestamp && previous.until==0)) return;
+    // Keep a tombstone for an indefinite ban; delayed older finite events
+    // must not turn it back into a timeout.
+    const auto until=valid && seconds>0 && seconds<=1209600 ?
+        timestamp+qint64(seconds)*1000 : 0;
+    s->timeouts.insert(key,{until,timestamp,channel.weakFromThis()});
     if (s->timeouts.size() > 4096) s->timeouts.clear();
+}
+
+void invalidateAutoModerationTimeouts(TwitchChannel &channel)
+{
+    const auto room=channel.roomId();
+    if (room.isEmpty()) return;
+    const auto prefix=room+u'/';
+    for (auto &s : states)
+    {
+        if (s->configs.value(channel.getName()).roomId!=room) continue;
+        ++s->generation; // cancel pending lookups/old acknowledgements
+        s->timeoutEvidenceFloor[room]=QDateTime::currentMSecsSinceEpoch();
+        for (auto it=s->timeouts.begin();it!=s->timeouts.end();)
+            if (it.key().startsWith(prefix)) it=s->timeouts.erase(it);
+            else ++it;
+    }
 }
 
 void observeAutoModerationMessage(TwitchChannel &channel, Communi::TagsRef tags,
@@ -319,9 +453,10 @@ void observeAutoModerationMessage(TwitchChannel &channel, Communi::TagsRef tags,
     const auto tk = targetKey(room,sender);
     if (s->roles.size() > 4096) s->roles.clear();
     if (s->roles.value(tk).seenAt <= timestamp)
-        s->roles.insert(tk,{name,protectedBadges(tags.getOrEmpty("badges")),timestamp});
+        s->roles.insert(tk,{name,protectedBadges(tags.getOrEmpty("badges")) ||
+                            tags.getOrEmpty("mod")=="1" || tags.getOrEmpty("vip")=="1",timestamp});
     if (const auto timeout=s->timeouts.value(tk); timeout.observedAt>0 && timestamp>timeout.observedAt)
-        s->timeouts.remove(tk); // only a later live message disproves the timeout
+        s->timeouts.insert(tk,{0,timestamp,channel.weakFromThis()}); // later live message disproves it
     const auto key = room + u'/' + event;
     if (!c.enabled || s->keys.contains(key) || s->skipped.contains(key)) return;
     const auto reward = tags.getOrEmpty("custom-reward-id");
@@ -341,7 +476,8 @@ void observeAutoModerationMessage(TwitchChannel &channel, Communi::TagsRef tags,
     if (!reserve(*s,key,channel.getName(),*rule,target,"Pending action")) return;
     if (target.isEmpty())
     { finish(s,key,"Invalid target login"); return; }
-    const Intent action{s,key,channel.getName(),room,sender,target,*rule,s->generation,timestamp};
+    const int moduleRevision=rule->moduleAction.isEmpty()?0:moderatorextension::active().revision;
+    const Intent action{s,key,channel.getName(),room,sender,target,*rule,s->generation,timestamp,moduleRevision,text.left(500),name};
     if (words)
     {
         execute(action,sender,name);
@@ -351,13 +487,15 @@ void observeAutoModerationMessage(TwitchChannel &channel, Communi::TagsRef tags,
     getHelix()->getUserByName(target,[action,target](HelixUser user) {
         if (user.login.toLower() != target || !validId(user.id))
         { finish(action.state,action.event,"Invalid target login"); return; }
-        execute(action,user.id,target);
+        execute(action,user.id,target,user.accountType);
     },[action] { finish(action.state,action.event,"Target lookup failed"); });
 }
 
 void openAutoModeration(QWidget *parent,
                         AutoModerationRewardsFetcher fixtureFetcher)
 {
+    moderatorextension::UiLease moduleUi;
+    const auto &bundle=moderatorextension::active();
     const auto uid = activeUid();
     auto s = stateFor(uid);
     if (!s) return;
@@ -410,13 +548,13 @@ void openAutoModeration(QWidget *parent,
         tabs->addTab(page,title);
         return pageLayout;
     };
-    auto *wordPage = setupPage(uiText("Words"));
+    auto *wordPage = setupPage(bundle.label("words","Words"));
     auto *wordHint = new QLabel(uiText("A contiguous fragment, ignoring letter case. The author of a matching message receives a timeout."),&dialog);
     wordHint->setWordWrap(true);
     wordPage->addWidget(wordHint);
-    auto *words = new QTableWidget(0,4,&dialog);
+    auto *words = new QTableWidget(0,6,&dialog);
     words->setObjectName("AutoModerationWords");
-    words->setHorizontalHeaderLabels({uiText("Enabled"),uiText("Contains phrase"),uiText("Timeout duration"),uiText("Reason")});
+    words->setHorizontalHeaderLabels({uiText("Enabled"),uiText("Contains phrase"),uiText("Action"),uiText("Timeout duration"),uiText("Reason"),uiText("Parameters")});
     wordPage->addWidget(words,1);
     auto *wordButtons = new QHBoxLayout;
     auto *addWord = new QPushButton(uiText("Add rule"),&dialog);
@@ -424,13 +562,13 @@ void openAutoModeration(QWidget *parent,
     auto *removeWord = new QPushButton(uiText("Remove selected"),&dialog);
     wordButtons->addWidget(addWord);wordButtons->addWidget(removeWord);wordButtons->addStretch();
     wordPage->addLayout(wordButtons);
-    auto *rewardPage = setupPage(uiText("Rewards"));
-    auto *rewardHint = new QLabel(uiText("Choose a reward that requires a nickname as input. Enter only one exact Twitch login. Untimeout requires an observed active timeout; a permanent ban is never removed."),&dialog);
+    auto *rewardPage = setupPage(bundle.label("rewards","Rewards"));
+    auto *rewardHint = new QLabel(uiText("Choose a reward that requires a nickname as input. Enter only one exact Twitch login. Untimeout requires a confirmed active timeout; known permanent bans are excluded."),&dialog);
     rewardHint->setWordWrap(true);
     rewardPage->addWidget(rewardHint);
-    auto *rewards = new QTableWidget(0,5,&dialog);
+    auto *rewards = new QTableWidget(0,6,&dialog);
     rewards->setObjectName("AutoModerationRewards");
-    rewards->setHorizontalHeaderLabels({uiText("Enabled"),uiText("Reward"),uiText("Action"),uiText("Timeout duration"),uiText("Reason")});
+    rewards->setHorizontalHeaderLabels({uiText("Enabled"),uiText("Reward"),uiText("Action"),uiText("Timeout duration"),uiText("Reason"),uiText("Parameters")});
     rewardPage->addWidget(rewards,1);
     auto *rewardButtons = new QHBoxLayout;
     auto *refreshRewards = new QPushButton(uiText("Refresh rewards"),&dialog);
@@ -440,7 +578,12 @@ void openAutoModeration(QWidget *parent,
     auto *removeReward = new QPushButton(uiText("Remove selected"),&dialog);
     rewardButtons->addWidget(refreshRewards);rewardButtons->addWidget(addReward);rewardButtons->addWidget(removeReward);rewardButtons->addStretch();
     rewardPage->addLayout(rewardButtons);
-    auto *historyPage = setupPage(uiText("History"));
+    auto *historyPage = setupPage(bundle.label("history","History"));
+    const QHash<QString,QWidget *> pageById{{"words",wordPage->parentWidget()},
+        {"rewards",rewardPage->parentWidget()},{"history",historyPage->parentWidget()}};
+    for(int index=0;index<bundle.moderationOrder.size();++index)
+        tabs->tabBar()->moveTab(tabs->indexOf(pageById.value(bundle.moderationOrder[index])),index);
+    tabs->setCurrentIndex(0);
     auto *history = new QTableWidget(0,4,&dialog);
     history->setObjectName("AutoModerationHistory");
     history->setHorizontalHeaderLabels({uiText("Time"),uiText("Action"),uiText("User"),uiText("Status")});
@@ -468,6 +611,8 @@ void openAutoModeration(QWidget *parent,
     }
     words->horizontalHeader()->setSectionResizeMode(0,QHeaderView::ResizeToContents);
     rewards->horizontalHeader()->setSectionResizeMode(0,QHeaderView::ResizeToContents);
+    words->horizontalHeader()->setSectionResizeMode(5,QHeaderView::ResizeToContents);
+    rewards->horizontalHeader()->setSectionResizeMode(5,QHeaderView::ResizeToContents);
     QHash<QString,Config> draft = s->configs;
     QHash<QString,QList<std::pair<QString,QString>>> rewardChoices;
     QSet<QString> loadingRewards;
@@ -494,30 +639,68 @@ void openAutoModeration(QWidget *parent,
         item->setCheckState(value ? Qt::Checked : Qt::Unchecked);
         table->setItem(row,0,item);
     };
+    auto appendAction = [&](QTableWidget *table,int row,const Rule &r,bool word) {
+        auto *action = new QComboBox(table);
+        action->addItem(uiText("Timeout"),int(Kind::RewardTimeout));
+        if(!word)action->addItem(uiText("Remove timeout"),int(Kind::RewardUntimeout));
+        for(const auto &preset:bundle.rewardActions)
+        {
+            if(!preset.sources.contains(word?"message":"reward"))continue;
+            action->addItem(preset.title.localized(),int(Kind::RewardTimeout));
+            action->setItemData(action->count()-1,preset.id,Qt::UserRole+1);
+        }
+        int index=r.kind==Kind::RewardUntimeout?1:0;
+        if(!r.moduleAction.isEmpty())
+        {
+            index=action->findData(r.moduleAction,Qt::UserRole+1);
+            if(index<0)
+            {
+                action->addItem(uiText("Unavailable module action (%1)").arg(r.moduleAction),int(Kind::RewardTimeout));
+                index=action->count()-1;
+                action->setItemData(index,r.moduleAction,Qt::UserRole+1);
+            }
+        }
+        action->setCurrentIndex(index);
+        table->setCellWidget(row,2,action);
+        auto *spin = duration(table,row,3,r.seconds);
+        auto *settings=new QPushButton(bundle.label("action_settings","Configure"),table);
+        settings->setObjectName("ModuleActionSettings");
+        settings->setProperty("moduleParams",r.moduleParameters);
+        settings->setProperty("moduleAction",r.moduleAction);
+        table->setCellWidget(row,5,settings);
+        const auto sync=[&bundle,action,spin,settings]{
+            const auto id=action->currentData(Qt::UserRole+1).toString();
+            if(settings->property("moduleAction").toString()!=id)
+            {
+                settings->setProperty("moduleAction",id);
+                settings->setProperty("moduleParams",QJsonObject{});
+            }
+            spin->setEnabled(action->currentIndex()==0 && id.isEmpty());
+            const auto profile=bundle.rewardAction(id);
+            settings->setEnabled(profile && !profile->fields.isEmpty());
+        };
+        QObject::connect(action,&QComboBox::currentIndexChanged,settings,[sync](int){sync();});
+        QObject::connect(settings,&QPushButton::clicked,&dialog,[&bundle,action,settings,&dialog]{
+            const auto profile=bundle.rewardAction(action->currentData(Qt::UserRole+1).toString());
+            if(!profile)return;
+            const auto params=moderatorextension::editParameters(&dialog,*profile,
+                settings->property("moduleParams").value<QJsonObject>());
+            if(params)settings->setProperty("moduleParams",*params);
+        });
+        sync();
+        table->setItem(row,4,new QTableWidgetItem(r.reason));
+    };
     auto appendWord = [&](const Rule &r) {
-        const int row = words->rowCount();
-        words->insertRow(row);
-        checkCell(words,row,r.enabled);
+        const int row=words->rowCount();words->insertRow(row);checkCell(words,row,r.enabled);
         words->setItem(row,1,new QTableWidgetItem(r.trigger));
-        duration(words,row,2,r.seconds);
-        words->setItem(row,3,new QTableWidgetItem(r.reason));
+        appendAction(words,row,r,true);
     };
     auto appendReward = [&](const Rule &r) {
-        const int row = rewards->rowCount();
-        rewards->insertRow(row);
-        checkCell(rewards,row,r.enabled);
-        auto *picker = new QComboBox(rewards);
+        const int row=rewards->rowCount();rewards->insertRow(row);checkCell(rewards,row,r.enabled);
+        auto *picker=new QComboBox(rewards);
         populateRewardCombo(picker,selected,r.trigger,r.title);
         rewards->setCellWidget(row,1,picker);
-        auto *action = new QComboBox(rewards);
-        action->addItem(uiText("Timeout"),int(Kind::RewardTimeout));
-        action->addItem(uiText("Remove timeout"),int(Kind::RewardUntimeout));
-        action->setCurrentIndex(r.kind==Kind::RewardUntimeout ? 1 : 0);
-        rewards->setCellWidget(row,2,action);
-        auto *spin = duration(rewards,row,3,r.seconds);
-        spin->setEnabled(action->currentIndex()==0);
-        QObject::connect(action,&QComboBox::currentIndexChanged,spin,[spin](int index){spin->setEnabled(index==0);});
-        rewards->setItem(row,4,new QTableWidgetItem(r.reason));
+        appendAction(rewards,row,r,false);
     };
     auto collect = [&] {
         if (selected.isEmpty()) return;
@@ -528,16 +711,22 @@ void openAutoModeration(QWidget *parent,
         config.exceptions = exceptions->text().simplified().toLower().split(u' ',Qt::SkipEmptyParts);
         config.rules.clear();
         for(int row=0; row<words->rowCount();++row)
+        {
+            auto *action=qobject_cast<QComboBox *>(words->cellWidget(row,2));
             config.rules.append(Rule{Kind::Words,words->item(row,1)->text().trimmed(),{},
-                qobject_cast<QSpinBox *>(words->cellWidget(row,2))->value(), words->item(row,3)->text().trimmed(),
-                words->item(row,0)->checkState()==Qt::Checked});
+                qobject_cast<QSpinBox *>(words->cellWidget(row,3))->value(), words->item(row,4)->text().trimmed(),
+                words->item(row,0)->checkState()==Qt::Checked, action->currentData(Qt::UserRole+1).toString(),
+                words->cellWidget(row,5)->property("moduleParams").value<QJsonObject>()});
+        }
         for(int row=0; row<rewards->rowCount();++row)
         {
             auto *picker = qobject_cast<QComboBox *>(rewards->cellWidget(row,1));
             auto *action = qobject_cast<QComboBox *>(rewards->cellWidget(row,2));
             config.rules.append(Rule{Kind(action->currentData().toInt()),picker->currentData().toString(),
                 picker->currentText(),qobject_cast<QSpinBox *>(rewards->cellWidget(row,3))->value(),
-                rewards->item(row,4)->text().trimmed(),rewards->item(row,0)->checkState()==Qt::Checked});
+                rewards->item(row,4)->text().trimmed(),rewards->item(row,0)->checkState()==Qt::Checked,
+                action->currentData(Qt::UserRole+1).toString(),
+                rewards->cellWidget(row,5)->property("moduleParams").value<QJsonObject>()});
         }
     };
     auto showHistory = [&] {
@@ -550,7 +739,12 @@ void openAutoModeration(QWidget *parent,
             history->setItem(row,0,new QTableWidgetItem(at));
             history->setItem(row,1,new QTableWidgetItem(kindText(Kind(it->value("kind").toInt()))));
             history->setItem(row,2,new QTableWidgetItem(it->value("target").toString()));
-            history->setItem(row,3,new QTableWidgetItem(uiText(it->value("status").toString())));
+            auto result=uiText(it->value("status").toString());
+            if(const auto seconds=it->value("duration").toInt();seconds>0)
+                result+=QStringLiteral(" · ")+QString::number(seconds)+uiText(" sec");
+            if(!it->value("reply").toString().isEmpty())
+                result+=QStringLiteral(" · ")+it->value("reply").toString();
+            history->setItem(row,3,new QTableWidgetItem(result));
         }
     };
     auto requestRewards = [&](bool force) {
@@ -642,7 +836,7 @@ void openAutoModeration(QWidget *parent,
         for(const auto &r:config.rules)
             if(r.kind==Kind::Words) appendWord(r);else appendReward(r);
         showHistory();
-        if(tabs->currentIndex()==1) requestRewards(false);
+        if(tabs->currentWidget()==rewardPage->parentWidget()) requestRewards(false);
     };
     QObject::connect(channel,&QComboBox::currentTextChanged,&dialog,load);
     QObject::connect(addWord,&QPushButton::clicked,&dialog,[&] {
@@ -656,7 +850,7 @@ void openAutoModeration(QWidget *parent,
     QObject::connect(removeReward,&QPushButton::clicked,&dialog,[&] {if(rewards->currentRow()>=0)rewards->removeRow(rewards->currentRow());});
     QObject::connect(refreshRewards,&QPushButton::clicked,&dialog,[&] {requestRewards(true);});
     QObject::connect(tabs,&QTabWidget::currentChanged,&dialog,[&](int index) {
-        if(index==1) requestRewards(false);
+        if(tabs->widget(index)==rewardPage->parentWidget()) requestRewards(false);
     });
     QObject::connect(saveButton,&QPushButton::clicked,&dialog,[&] {
         collect();
@@ -672,8 +866,14 @@ void openAutoModeration(QWidget *parent,
             const auto old=s->configs.value(it.key());
             if(c.enabled && !c.dryRun && encode(c)!=encode(old)) confirm=true;
         }
-        if(confirm && QMessageBox::question(&dialog,uiText("Enable real moderation?"),
-            uiText("Rules will execute real timeouts on Twitch. Verify the rules in test mode first."),QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes) return;
+        if(confirm)
+        {
+            QMessageBox confirmation(QMessageBox::Question,uiText("Enable real moderation?"),
+                uiText("Rules will execute real timeouts on Twitch. Verify the rules in test mode first."),
+                QMessageBox::Yes|QMessageBox::No,&dialog);
+            confirmation.setDefaultButton(QMessageBox::No);
+            if(automationdialog::run(confirmation)!=QMessageBox::Yes) return;
+        }
         // Recheck after the modal confirmation: accounts/roles may change.
         if(activeUid()!=uid) {dialog.reject();return;}
         for(auto it=draft.cbegin();it!=draft.cend();++it)
@@ -697,7 +897,7 @@ void openAutoModeration(QWidget *parent,
             auto tc=std::dynamic_pointer_cast<TwitchChannel>(getApp()->getTwitch()->getChannelOrEmpty(selected));
             if(!tc || !permittedAutoModeration(*tc)){dialog.reject();return;}
         }
-        if(tabs->currentIndex()==2)showHistory();
+        if(tabs->currentWidget()==historyPage->parentWidget())showHistory();
     });tick.start();
     if(!channels.isEmpty())load(channels.first());
     else status->setText(uiText("No verified moderator channels are currently available."));
@@ -726,7 +926,7 @@ QPushButton#SaveRules { background:%6;color:%1; }
         for(auto *child:dialog.findChildren<QWidget *>())child->setFont(font);
         for(auto *table:{words,rewards,history})table->verticalHeader()->setDefaultSectionSize(table->fontMetrics().height()+18);
     });
-    dialog.exec();
+    automationdialog::run(dialog);
     tick.stop();
     for(auto *child:dialog.findChildren<QWidget *>())QObject::disconnect(child,nullptr,&dialog,nullptr);
 }

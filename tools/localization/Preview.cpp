@@ -21,6 +21,7 @@
 #include "widgets/helper/NotebookTab.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
 #include "providers/twitch/ModeratorAutoReplies.hpp"
+#include "providers/twitch/AutomationDialog.hpp"
 #include "providers/twitch/ModeratorModule.hpp"
 #include "providers/twitch/api/Helix.hpp"
 #ifdef CHATTERINO_WITH_TESTS
@@ -779,8 +780,11 @@ int main(int argc, char **argv)
                                           (custom || stock) ? customFile : QString());
         migrationApp.settings.disableSave();
         const auto selected = migrationApp.theme.themeName.getValue();
-        check(selected == (custom ? oldName : QStringLiteral("Noctis-Dark")),
-              custom ? "existing custom theme is preserved" : "old default migrates to built-in Noctis Dark");
+        check(selected == QStringLiteral("Noctis-Dark"),
+              "existing profile migrates to built-in Noctis Dark");
+        check(migrationApp.settings.chatSendProtocol.getEnum() == ChatSendProtocol::IRC,
+              "existing profile migrates to IRC");
+        check(!custom || QFile::exists(customFile), "custom theme file is retained");
         QFile report(output + "/theme-migration-results.json");
         report.open(QIODevice::WriteOnly | QIODevice::Truncate);
         report.write(QJsonDocument(QJsonObject{{"checks", checks}, {"failures", failures},
@@ -840,17 +844,24 @@ int main(int argc, char **argv)
               "approved account has moderator button and Mods caption");
         main->grab().save(output+"/approved.png");
         QTimer::singleShot(0, [&] {
-            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            auto *dialog = automationdialog::current();
             if (!dialog)
                 for (auto *window : QApplication::topLevelWidgets())
                     if (auto *candidate = qobject_cast<QDialog *>(window); candidate && candidate->isVisible())
                         dialog = candidate;
             if (dialog)
             {
+                check(dialog->windowModality() == Qt::NonModal && !QApplication::activeModalWidget() && main->isEnabled(),
+                      "auto-reply editor does not block the main chat window");
+                main->activateWindow();
+                qt.processEvents();
+                check(dialog->isVisible(), "switching focus back to chat leaves editor open");
+                dialog->activateWindow();
                 auto *tabs = dialog->findChild<QTabBar *>("ModeratorChannelTabs");
                 auto *primary = dialog->findChild<QTabBar *>("ModeratorReplyTabs");
-                check(tabs && tabs->count() == 2 && tabs->tabText(0) == "another" &&
-                      tabs->tabText(1) == "example", "approved dialog contains verified channels only");
+                check(tabs && tabs->count() == 3 && tabs->tabText(0) == "another" &&
+                      tabs->tabText(1) == "example" && tabs->tabText(2) == "fixturemod",
+                      "approved dialog contains verified channels and own channel only");
                 check(primary && primary->count() == 3 && primary->tabText(0) == uiText("Reply rules") &&
                       primary->tabText(1) == uiText("Options") && primary->tabText(2) == uiText("Manual timer"),
                       "moderator dialog has Owner-style Rules, Options and Timer pages");
@@ -860,9 +871,11 @@ int main(int argc, char **argv)
                 if (help)
                 {
                     QTimer::singleShot(0, [&] {
-                        auto *guide = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                        auto *guide = automationdialog::current();
                         check(guide && guide->objectName() == "ModeratorHelpDialog",
                               "help opens a dedicated guide");
+                        check(guide && guide->windowModality() == Qt::NonModal && main->isEnabled() && !QApplication::activeModalWidget(),
+                              "nested help leaves chat usable");
                         if (!guide || guide == dialog) { if (guide) guide->reject(); return; }
                         QString text;
                         for (auto *label : guide->findChildren<QLabel *>()) text += label->text() + u'\n';
@@ -942,7 +955,7 @@ int main(int argc, char **argv)
                     auto *minutes = dialog->findChild<QSpinBox *>("ModeratorTimerMinutes");
                     auto *action = dialog->findChild<QPushButton *>("ModeratorTimerAction");
                     auto *elapsed = dialog->findChild<QLabel *>("ModeratorTimerElapsed");
-                    check(channels && channels->count() == 2 && channels->currentText() == "example" && minutes && action && elapsed,
+                    check(channels && channels->count() == 3 && channels->currentText() == "example" && minutes && action && elapsed,
                           "timer uses only verified channels and follows selected rule tab");
                     if (minutes && action && elapsed)
                     {

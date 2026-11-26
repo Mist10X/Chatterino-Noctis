@@ -169,7 +169,7 @@ public:
     QStringSetting themeName{"/appearance/theme/name", "Noctis-Dark"};
     QStringSetting lightSystemThemeName{"/appearance/theme/lightSystem",
                                         "Light"};
-    QStringSetting darkSystemThemeName{"/appearance/theme/darkSystem", "Dark"};
+    QStringSetting darkSystemThemeName{"/appearance/theme/darkSystem", "Noctis-Dark"};
 
 private:
     bool isLight_ = false;

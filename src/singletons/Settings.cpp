@@ -141,44 +141,17 @@ bool Settings::isHighlightedUser(const QString &username)
 
 void Settings::migrate(bool isTest)
 {
-    if (!this->noctisThemeMigrated)
+    Q_UNUSED(isTest);
+    if (!this->noctisThemeIrcDefaultsApplied)
     {
+        // One-time reset for existing profiles, not a recurring restriction.
+        // Custom theme files remain unchanged and can be selected afterwards.
         QStringSetting themeName("/appearance/theme/name", "Noctis-Dark");
-        const auto selectedTheme = themeName.getValue();
-        if (selectedTheme == QStringLiteral("Mist-Dark.json") ||
-            selectedTheme == QStringLiteral("Noctis-Dark.json"))
-        {
-            // These names are also legal custom theme filenames. Only
-            // migrate the unmodified preset shipped with public 1.3.9 (or a
-            // missing legacy file), never a user's edited color palette.
-            auto root = this->settingsPath_.parent_path();
-            // Production settings are in <profile>/Settings. The existing
-            // isolated mock keeps its settings.json at the profile root.
-            if (!isTest || root.filename() == "Settings")
-            {
-                root = root.parent_path();
-            }
-            const auto path = root / "Themes" / qStringToStdPath(selectedTheme);
-            QFile legacyTheme(stdPathToQString(path));
-            bool useBuiltIn = !legacyTheme.exists();
-            if (!useBuiltIn && selectedTheme == QStringLiteral("Mist-Dark.json") &&
-                legacyTheme.size() <= 65536 &&
-                legacyTheme.open(QIODevice::ReadOnly))
-            {
-                const auto digest = QCryptographicHash::hash(
-                    legacyTheme.readAll().replace("\r\n", "\n"),
-                    QCryptographicHash::Sha256);
-                // Published 1.3.9 standard preset, with normalized newlines.
-                useBuiltIn = digest == QByteArray::fromHex(
-                    "4011ce2f84d730631341a2daa5c053326fd374c48ae57712c0ac81db7299f9fd");
-            }
-            if (useBuiltIn)
-            {
-                themeName = QString("Noctis-Dark");
-            }
-        }
-        this->noctisThemeMigrated = true;
+        themeName = QStringLiteral("Noctis-Dark");
+        this->chatSendProtocol = QStringLiteral("IRC");
+        this->noctisThemeIrcDefaultsApplied = true;
     }
+    this->noctisThemeMigrated = true;
 }
 
 bool Settings::isBlacklistedUser(const QString &username)
@@ -804,12 +777,6 @@ bool Settings::shouldSendHelixChat() const
         case ChatSendProtocol::Helix:
             return true;
         case ChatSendProtocol::Default:
-        {
-            // Decide once, before sending. Never fall back to IRC after a
-            // dispatched Helix attempt, even if the result is ambiguous.
-            auto *app = dynamic_cast<Application *>(tryGetApp());
-            return app && app->getAccounts()->twitch.getCurrent()->hasHelixChatWriteScope();
-        }
         case ChatSendProtocol::IRC:
             return false;
         default:

@@ -45,6 +45,7 @@ struct HelixUser {
     QString description;
     QString profileImageUrl;
     QString offlineImageUrl;
+    std::optional<QString> accountType;
 
     explicit HelixUser(QJsonObject jsonObject)
         : id(jsonObject.value("id").toString())
@@ -54,6 +55,9 @@ struct HelixUser {
         , description(jsonObject.value("description").toString())
         , profileImageUrl(jsonObject.value("profile_image_url").toString())
         , offlineImageUrl(jsonObject.value("offline_image_url").toString())
+        , accountType(jsonObject.value("type").isString()
+                          ? std::optional<QString>(jsonObject.value("type").toString())
+                          : std::nullopt)
     {
     }
 };

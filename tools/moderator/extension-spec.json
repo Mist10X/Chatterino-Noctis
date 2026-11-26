@@ -1,0 +1,18 @@
+{
+  "type": "noctis-moderator-extension",
+  "schema": 1,
+  "host_api": 1,
+  "revision": 1,
+  "version": "1.0.0",
+  "labels": {},
+  "pages": [
+    {
+      "title": {"en": "About the module", "ru": "О модуле"},
+      "body": {
+        "en": "The moderator module updates independently of the client. Your existing rules, timers and account settings are retained. Only an owner-signed package can be installed.",
+        "ru": "Модуль модерации обновляется отдельно от клиента. Ваши правила, таймеры и настройки аккаунта сохраняются. Устанавливаются только пакеты с подписью владельца."
+      }
+    }
+  ],
+  "reward_actions": []
+}

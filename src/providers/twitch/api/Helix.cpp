@@ -1524,6 +1524,7 @@ void Helix::unbanUser(
     urlQuery.addQueryItem("user_id", userID);
 
     this->makeDelete("moderation/bans", urlQuery)
+        .followRedirects(false)
         .onSuccess([successCallback, failureCallback](auto result) {
             if (result.status() != 204)
             {
@@ -1531,6 +1532,8 @@ void Helix::unbanUser(
                     << "Success result for unbanning user was"
                     << result.formatError()
                     << "but we only expected it to be 204";
+                failureCallback(Error::Unknown,result.formatError());
+                return;
             }
 
             successCallback();

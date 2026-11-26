@@ -1104,7 +1104,7 @@ public:
     };
 
     EnumStringSetting<ChatSendProtocol> chatSendProtocol = {
-        "/misc/chatSendProtocol", ChatSendProtocol::Default};
+        "/misc/chatSendProtocol", ChatSendProtocol::IRC};
 
     BoolSetting openLinksIncognito = {"/misc/openLinksIncognito", 0};
 
@@ -1525,6 +1525,8 @@ private:
         "/misc/settingsVersion",
         0,
     };
+    BoolSetting noctisThemeIrcDefaultsApplied = {
+        "/misc/noctisThemeIrcDefaultsApplied", false};
     BoolSetting noctisThemeMigrated = {
         "/misc/noctisThemeMigrated",
         false,

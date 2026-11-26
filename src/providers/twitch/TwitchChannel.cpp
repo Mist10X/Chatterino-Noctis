@@ -46,6 +46,7 @@
 #include "providers/twitch/ChannelPointReward.hpp"
 #include "providers/twitch/eventsub/Controller.hpp"
 #include "providers/twitch/IrcMessageHandler.hpp"
+#include "providers/twitch/AutoModeration.hpp"
 #include "providers/twitch/PubSubManager.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
@@ -2998,6 +2999,7 @@ void TwitchChannel::markDisconnected()
         return;
     }
 
+    invalidateAutoModerationTimeouts(*this);
     this->leadModLookupAttempted_ = false;
     this->lastLeadModRefreshAt_ = QDateTime();
     this->setLeadMod(false, false);

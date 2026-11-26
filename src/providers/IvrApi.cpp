@@ -63,9 +63,17 @@ void IvrApi::getModVip(QString channelName,
     assert(!channelName.isEmpty());
 
     this->makeRequest(QString("twitch/modvip/%1").arg(channelName), {})
+        .header("Cache-Control", "no-cache")
         .onSuccess([successCallback, failureCallback](auto result) {
             auto root = result.parseJson();
 
+            // A missing or malformed list is not an empty role roster.
+            if (result.status() != 200 || !root.value("mods").isArray() ||
+                !root.value("vips").isArray())
+            {
+                failureCallback();
+                return;
+            }
             successCallback(root);
         })
         .onError([failureCallback](auto result) {

@@ -199,28 +199,6 @@ bool importProfile(QWidget *parent, const QString &from, bool ask = true,
     {
         return fail(uiText("The settings folder could not be locked for import."));
     }
-    const QDir ownThemes(getApp()->getPaths().themesDirectory);
-    const QDir theirThemes(QDir(from).filePath("../Themes"));
-    if (theirThemes.exists() && !theirThemes.isReadable())
-    {
-        return fail(uiText("This file could not be read: %1")
-                        .arg(QDir::toNativeSeparators(theirThemes.absolutePath())));
-    }
-    QMap<QString, QByteArray> themes;
-    for (const auto &info : theirThemes.entryInfoList({"*.json"}, QDir::Files))
-    {
-        const auto destination = ownThemes.filePath(info.fileName());
-        if (QFileInfo(destination).isFile())
-        {
-            continue;
-        }
-        if (!readFile(info.absoluteFilePath(), themes[destination]))
-        {
-            return fail(uiText("This file could not be read: %1")
-                            .arg(QDir::toNativeSeparators(info.absoluteFilePath())));
-        }
-    }
-
     const auto localSettings = QDir(own).filePath("settings.json");
     QJsonObject mine;
     if (QFileInfo::exists(localSettings))
@@ -239,6 +217,15 @@ bool importProfile(QWidget *parent, const QString &from, bool ask = true,
     {
         setAtPath(theirs, path, valueAtPath(mine, path));
     }
+    // Never import foreign theme selection or theme files. Do not delete
+    // existing custom themes from this installation. The destination starts
+    // with the embedded Noctis style and the currently required IRC default.
+    setAtPath(theirs, {QStringLiteral("appearance"), QStringLiteral("theme")},
+              QJsonObject{{"name","Noctis-Dark"},{"darkSystem","Noctis-Dark"},{"lightSystem","Light"}});
+    setAtPath(theirs, {QStringLiteral("misc"), QStringLiteral("chatSendProtocol")},
+              QStringLiteral("IRC"));
+    setAtPath(theirs, {QStringLiteral("misc"), QStringLiteral("noctisThemeIrcDefaultsApplied")}, true);
+    setAtPath(theirs, {QStringLiteral("misc"), QStringLiteral("noctisThemeMigrated")}, true);
     settings.insert(QStringLiteral("settings.json"), QJsonDocument(theirs).toJson());
 
     QTemporaryDir backup(QDir(own).filePath("before-import-" +
@@ -271,10 +258,6 @@ bool importProfile(QWidget *parent, const QString &from, bool ask = true,
     for (auto it = settings.cbegin(); it != settings.cend(); ++it)
     {
         planned.emplaceBack(QDir(own).filePath(it.key()), it.value());
-    }
-    for (auto it = themes.cbegin(); it != themes.cend(); ++it)
-    {
-        planned.emplaceBack(it.key(), it.value());
     }
     QStringList committed;
     for (const auto &[destination, contents] : planned)

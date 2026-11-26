@@ -2,8 +2,10 @@
 
 #include <QDateTime>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStringList>
 #include <optional>
 
@@ -17,6 +19,8 @@ struct Rule {
     int seconds = 600;
     QString reason;
     bool enabled = true;
+    QString moduleAction; // optional signed action preset; empty = legacy action
+    QJsonObject moduleParameters;
 };
 struct Config {
     QString roomId;
@@ -54,8 +58,47 @@ inline bool protectedBadges(const QString &badges)
     }
     return false;
 }
+enum class RoleSnapshot { Unknown, Ordinary, Protected };
+
+// The same public channel roster used by /mods and /vips. Only a complete,
+// valid response that also agrees with the actor's moderator role may
+// substitute for a missing recent badge observation. Never persist it.
+inline RoleSnapshot checkRoleSnapshot(const QJsonArray &mods, const QJsonArray &vips,
+                                      const QString &actorId, const QString &roomId,
+                                      const QString &targetId, const QString &targetLogin)
+{
+    if (!validId(actorId) || !validId(roomId) || !validId(targetId) ||
+        login(targetLogin) != targetLogin || targetLogin.isEmpty())
+        return RoleSnapshot::Unknown;
+    QSet<QString> ids, names;
+    bool actorVerified = actorId == roomId;
+    bool targetProtected = false;
+    for (const auto *list : {&mods, &vips})
+    {
+        if (list->size() > 10000) return RoleSnapshot::Unknown;
+        for (const auto &value : *list)
+        {
+            if (!value.isObject()) return RoleSnapshot::Unknown;
+            const auto row = value.toObject();
+            const auto id = row.value("id").toString();
+            const auto name = login(row.value("login").toString());
+            if (!validId(id) || name.isEmpty() || ids.contains(id) || names.contains(name))
+                return RoleSnapshot::Unknown;
+            ids.insert(id); names.insert(name);
+            if (id == actorId && list == &mods) actorVerified = true;
+            if (id == targetId) targetProtected = true;
+            if (name == targetLogin && id != targetId) return RoleSnapshot::Unknown;
+        }
+    }
+    if (targetProtected) return RoleSnapshot::Protected;
+    return actorVerified ? RoleSnapshot::Ordinary : RoleSnapshot::Unknown;
+}
 inline bool validRule(const Rule &r)
 {
+    static const QRegularExpression profile(QStringLiteral("\\A[a-z][a-z0-9-]{0,39}\\z"));
+    if(!r.moduleAction.isEmpty() &&
+       (r.kind==Kind::RewardUntimeout || !profile.match(r.moduleAction).hasMatch() ||
+        r.moduleParameters.size()>24 || QJsonDocument(r.moduleParameters).toJson(QJsonDocument::Compact).size()>8192))return false;
     return r.reason.size() <= 300 && r.title.size() <= 120 &&
         (r.kind == Kind::Words ? !r.trigger.simplified().isEmpty() && r.trigger.size() <= 200
                                : rewardId(r.trigger)) &&
@@ -98,8 +141,20 @@ inline QJsonObject encode(const Config &c)
 {
     QJsonArray rules;
     for (const auto &r : c.rules)
-        rules.append(QJsonObject{{"kind", int(r.kind)}, {"trigger",r.trigger}, {"title",r.title},
-            {"seconds",r.seconds}, {"reason",r.reason}, {"enabled",r.enabled}});
+    {
+        QJsonObject object{{"kind", int(r.kind)}, {"trigger",r.trigger}, {"title",r.title},
+            {"seconds",r.seconds}, {"reason",r.reason}, {"enabled",r.enabled}};
+        if(!r.moduleAction.isEmpty())
+        {
+            // A client predating presets must not silently execute a preset as
+            // a fixed timeout. Old rules retain exactly their old representation.
+            object["enabled"]=false;
+            object["moduleAction"]=r.moduleAction;
+            object["moduleEnabled"]=r.enabled;
+            if(!r.moduleParameters.isEmpty())object["moduleParameters"]=r.moduleParameters;
+        }
+        rules.append(object);
+    }
     return {{"roomId",c.roomId},{"enabled",c.enabled},{"dryRun",c.dryRun},
             {"exceptions",QJsonArray::fromStringList(c.exceptions)},{"rules",rules}};
 }
@@ -114,8 +169,11 @@ inline std::optional<Config> decode(const QJsonObject &obj)
         auto r = value.toObject();
         const int kind = r.value("kind").toInt(-1);
         if (kind < 0 || kind > 2) return {};
+        const auto profile=r.value("moduleAction").toString();
         c.rules.append(Rule{Kind(kind),r.value("trigger").toString(),r.value("title").toString(),
-            r.value("seconds").toInt(600),r.value("reason").toString(),r.value("enabled").toBool(true)});
+            r.value("seconds").toInt(600),r.value("reason").toString(),
+            profile.isEmpty()?r.value("enabled").toBool(true):r.value("moduleEnabled").toBool(false),profile,
+            r.value("moduleParameters").toObject()});
     }
     return validate(c) ? std::optional<Config>(std::move(c)) : std::nullopt;
 }
@@ -123,9 +181,8 @@ inline bool freshEvent(qint64 eventMs, qint64 nowMs)
 {
     return eventMs > 0 && eventMs <= nowMs + 5000 && nowMs - eventMs <= 30000;
 }
-// A shortened finite timeout cannot remove a permanent ban. Seek explicit
-// evidence of an active timeout before considering this action.
-inline bool canShortenTimeout(qint64 until, qint64 now)
+// Only consider a confirmed finite timeout that has not essentially expired.
+inline bool canRemoveTimeout(qint64 until, qint64 now)
 {
     return until > now + 1000;
 }
