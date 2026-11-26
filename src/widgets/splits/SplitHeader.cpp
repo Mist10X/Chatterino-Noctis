@@ -893,7 +893,7 @@ void SplitHeader::initializeLayout()
             .dark = ":/buttons/moderationDisabled-darkMode.svg",
             .light = ":/buttons/moderationDisabled-lightMode.svg",
         },
-        this, {5, 5});
+        this, {3, 3});
 
     this->chattersButton_ = new SvgButton(
         {
@@ -2081,6 +2081,8 @@ void SplitHeader::updateIcons()
                 .dark = ":/buttons/moderationEnabled-darkMode.svg",
                 .light = ":/buttons/moderationEnabled-lightMode.svg",
             });
+            this->moderationButton_->setToolTip(uiText("Disable moderation mode"));
+            this->moderationButton_->setAccessibleName(uiText("Disable moderation mode"));
         }
         else
         {
@@ -2088,6 +2090,8 @@ void SplitHeader::updateIcons()
                 .dark = ":/buttons/moderationDisabled-darkMode.svg",
                 .light = ":/buttons/moderationDisabled-lightMode.svg",
             });
+            this->moderationButton_->setToolTip(uiText("Enable moderation mode"));
+            this->moderationButton_->setAccessibleName(uiText("Enable moderation mode"));
         }
 
         if (channel->hasModRights() || moderationMode)

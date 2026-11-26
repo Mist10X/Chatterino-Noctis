@@ -8,6 +8,7 @@
 #include "widgets/buttons/SvgButton.hpp"
 #include "widgets/dialogs/PollDialog.hpp"
 #include "widgets/helper/BannerText.hpp"
+#include "widgets/helper/OutcomePercentages.hpp"
 #include "widgets/splits/Split.hpp"
 
 #include <QDateTime>
@@ -111,19 +112,6 @@ QString formatPollAge(const QDateTime &dateTime)
     }
 
     return uiText(QString("%1d ago")).arg(hours / 24);
-}
-
-int outcomePercent(int value, int total, int outcomeCount)
-{
-    if (total > 0)
-    {
-        return static_cast<int>((value * 100.0) / total);
-    }
-    if (outcomeCount > 0)
-    {
-        return 100 / outcomeCount;
-    }
-    return 0;
 }
 
 int scaledInt(float value, int minimum = 1)
@@ -774,8 +762,8 @@ void PollBanner::updateLayout()
     const int leaderIndex =
         static_cast<int>(std::distance(this->poll_->choices.begin(), leaderIt));
     const int percent =
-        outcomePercent(leaderIt->totalVotes, this->poll_->totalVotes,
-                       static_cast<int>(this->poll_->choices.size()));
+        outcomePercentage(this->poll_->choices, leaderIndex,
+                          [](const auto &o) { return o.totalVotes; });
     const auto tone = pollToneForChoice(*this->poll_, leaderIndex, votingEnded);
     const auto dimTextColor = this->theme->messages.textColors.system;
 

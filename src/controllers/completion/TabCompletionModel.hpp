@@ -25,7 +25,7 @@ public:
                        int cursorPosition, bool isFirstWord = false);
 
     /// The same keys pressed in the English layout: "ЗщпСрфьз" -> "PogChamp".
-    /// Only Cyrillic letters (and the Russian " and №) change.
+    /// Supports Russian and Ukrainian keyboard letters (including і, ї, є, ґ).
     static QString fromRussianLayout(const QString &text);
 
 private:

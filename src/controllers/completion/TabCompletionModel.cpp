@@ -39,10 +39,12 @@ QString TabCompletionModel::fromRussianLayout(const QString &text)
 {
     static const QString ru = QStringLiteral(
         "йцукенгшщзхъфывапролджэячсмитьбюё"
-        "ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ\"№");
+        "ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ\"№"
+        "іїєґІЇЄҐ");
     static const QString en = QStringLiteral(
         "qwertyuiop[]asdfghjkl;'zxcvbnm,.`"
-        "QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>~@#");
+        "QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>~@#"
+        "s]'uS}\"U");
     QString out;
     out.reserve(text.size());
     for (const QChar c : text)
@@ -100,7 +102,7 @@ void TabCompletionModel::updateResults(const QString &query,
         this->setStringList(results);
     }
 
-    // Typed in the Russian layout by mistake ("ЗщпСрфьз", "\"ьшые1ч"):
+    // Typed in the Russian or Ukrainian layout by mistake ("ЗщпСрфьз", "Іьшду"):
     // emotes and names are Latin, so try the same keys in the English one.
     if (this->rowCount() == 0 && hasCyrillic(query))
     {

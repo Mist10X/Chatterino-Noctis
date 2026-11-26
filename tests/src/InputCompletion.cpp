@@ -5,6 +5,7 @@
 #include "Application.hpp"
 #include "common/Aliases.hpp"
 #include "controllers/accounts/AccountController.hpp"
+#include "controllers/completion/TabCompletionModel.hpp"
 #include "controllers/completion/strategies/ClassicEmoteStrategy.hpp"
 #include "controllers/completion/strategies/ClassicUserStrategy.hpp"
 #include "controllers/completion/strategies/SmartEmoteStrategy.hpp"
@@ -27,6 +28,7 @@
 #include <QString>
 #include <QTemporaryDir>
 
+#include <algorithm>
 #include <span>
 
 using namespace chatterino;
@@ -256,6 +258,27 @@ protected:
                                                          isFirstWord);
     }
 };
+
+TEST_F(InputCompletionTest, UkrainianKeyboardLayoutTabCompletion)
+{
+    this->mockApplication->settings.userCompletionOnlyWithAt.setValue(true);
+    TabCompletionModel model(*this->channelPtr, nullptr);
+    for (const bool smart : {false, true})
+    {
+        this->mockApplication->settings.useSmartEmoteCompletion.setValue(smart);
+        for (const auto &query : {QStringLiteral("Іфден"), QStringLiteral("Ыфден"),
+                                  QStringLiteral("Salty")})
+        {
+            model.updateResults(query, query, int(query.size()), false);
+            const auto results = model.stringList();
+            EXPECT_TRUE(std::any_of(results.begin(), results.end(),
+                [](const QString &result) { return result.trimmed() == "SaltyCorn"; }))
+                << qPrintable(query);
+        }
+    }
+    EXPECT_EQ(TabCompletionModel::fromRussianLayout(QStringLiteral("іїєґІЇЄҐ")),
+              QStringLiteral("s]'uS}\"U"));
+}
 
 TEST_F(InputCompletionTest, ClassicEmoteNameFiltering)
 {

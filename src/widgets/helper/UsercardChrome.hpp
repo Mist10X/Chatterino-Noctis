@@ -186,7 +186,7 @@ inline void paintShadow(QPainter &painter, QRect widgetRect, qreal inset,
 // antialiased fractional-pixel coverage instead of a binary window region.
 inline void paint(QPainter &painter, QRect widgetRect, float scale,
                   const Palette &colors, bool light, Qt::Orientation orientation,
-                  qreal partition)
+                  qreal partition, qreal footerTop = -1.0)
 {
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing);
@@ -225,8 +225,28 @@ inline void paint(QPainter &painter, QRect widgetRect, float scale,
     surface.setColorAt(std::min(1.0, split + blend), QColor(colors.messages));
     surface.setColorAt(1, QColor(colors.messages));
     painter.setPen(Qt::NoPen);
-    painter.setBrush(surface);
-    painter.drawRoundedRect(body, radius, radius);
+    if (footerTop > body.top() && footerTop < body.bottom())
+    {
+        // The moderation footer is a single surface, including the inset
+        // below its controls and the rounded lower corners.
+        painter.save();
+        painter.setClipRect(QRectF(body.left(), body.top(), body.width(),
+                                   footerTop - body.top()), Qt::IntersectClip);
+        painter.setBrush(surface);
+        painter.drawRoundedRect(body, radius, radius);
+        painter.restore();
+        painter.save();
+        painter.setClipRect(QRectF(body.left(), footerTop, body.width(),
+                                   body.bottom() - footerTop), Qt::IntersectClip);
+        painter.setBrush(QColor(colors.profile));
+        painter.drawRoundedRect(body, radius, radius);
+        painter.restore();
+    }
+    else
+    {
+        painter.setBrush(surface);
+        painter.drawRoundedRect(body, radius, radius);
+    }
     painter.setBrush(Qt::NoBrush);
     // A restrained lighter upper edge and darker lower edge create depth
     // without tinting the contents or changing the chat's palette.

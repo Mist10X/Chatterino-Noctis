@@ -29,6 +29,7 @@
 #include <QLineEdit>
 #include <QLocale>
 #include <QPainter>
+#include "widgets/helper/OutcomePercentages.hpp"
 #include <QPainterPath>
 #include <QPen>
 #include <QPointer>
@@ -982,9 +983,10 @@ void PollDialog::buildCreateUi()
     bottomLayout->setSpacing(sectionSpacing);
 
     auto *additionalWidget = new QWidget(this->bottomWidget_);
-    additionalWidget->setFixedHeight(compactControlHeight +
-                                     std::max(2, sectionSpacing));
-    auto *additionalRow = new QHBoxLayout(additionalWidget);
+    auto *additionalLayout = new QVBoxLayout(additionalWidget);
+    additionalLayout->setContentsMargins(0, 0, 0, 0);
+    additionalLayout->setSpacing(rowSpacing);
+    auto *additionalRow = new QHBoxLayout();
     additionalRow->setContentsMargins(0, 0, 0, 0);
     additionalRow->setSpacing(rowSpacing);
     additionalRow->setAlignment(Qt::AlignVCenter);
@@ -999,7 +1001,8 @@ void PollDialog::buildCreateUi()
                          this->draftEnableAdditionalVotes_ = checked;
                          this->updateUi();
                      });
-    additionalRow->addWidget(additionalVotes, 0, Qt::AlignVCenter);
+    additionalLayout->addWidget(additionalVotes);
+    additionalLayout->addLayout(additionalRow);
     additionalRow->addStretch(1);
 
     auto *pointsEdit = new QLineEdit(QString::number(this->draftPointsPerVote_),
@@ -1043,7 +1046,7 @@ void PollDialog::buildCreateUi()
         int currentIndex = 0;
         for (int i = 0; i < static_cast<int>(std::size(DURATION_OPTIONS)); ++i)
         {
-            durationCombo->addItem(DURATION_OPTIONS[i].label,
+            durationCombo->addItem(uiText(DURATION_OPTIONS[i].label),
                                    DURATION_OPTIONS[i].seconds);
             if (DURATION_OPTIONS[i].seconds == this->draftDurationSeconds_)
             {
@@ -1217,10 +1220,8 @@ void PollDialog::buildVoteUi()
         const bool isWinner =
             poll.totalVotes > 0 && choice.totalVotes == maxChoiceVotes;
 
-        const int pct = poll.totalVotes > 0
-                            ? static_cast<int>((choice.totalVotes * 100.0) /
-                                               poll.totalVotes)
-                            : 0;
+        const int pct = outcomePercentage(poll.choices, i,
+                                           [](const auto &o) { return o.totalVotes; });
 
         bool hasVotedForThis = false;
         if (!broadcasterView && this->currentUserTotalVotes() > 0)

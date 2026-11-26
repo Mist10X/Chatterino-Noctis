@@ -1033,7 +1033,7 @@ void GeneralPage::initLayout(GeneralPageView &layout)
     {
         layout.addDescription(
             uiText("The program checks for a new version by itself at startup "
-            "and every 6 hours. When one is out, a card appears at the top "
+            "and every 10 minutes. When one is out, a card appears at the top "
             "of the window: click it to update. Releases and the list of "
             "changes: <a href='https://github.com/Mist10X/chatterino-noctis/"
             "releases'>GitHub</a>."));
@@ -1059,6 +1059,9 @@ void GeneralPage::initLayout(GeneralPageView &layout)
                     status->setText(uiText("Could not reach GitHub. Check "
                                            "the internet connection."));
                     break;
+                case Updates::RateLimited:
+                    status->setText(uiText("GitHub has limited update checks. The check will retry automatically."));
+                    break;
                 case Updates::Downloading:
                     status->setText(uiText("Downloading the update…"));
                     break;
@@ -1079,8 +1082,15 @@ void GeneralPage::initLayout(GeneralPageView &layout)
                 showUpdatePrompt(nullptr);
                 return;
             }
-            updates.checkForUpdates();
+            updates.checkForUpdates(true);
         });
+        const auto showCheckAction = [check](Updates::Status st) {
+            check->setText(st == Updates::UpdateAvailable ? uiText("Open update") :
+                           uiText("Check for updates now"));
+        };
+        showCheckAction(getApp()->getUpdates().getStatus());
+        this->managedConnections_.managedConnect(
+            getApp()->getUpdates().statusUpdated, showCheckAction);
         auto *row = new QHBoxLayout;
         row->addWidget(check);
         row->addWidget(status, 1);

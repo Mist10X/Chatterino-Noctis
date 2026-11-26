@@ -132,6 +132,11 @@ private:
         {
             body = {{"status", 403}, {"message", "forbidden"}};
         }
+        else if (target.contains("rate-limited.example") &&
+                 this->requests.value(target) == 1)
+        {
+            body = {{"status", 429}};
+        }
         else
         {
             body = {{"status", 200},
@@ -287,6 +292,12 @@ inline int runLinkPreviewChecks(chatterino::Settings &settings,
           inlineInfo.isTransientFailure() && hoverInfo.isTransientFailure() &&
               !hoverInfo.canResolve() && server.requests.value(screenshot) == 1);
 
+    LinkInfo rateLimited(QStringLiteral("https://rate-limited.example/picture"));
+    resolver.resolve(&rateLimited);
+    waitUntil([&] { return rateLimited.isLoaded(); }, 3000);
+    check("rate-limited preview is retryable after cooldown",
+          rateLimited.isTransientFailure() && !rateLimited.canResolve());
+
     auto thumbnail = Image::fromLinkThumbnail({QStringLiteral("http://127.0.0.1:%1/test-thumbnail.png")
                                          .arg(server.serverPort())});
     thumbnail->pixmapOrLoad();
@@ -295,14 +306,19 @@ inline int runLinkPreviewChecks(chatterino::Settings &settings,
     QElapsedTimer timer;
     timer.start();
     resolver.resolve(&slow);
-    waitUntil([&] { return slow.isLoaded(); }, 15000);
+    waitUntil([&] { return slow.isLoaded(); }, 19000);
     check("an unanswered request ends with an error after the timeout",
-          slow.hasError() && timer.elapsed() >= 7000 &&
-              timer.elapsed() < 12000 &&
+          slow.hasError() && timer.elapsed() >= 14000 &&
+              timer.elapsed() < 19000 &&
               slow.tooltip().contains("slow.example.org"));
 
     check("thumbnail download recovers after a temporary image-server error",
           thumbnail->loaded() && server.thumbnailAttempts == 2);
+
+    resolver.resolve(&rateLimited);
+    waitUntil([&] { return rateLimited.isResolved(); }, 3000);
+    check("rate-limited preview resolves after cooldown",
+          rateLimited.isResolved());
 
     waitUntil([&] { return inlineInfo.canResolve() && hoverInfo.canResolve(); }, 10000);
     imagepreview::getOrRequest(inlineInfo);

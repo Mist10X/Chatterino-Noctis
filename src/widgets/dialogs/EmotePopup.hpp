@@ -12,6 +12,7 @@
 #include <QLineEdit>
 
 class QLabel;
+class QPushButton;
 
 namespace chatterino {
 
@@ -65,6 +66,7 @@ private:
     ChannelAvatarLabel *titleAvatar_{};
     QWidget *titleRow_{};
     QWidget *searchRow_{};
+    QPushButton *gifButton_{};
 
     std::vector<EmotePtr> favouriteEmotes_;
     std::unordered_map<QString, EmojiPtr> favouriteEmojis_;

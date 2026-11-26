@@ -1211,8 +1211,13 @@ int main(int argc, char **argv)
               "standard edit menu and nested menu share the rounded Noctis surface");
         const auto expectedFont = app.fonts.getFont(FontStyle::UiMedium, 1.F);
         check(menu->font().family() == expectedFont.family() &&
-                  menu->font().pointSizeF() == expectedFont.pointSizeF(),
-              "context menu follows the chat font");
+                  menu->font().pointSizeF() == expectedFont.pointSizeF() &&
+                  menu->font().weight() == QFont::DemiBold &&
+                  child->font().weight() == QFont::DemiBold,
+              "context and nested menus follow the chat font with semibold text");
+        check(menu->style()->styleHint(QStyle::SH_UnderlineShortcut, nullptr, menu.get()) == 0 &&
+                  child->style()->styleHint(QStyle::SH_UnderlineShortcut, nullptr, child) == 0,
+              "context and nested menus do not draw mnemonic underlines");
         menu->popup(QPoint(10, 10));
         menu->hide();
         const auto previousScale = app.settings.uiScale.getValue();
@@ -1226,6 +1231,31 @@ int main(int argc, char **argv)
               "compact menu keeps full UI type size at 130 percent");
         check(rowHeight >= menu->fontMetrics().height() + 4 && rowHeight <= 27,
               "standard input menu has compact rows at 130 percent");
+        // Compare with the former regular-font menu on the same paint device.
+        QMenu oldMenu;
+        oldMenu.setProperty("mist1xStyled", true);
+        oldMenu.setFont(scaledFont);
+        auto oldSheet = menu->styleSheet();
+        oldSheet.replace("padding: 3px 12px 3px 13px",
+                         "padding: 3px 15px 3px 16px");
+        oldMenu.setStyleSheet(oldSheet);
+        for (auto *action : menu->actions())
+        {
+            if (action->isSeparator())
+            {
+                oldMenu.addSeparator();
+                continue;
+            }
+            auto *copy = oldMenu.addAction(action->text());
+            copy->setShortcut(action->shortcut());
+            copy->setVisible(action->isVisible());
+            copy->setEnabled(action->isEnabled());
+            copy->setIcon(action->icon());
+        }
+        oldMenu.ensurePolished();
+        check(menu->sizeHint().width() <= oldMenu.sizeHint().width() &&
+                  menu->sizeHint().height() <= oldMenu.sizeHint().height(),
+              "denser menu type does not enlarge the previous menu");
         check(menu->grab().save(output + "/input-menu-130.png"),
               "standard input menu rendered at 130 percent");
         menu->hide();
@@ -1364,6 +1394,14 @@ int main(int argc, char **argv)
     }
     if (qEnvironmentVariableIsSet("NOCTIS_UPDATE_HTTP_FIXTURE"))
     {
+        const bool equalVersionFixture =
+            qEnvironmentVariableIsSet("NOCTIS_UPDATE_EQUAL_FIXTURE");
+        const bool manualFixture =
+            qEnvironmentVariableIsSet("NOCTIS_UPDATE_MANUAL_FIXTURE");
+        const bool manualRateFixture =
+            qEnvironmentVariableIsSet("NOCTIS_UPDATE_MANUAL_RATE_FIXTURE");
+        const bool manualForbiddenFixture =
+            qEnvironmentVariableIsSet("NOCTIS_UPDATE_MANUAL_FORBIDDEN_FIXTURE");
         QTcpServer server;
         check(server.listen(QHostAddress::LocalHost, 0), "local update HTTP fixture listens");
         qputenv("MIST1X_UPDATE_API", QStringLiteral("http://127.0.0.1:%1/releases").arg(server.serverPort()).toUtf8());
@@ -1371,6 +1409,7 @@ int main(int argc, char **argv)
         int requests = 0;
         QStringList paths;
         bool conditional = false;
+        bool freshManual = false;
         QObject::connect(&server, &QTcpServer::newConnection, &server, [&] {
             while (auto *socket = server.nextPendingConnection())
             {
@@ -1383,7 +1422,41 @@ int main(int argc, char **argv)
                     conditional |= input->toLower().contains("if-none-match: \"fixture-v1\"");
                     QByteArray status = "200 OK", etag = "\"fixture-v1\"";
                     QByteArray body = R"([{"tag_name":"v1.3.8"},{"tag_name":"v99.0.0-beta.1","prerelease":true},{"tag_name":"v99.0.0","draft":false}])";
-                    if (requests == 2) { status = "304 Not Modified"; body.clear(); }
+                    if (equalVersionFixture)
+                        body = "[{\"tag_name\":\"v" MIST1X_VERSION "\",\"draft\":false,\"prerelease\":false}]";
+                    if (manualFixture)
+                    {
+                        if (requests == 1)
+                            body = "[{\"tag_name\":\"v" MIST1X_VERSION "\"}]";
+                        else
+                        {
+                            const auto headers = input->toLower();
+                            freshManual = !headers.contains("if-none-match:") &&
+                                headers.contains("cache-control: no-cache") &&
+                                headers.contains("pragma: no-cache");
+                            if (manualRateFixture)
+                            {
+                                status = "429 Too Many Requests";
+                                body = R"({"message":"rate limited"})";
+                            }
+                            else if (manualForbiddenFixture && requests == 2)
+                            {
+                                status = "403 Forbidden";
+                                body = R"({"message":"Forbidden"})";
+                            }
+                            else if (!freshManual)
+                            {
+                                status = "304 Not Modified";
+                                body.clear();
+                            }
+                            else
+                            {
+                                body = R"([{"tag_name":"v99.0.1"}])";
+                                etag = "\"fixture-v2\"";
+                            }
+                        }
+                    }
+                    else if (requests == 2) { status = "304 Not Modified"; body.clear(); }
                     else if (requests == 3) { body = R"([{"tag_name":"v99.0.1"}])"; etag = "\"fixture-v2\""; }
                     else if (requests >= 4) { status = "429 Too Many Requests"; body = R"({"message":"rate limited"})"; }
                     socket->write("HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nETag: " + etag +
@@ -1411,6 +1484,75 @@ int main(int argc, char **argv)
             return predicate();
         };
         auto pause = [](int ms) { QEventLoop loop; QTimer::singleShot(ms,&loop,&QEventLoop::quit); loop.exec(); };
+        if (manualFixture)
+        {
+            updates.checkForUpdates();
+            check(wait([&]{ return updates.getStatus() == Updates::NoUpdateAvailable; }, 5000) &&
+                      requests == 1,
+                  "startup confirms current release and caches its validator");
+            GeneralPage page;
+            QPushButton *manualButton = nullptr;
+            for (auto *button : page.findChildren<QPushButton *>())
+                if (button->text() == uiText("Check for updates now"))
+                    manualButton = button;
+            check(manualButton != nullptr, "real settings page contains the manual update action");
+            auto clickManual = [&] {
+                if (manualButton)
+                    manualButton->click();
+            };
+            for (int i = 0; i < 5; ++i) clickManual();
+            check(updates.getStatus() == Updates::Searching && requests == 1,
+                  "manual check immediately shows checking instead of stale up-to-date state");
+            check(wait([&]{ return requests == 2; }, 18000),
+                  "queued manual request runs after minimum spacing");
+            const auto expected = manualRateFixture ? Updates::RateLimited :
+                manualForbiddenFixture ? Updates::SearchFailed : Updates::UpdateAvailable;
+            check(wait([&]{return updates.getStatus() == expected;}, 5000) &&
+                      freshManual && (manualRateFixture || manualForbiddenFixture ||
+                                      updates.getOnlineVersion() == "99.0.1"),
+                  "manual check requests uncached metadata and reports the actual result");
+            if (manualRateFixture)
+            {
+                clickManual();
+                pause(1000);
+                check(requests == 2 && updates.getStatus() == Updates::RateLimited,
+                      "manual check respects real GitHub rate limit");
+            }
+            else if (manualForbiddenFixture)
+            {
+                clickManual();
+                check(wait([&]{ return updates.getStatus() == Updates::UpdateAvailable; }, 18000) &&
+                          requests == 3 && updates.getOnlineVersion() == "99.0.1",
+                      "ordinary HTTP 403 does not incorrectly block manual checks for an hour");
+            }
+            else
+            {
+                pause(1000);
+                check(requests == 2, "multiple manual clicks coalesce into one fresh request");
+            }
+            QFile report(output + "/update-http-results.json");
+            report.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            report.write(QJsonDocument(QJsonObject{{"checks", checks}, {"failures", failures}, {"requests", requests}}).toJson());
+            report.close();
+            markAppAboutToQuit();
+            NetworkManager::deinit();
+            return failures ? 46 : 0;
+        }
+        if (equalVersionFixture)
+        {
+            updates.checkForUpdates();
+            check(wait([&]{ return updates.getStatus() == Updates::NoUpdateAvailable; }, 5000) &&
+                      updates.getCurrentVersion() == MIST1X_VERSION &&
+                      updates.getOnlineVersion() == MIST1X_VERSION && requests == 1,
+                  QStringLiteral("Personal %1 sees published %1 as up to date").arg(MIST1X_VERSION));
+            QFile report(output + "/update-http-results.json");
+            report.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            report.write(QJsonDocument(QJsonObject{{"checks", checks}, {"failures", failures}, {"requests", requests}}).toJson());
+            report.close();
+            markAppAboutToQuit();
+            NetworkManager::deinit();
+            return failures ? 46 : 0;
+        }
         for (int i = 0; i < 5; ++i) updates.checkForUpdates();
         check(wait([&]{ return updates.getStatus() == Updates::UpdateAvailable; }, 5000) && updates.getOnlineVersion() == "99.0.0" && requests == 1,
               "HTTP fixture chooses highest stable and coalesces concurrent checks");

@@ -3037,10 +3037,7 @@ void MessageBuilder::parseMessageTags(Communi::TagsRef tags,
                                                    : "%1 · Watch streak: %2 streams in a row");
                     messageText = uiText(source).arg(displayName, QString::number(count));
                 }
-                if (!hasContent)
-                {
-                    this->message_->channelNotice = Message::ChannelNotice::WatchStreak;
-                }
+                this->message_->channelNotice = Message::ChannelNotice::WatchStreak;
             }
             const auto userID = tags.getOrEmpty("user-id");
             this->appendOrEmplaceTextWithUser(

@@ -40,6 +40,7 @@ public:
         WriteFileFailed,
         MissingPortableUpdater,
         RunUpdaterFailed,
+        RateLimited,
     };
 
     static bool isDowngradeOf(const QString &online, const QString &current);
@@ -47,7 +48,7 @@ public:
     void deleteOldFiles();
 
     /// Asks GitHub for the newest release of Chatterino Noctis.
-    void checkForUpdates();
+    void checkForUpdates(bool manual = false);
     /// Checks shortly after startup and periodically, with failure backoff.
     void startPeriodicChecks();
     /// Installed with the setup (not a portable copy): the update can be
@@ -89,6 +90,8 @@ private:
     QByteArray listEtag_;
     bool periodicStarted_ = false;
     bool checkInFlight_ = false;
+    bool manualCheckPending_ = false;
+    bool manualCheckInFlight_ = false;
     bool currentCheckWithTests_ = false;
     bool confirmedRelease_ = false;
     bool confirmedPrerelease_ = false;

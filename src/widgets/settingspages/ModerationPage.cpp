@@ -230,7 +230,7 @@ ModerationPage::ModerationPage()
     {
         auto label = modMode.emplace<QLabel>(
             uiText("Moderation mode is enabled by clicking <img width='18' "
-            "height='18' src=':/buttons/moderationDisabledDarkMode18x18.png'> "
+            "height='18' src=':/buttons/moderationDisabled-darkMode.svg'> "
             "in a channel that you moderate.<br><br>"
             "Moderation buttons can be bound to chat commands such as \"/ban "
             "{user.name}\", \"/timeout {user.name} 1000\", \"/w someusername "

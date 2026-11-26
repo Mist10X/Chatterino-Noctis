@@ -2,6 +2,7 @@
 #include "widgets/helper/PredictionBanner.hpp"
 
 #include "widgets/helper/PredictionPalette.hpp"
+#include "widgets/helper/OutcomePercentages.hpp"
 
 #include "Application.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
@@ -147,19 +148,6 @@ QString formatPredictionAge(const QDateTime &dateTime)
 QString formatOutcomePoints(qlonglong points)
 {
     return formatChannelPoints(points);
-}
-
-int outcomePercent(qlonglong points, qlonglong totalPoints, int outcomeCount)
-{
-    if (totalPoints > 0)
-    {
-        return static_cast<int>((points * 100.0) / totalPoints);
-    }
-    if (outcomeCount > 0)
-    {
-        return 100 / outcomeCount;
-    }
-    return 0;
 }
 
 int scaledInt(float value, int minimum = 1)
@@ -596,7 +584,7 @@ void PredictionBanner::updateLayout()
         }
         const auto &leader = prediction.outcomes[leadIdx];
         const int leadPct =
-            outcomePercent(leader.totalPoints, totalPoints, outcomeCount);
+            outcomePercentage(prediction.outcomes, leadIdx, [](const auto &o) { return o.totalPoints; });
         const QColor leadColor = outcomeColorByIndex(leadIdx);
 
         if (isResolved)
@@ -653,7 +641,7 @@ void PredictionBanner::updateLayout()
     {
         const auto &leftOutcome = prediction.outcomes.front();
         const int leftPercent =
-            outcomePercent(leftOutcome.totalPoints, totalPoints, outcomeCount);
+            outcomePercentage(prediction.outcomes, 0, [](const auto &o) { return o.totalPoints; });
         const bool leftWon =
             isResolved && leftOutcome.id == prediction.winningOutcomeId;
 
@@ -688,8 +676,8 @@ void PredictionBanner::updateLayout()
         if (outcomeCount > 1)
         {
             const auto &rightOutcome = prediction.outcomes.back();
-            const int rightPercent = outcomePercent(rightOutcome.totalPoints,
-                                                    totalPoints, outcomeCount);
+            const int rightPercent = outcomePercentage(prediction.outcomes, outcomeCount - 1,
+                                                        [](const auto &o) { return o.totalPoints; });
             const bool rightWon =
                 isResolved && rightOutcome.id == prediction.winningOutcomeId;
 

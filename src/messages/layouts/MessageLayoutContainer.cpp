@@ -740,16 +740,20 @@ qreal MessageLayoutContainer::getLayoutContentWidth() const
 
 QRectF MessageLayoutContainer::getContentBounds() const
 {
-    return this->getContentBounds(false);
+    QRectF bounds;
+    for (const auto &element : this->elements_)
+    {
+        bounds = bounds.united(element->getRect());
+    }
+    return bounds;
 }
 
-QRectF MessageLayoutContainer::getContentBounds(bool subscriptionHeaderOnly) const
+QRectF MessageLayoutContainer::getContentBounds(MessageElementFlag headerFlag) const
 {
     QRectF bounds;
     for (const auto &element : this->elements_)
     {
-        if (subscriptionHeaderOnly &&
-            !element->getCreator().getFlags().has(MessageElementFlag::SubscriptionHeader))
+        if (!element->getCreator().getFlags().has(headerFlag))
         {
             continue;
         }

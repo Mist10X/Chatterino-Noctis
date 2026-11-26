@@ -439,6 +439,10 @@ void MessageLayout::actuallyLayout(const MessageLayoutContext &ctx)
              this->message_->flags.has(MessageFlag::System) ||
              (ctx.flags.has(MessageElementFlag::SubscriptionHeader) &&
               element->getFlags().has(MessageElementFlag::SubscriptionHeader))) &&
+            (*icon != NoticeIcon::WatchStreak ||
+             this->message_->flags.has(MessageFlag::System) ||
+             (ctx.flags.has(MessageElementFlag::WatchStreakHeader) &&
+              element->getFlags().has(MessageElementFlag::WatchStreakHeader))) &&
             dynamic_cast<TimestampElement *>(element.get()) == nullptr)
         {
             auto color = noticeColor(*icon);
@@ -826,9 +830,12 @@ void MessageLayout::updateBuffer(QPixmap *buffer,
         // A soft rounded box around just the visible text, drawn under it.
         const qreal padX = 3.0 * this->scale_;
         const qreal padY = 1.0 * this->scale_;
-        const bool headerOnly = kind == NoticeIcon::Subscription &&
-                                !this->message_->flags.has(MessageFlag::System);
-        auto box = this->container_.getContentBounds(headerOnly);
+        const bool headerOnly = !this->message_->flags.has(MessageFlag::System);
+        auto box = headerOnly && kind == NoticeIcon::Subscription
+                       ? this->container_.getContentBounds(MessageElementFlag::SubscriptionHeader)
+                       : headerOnly && kind == NoticeIcon::WatchStreak
+                             ? this->container_.getContentBounds(MessageElementFlag::WatchStreakHeader)
+                             : this->container_.getContentBounds();
         if (!box.isEmpty())
         {
             box = box.adjusted(-padX, -padY, padX, padY);

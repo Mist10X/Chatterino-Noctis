@@ -2563,6 +2563,43 @@ int main(int argc, char **argv)
             QTimer::singleShot(500, &popup, [&] {
                 popup.previewModerationStrip();
             });
+            QTimer::singleShot(600, &popup, [&] {
+                auto *local = popup.findChild<QWidget *>("UsercardLocalModerationActions");
+                auto *cross = popup.findChild<QWidget *>("UsercardCrossModerationActions");
+                const bool crossOnly = qEnvironmentVariableIsSet("NOCTIS_PREVIEW_CROSS_ONLY");
+                const bool visible = local && cross && cross->isVisibleTo(&popup) &&
+                    (local->isVisibleTo(&popup) != crossOnly);
+                const int gap = visible && !crossOnly
+                    ? cross->geometry().left() - local->geometry().right() - 1 : 0;
+                const bool separated = visible && (crossOnly || gap >= 24);
+                checksPassed &= separated;
+                checks.append(QJsonObject{{"name", "cross-channel actions separated from local punishments"},
+                                         {"ok", separated}, {"gap", gap}});
+                auto *footer = popup.findChild<QWidget *>("UsercardModerationStrip");
+                const auto raster = popup.grab().toImage();
+                const auto dpr = raster.devicePixelRatio();
+                const auto expected = QColor(usercardChrome::palette(getTheme()->isLightTheme()).profile);
+                const auto pixel = [&](QPoint point) {
+                    return raster.pixelColor(qRound(point.x() * dpr),
+                                             qRound(point.y() * dpr));
+                };
+                bool uniform = footer && footer->isVisibleTo(&popup);
+                if (uniform)
+                {
+                    const auto left = footer->mapTo(&popup, QPoint(2, footer->height() / 2));
+                    const auto right = footer->mapTo(&popup, QPoint(footer->width() - 3, footer->height() / 2));
+                    uniform = pixel(left) == expected && pixel(right) == expected;
+                    if (autoClose)
+                    {
+                        const auto bottomLeft = footer->mapTo(&popup, QPoint(footer->width() / 4, footer->height() + 2));
+                        const auto bottomRight = footer->mapTo(&popup, QPoint(footer->width() * 3 / 4, footer->height() + 2));
+                        uniform &= pixel(bottomLeft) == expected && pixel(bottomRight) == expected;
+                    }
+                }
+                checksPassed &= uniform;
+                checks.append(QJsonObject{{"name", "moderation footer and lower rim use a single identical background"},
+                                         {"ok", uniform}});
+            });
         }
 #endif
         if (parser.isSet(QStringLiteral("banner-demo")))

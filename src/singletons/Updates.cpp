@@ -33,6 +33,7 @@
 #include <QRandomGenerator>
 #include <QtConcurrent>
 #include <semver/semver.hpp>
+#include <utility>
 
 namespace {
 
@@ -332,10 +333,14 @@ void Updates::installUpdates()
         .execute();
 }
 
-void Updates::checkForUpdates()
+void Updates::checkForUpdates(bool manual)
 {
     using namespace std::chrono;
-    if (isAppAboutToQuit() || this->checkInFlight_)
+    if (isAppAboutToQuit())
+        return;
+    if (manual && !this->manualCheckInFlight_)
+        this->manualCheckPending_ = true;
+    if (this->checkInFlight_)
         return;
     if (this->status_ == Downloading)
     {
@@ -345,17 +350,24 @@ void Updates::checkForUpdates()
 
     if (!this->rateBlockedUntil_.hasExpired())
     {
+        if (this->manualCheckPending_ &&
+            (!this->confirmedRelease_ || !isNewer(this->onlineVersion_, this->currentVersion_)))
+            this->setStatus_(RateLimited);
         this->scheduleCheck_(milliseconds(this->rateBlockedUntil_.remainingTime()) + seconds(1));
         return;
     }
     if (this->lastRequest_.isValid() && this->lastRequest_.elapsed() < duration_cast<milliseconds>(updatecheck::requestSpacing).count())
     {
+        if (this->manualCheckPending_ &&
+            (!this->confirmedRelease_ || !isNewer(this->onlineVersion_, this->currentVersion_)))
+            this->setStatus_(Searching);
         this->scheduleCheck_(duration_cast<milliseconds>(updatecheck::requestSpacing) - milliseconds(this->lastRequest_.elapsed()));
         return;
     }
 
     this->nextCheck_.stop();
     this->checkInFlight_ = true;
+    this->manualCheckInFlight_ = std::exchange(this->manualCheckPending_, false);
     this->lastRequest_.start();
     this->currentCheckWithTests_ = getSettings()->betaUpdates;
     if (!this->currentCheckWithTests_ && this->confirmedPrerelease_)
@@ -381,6 +393,7 @@ void Updates::checkFinished_(bool success, bool rateLimited)
 {
     using namespace std::chrono;
     this->checkInFlight_ = false;
+    this->manualCheckInFlight_ = false;
     if (success)
         this->consecutiveFailures_ = 0;
     else
@@ -391,9 +404,10 @@ void Updates::checkFinished_(bool success, bool rateLimited)
 
     if (!success && this->status_ != Downloading &&
         (!this->confirmedRelease_ || !isNewer(this->onlineVersion_, this->currentVersion_)))
-        this->setStatus_(SearchFailed);
+        this->setStatus_(rateLimited ? RateLimited : SearchFailed);
 
-    if (this->currentCheckWithTests_ != getSettings()->betaUpdates && !rateLimited)
+    if ((this->manualCheckPending_ ||
+         this->currentCheckWithTests_ != getSettings()->betaUpdates) && !rateLimited)
     {
         this->scheduleCheck_(milliseconds(100));
         return;
@@ -416,7 +430,7 @@ void Updates::requestRelease_(bool withTests, bool latestFallback)
         {
             // 304 is meaningful only if we have validated metadata for this
             // exact release channel; never treat a missing body as no update.
-            const bool valid = this->confirmedRelease_ &&
+            const bool valid = !this->manualCheckInFlight_ && this->confirmedRelease_ &&
                 this->confirmedWithTests_ == withTests && !this->listEtag_.isEmpty();
             if (valid)
                 this->setStatus_(isNewer(this->onlineVersion_, this->currentVersion_)
@@ -508,7 +522,17 @@ void Updates::requestRelease_(bool withTests, bool latestFallback)
 
     auto request = githubRequest(latestFallback ? QString(releasesApi() % u"/latest")
                                                 : QString(releasesApi() % u"?per_page=30"));
-    if (!latestFallback && this->confirmedRelease_ && this->confirmedWithTests_ == withTests && !this->listEtag_.isEmpty())
+    if (this->manualCheckInFlight_)
+    {
+        // A user-requested refresh must not reuse the previous list validator
+        // or a proxy/cache response without revalidation.
+        request = std::move(request)
+            .header("Cache-Control", "no-cache, max-age=0")
+            .header("Pragma", "no-cache")
+            .attribute(QNetworkRequest::CacheLoadControlAttribute,
+                       QNetworkRequest::AlwaysNetwork);
+    }
+    else if (!latestFallback && this->confirmedRelease_ && this->confirmedWithTests_ == withTests && !this->listEtag_.isEmpty())
         request = std::move(request).header("If-None-Match", this->listEtag_);
     std::move(request)
         .caller(&this->nextCheck_)
@@ -517,7 +541,10 @@ void Updates::requestRelease_(bool withTests, bool latestFallback)
         .onError([this](const NetworkResult &result) {
             qCDebug(chatterinoUpdate)
                 << "Update check failed:" << result.formatError();
-            this->checkFinished_(false, result.status() == 403 || result.status() == 429);
+            const auto explanation = result.parseJson().value("message").toString();
+            const bool rateLimited = result.status() == 429 ||
+                (result.status() == 403 && explanation.contains("rate limit", Qt::CaseInsensitive));
+            this->checkFinished_(false, rateLimited);
         })
         .execute();
 }
@@ -555,6 +582,7 @@ bool Updates::isError() const
     switch (this->getStatus())
     {
         case SearchFailed:
+        case RateLimited:
         case DownloadFailed:
         case WriteFileFailed:
         case MissingPortableUpdater:

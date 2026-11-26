@@ -3,6 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 #include "common/UiLanguage.hpp"
+#include "controllers/moderationactions/ModerationAction.hpp"
+#include "widgets/helper/ModerationChrome.hpp"
+#include "widgets/helper/NoctisTooltip.hpp"
 #include "widgets/helper/ChannelView.hpp"
 
 #include "Application.hpp"
@@ -105,6 +108,25 @@ using namespace chatterino;
 
 constexpr int SCROLLBAR_PADDING = 8;
 constexpr int MAX_AUTO_TRANSLATIONS_IN_FLIGHT_PER_CHANNEL = 5;
+
+void populatePinDurationMenu(QMenu *menu, const ChannelPtr &channel,
+                             const QString &messageId)
+{
+    const std::pair<const char *, int> durations[] = {
+        {"1 minute", 60}, {"5 minutes", 300}, {"10 minutes", 600},
+        {"15 minutes", 900}, {"30 minutes", 1800}, {"Indefinitely", 0},
+    };
+    for (const auto &[label, seconds] : durations)
+    {
+        menu->addAction(uiText(label), menu, [channel, messageId, seconds] {
+            auto *tc = dynamic_cast<TwitchChannel *>(channel.get());
+            if (tc && tc->hasModRights() && !messageId.isEmpty())
+            {
+                tc->pinMessage(messageId, seconds);
+            }
+        });
+    }
+}
 
 void deleteUploadedPicture(const QString &url, std::weak_ptr<Channel> weakChannel)
 {
@@ -3427,6 +3449,29 @@ void ChannelView::mouseMoveEvent(QMouseEvent *event)
         this->tooltipWidget_->show();
         return;
     }
+    if (hoverLayoutElement->getLink().type == Link::UserAction)
+    {
+        this->forgetHoveredLink();
+        this->setCursor(Qt::PointingHandCursor);
+        this->tooltipWidget_->hide();
+        const ModerationAction action(hoverLayoutElement->getLink().value);
+        QString description;
+        switch (action.getType())
+        {
+            case ModerationAction::Type::Ban: description = uiText("Ban"); break;
+            case ModerationAction::Type::Pin: description = uiText("Pin message"); break;
+            case ModerationAction::Type::Delete: description = uiText("Delete message"); break;
+            case ModerationAction::Type::Timeout:
+                description = uiText("Timeout for %1").arg(
+                    moderationchrome::durationLabel(action.getLine1(), action.getLine2()));
+                break;
+            case ModerationAction::Type::Custom: description = action.getAction(); break;
+        }
+        const auto region = hoverLayoutElement->getRect().translated(event->position() - relativePos);
+        noctistooltip::showText(event->globalPosition().toPoint(), description, this,
+                               region.toAlignedRect());
+        return;
+    }
     auto *element = &hoverLayoutElement->getCreator();
     bool isLinkValid = hoverLayoutElement->getLink().isValid();
     if (dynamic_cast<const LinkElement *>(element) == nullptr)
@@ -4213,13 +4258,6 @@ void ChannelView::addMessageContextMenuItems(QMenu *menu,
             }
         });
     }
-    else if (getSettings()->showTranslateMessageContextAction &&
-             !messageTextForTranslation(contextMessage).isEmpty())
-    {
-        menu->addAction(uiText("&Translate message"), [this, contextMessage] {
-            this->translateMessage(contextMessage);
-        });
-    }
 
     if (this->canReplyToMessages())
     {
@@ -4266,10 +4304,7 @@ void ChannelView::addMessageContextMenuItems(QMenu *menu,
             }
             else
             {
-                menu->addAction(uiText("&Pin message"), [twitchChannel, id] {
-                    twitchChannel->pinMessage(
-                        id, getSettings()->defaultPinDuration);
-                });
+                populatePinDurationMenu(menu->addMenu(uiText("&Pin message")), chan, id);
             }
         }
     }
@@ -4332,11 +4367,8 @@ void ChannelView::addMessageContextMenuItems(QMenu *menu,
                 }
                 else
                 {
-                    moderateMenu->addAction(
-                        uiText("&Pin message"), [twitchChannel, id] {
-                            twitchChannel->pinMessage(
-                                id, getSettings()->defaultPinDuration);
-                        });
+                    populatePinDurationMenu(
+                        moderateMenu->addMenu(uiText("&Pin message")), chan, id);
                 }
             }
         }
@@ -4399,24 +4431,6 @@ void ChannelView::addMessageContextMenuItems(QMenu *menu,
         });
     }
 
-    const auto msg = layout->getMessage();
-    if (!msg->channelName.isEmpty())
-    {
-        menu->addAction(
-            uiText("Open in &logs"),
-            [messageID = msg->id, channelName = msg->channelName,
-             dateTime = QDateTime(msg->serverReceivedTime).toUTC()] {
-                QString logsDate = dateTime.toString("yyyy-MM-dd");
-                QString logsJumpHash =
-                    messageID.isEmpty()
-                        ? dateTime.toString("yyyy-MM-ddTHH:mm:ssZ")
-                        : messageID;
-
-                QDesktopServices::openUrl(
-                    QUrl(u"https://lurkology.com/logs?c=" % channelName %
-                         u"&d=" % logsDate % u"#" % logsJumpHash));
-            });
-    }
 }
 
 void ChannelView::translateMessage(const MessagePtr &message)
@@ -4815,12 +4829,15 @@ void ChannelView::handleLinkClick(QMouseEvent *event, const Link &link,
                     }
 
                     QString durationStr = value.mid(4).trimmed();
-                    auto duration = commands::normalizePinDuration(
-                        getSettings()->defaultPinDuration);
-
                     if (durationStr.isEmpty())
                     {
-                        tc->pinMessage(id, duration);
+                        if (tc->hasModRights())
+                        {
+                            auto *menu = new QMenu(this);
+                            menu->setAttribute(Qt::WA_DeleteOnClose);
+                            populatePinDurationMenu(menu, channel, id);
+                            menu->popup(QCursor::pos());
+                        }
                         return;
                     }
 

@@ -780,11 +780,6 @@ MoltorinoPage::MoltorinoPage()
                      "setting."))
         ->addTo(*view);
 
-    SettingWidget::checkbox(uiText("Show Translate message in right-click menu"),
-                            s.showTranslateMessageContextAction)
-        ->setTooltip(uiText("Add a right-click action for translating chat messages."))
-        ->addTo(*view);
-
     SettingWidget::dropdown(uiText("Translate messages to"),
                             s.messageTranslationTargetLanguage,
                             translationLanguageItems())

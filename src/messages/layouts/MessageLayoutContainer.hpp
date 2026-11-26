@@ -25,6 +25,8 @@ class QPainter;
 
 namespace chatterino {
 
+enum class MessageElementFlag : int64_t;
+
 enum class TextDirection : uint8_t {
     Neutral,
     RTL,
@@ -88,7 +90,7 @@ struct MessageLayoutContainer {
 
     /// Bounding box of all laid-out elements on every line.
     QRectF getContentBounds() const;
-    QRectF getContentBounds(bool subscriptionHeaderOnly) const;
+    QRectF getContentBounds(MessageElementFlag headerFlag) const;
 
     qreal getHeight() const;
 

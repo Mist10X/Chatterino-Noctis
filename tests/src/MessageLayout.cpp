@@ -6,6 +6,7 @@
 
 #include "Application.hpp"
 #include "controllers/accounts/AccountController.hpp"
+#include "controllers/moderationactions/ModerationAction.hpp"
 #include "messages/layouts/MessageLayoutContext.hpp"
 #include "messages/layouts/MessageLayoutElement.hpp"
 #include "messages/Message.hpp"
@@ -26,6 +27,7 @@
 #include <QImage>
 #include <QJsonObject>
 #include <QPainter>
+#include <QSvgRenderer>
 #include <QString>
 
 #include <array>
@@ -107,6 +109,156 @@ TEST(TextElement, BasicCase)
 
     EXPECT_EQ(wordStart, 0);
     EXPECT_EQ(wordEnd, 3);
+}
+
+TEST(ModerationChrome, InlineActionsKeepCommandsAndFitSingleLine)
+{
+    MockApplication app;
+    const QStringList commands{
+        "/timeout {user.name} 52", "/timeout {user.name} 10m",
+        "/timeout {user.name} 1d", "/ban {user.name}", "/pin {msg.id}",
+    };
+    for (const auto &command : commands)
+        app.settings.moderationActions.append(ModerationAction(command));
+    app.settings.chatFontFamily.setValue("Noctis Montserrat");
+    MessageBuilder builder;
+    builder.emplace<TwitchModerationElement>(true, false, false);
+    builder.emplace<TextElement>("viewer: Пример сообщения", MessageElementFlag::Text);
+    auto message = builder.release();
+    MessageLayout layout(message);
+    MessageColors colors;
+    colors.regularBg = QColor("#15151b");
+    colors.alternateBg = colors.regularBg;
+    colors.regularText = QColor("#e8e7ee");
+    for (float scale : {1.F, 1.3F, 1.5F})
+    {
+        layout.layout({.messageColors = colors,
+                       .flags = {MessageElementFlag::ModeratorTools, MessageElementFlag::Text},
+                       .width = 500,
+                       .scale = scale,
+                       .imageScale = 1,
+                       .selectedChannel = nullptr,
+                       .message = *message}, false);
+        QHash<QString, QRectF> hitBoxes;
+        for (int y = 0; y < layout.getHeight(); ++y)
+        {
+            for (int x = 0; x < 500; ++x)
+            {
+                const auto *element = layout.getElementAt(QPointF(x, y));
+                if (element && element->getLink().type == Link::UserAction)
+                    hitBoxes.insert(element->getLink().value, element->getRect());
+            }
+        }
+        EXPECT_EQ(hitBoxes.size(), commands.size());
+        for (const auto &command : commands)
+        {
+            ASSERT_TRUE(hitBoxes.contains(command));
+            EXPECT_NEAR(hitBoxes[command].height(), 16 * scale, 1.0);
+            EXPECT_NEAR(hitBoxes[command].top(), hitBoxes[commands.front()].top(), 1.0);
+        }
+        EXPECT_GT(hitBoxes[commands.front()].width(), 16 * scale);
+        if (scale == 1.3F)
+        {
+            QString copied;
+            layout.addSelectionText(copied, 0, UINT32_MAX, CopyMode::OnlyTextAndEmotes);
+            EXPECT_FALSE(copied.contains("/timeout"));
+            EXPECT_TRUE(copied.contains("viewer:"));
+            const auto screenshot = qEnvironmentVariable("NOCTIS_INLINE_MODERATION_PREVIEW");
+            if (!screenshot.isEmpty())
+            {
+                QImage image(500, layout.getHeight(), QImage::Format_ARGB32_Premultiplied);
+                image.fill(colors.regularBg);
+                QPainter painter(&image);
+                layout.paint({.painter = painter,
+                              .selection = Selection{},
+                              .colorProvider = ColorProvider::instance(),
+                              .messageColors = colors,
+                              .preferences = MessagePreferences{},
+                              .canvasWidth = 500});
+                painter.end();
+                EXPECT_TRUE(image.save(screenshot));
+            }
+        }
+    }
+}
+
+TEST(ModerationChrome, HeaderIconsRenderAtSmallSizes)
+{
+    const QStringList paths{
+        ":/buttons/moderationDisabled-darkMode.svg",
+        ":/buttons/moderationEnabled-darkMode.svg",
+        ":/buttons/moderationDisabled-lightMode.svg",
+        ":/buttons/moderationEnabled-lightMode.svg",
+    };
+    QImage preview(160, 80, QImage::Format_ARGB32_Premultiplied);
+    preview.fill(QColor("#15151b"));
+    QPainter previewPainter(&preview);
+    previewPainter.fillRect(QRect(80, 0, 80, 80), QColor("#eeeeef"));
+    for (int i = 0; i < paths.size(); ++i)
+    {
+        QSvgRenderer renderer(paths[i]);
+        ASSERT_TRUE(renderer.isValid());
+        for (const int size : {18, 27, 36})
+        {
+            QImage image(size, size, QImage::Format_ARGB32_Premultiplied);
+            image.fill(Qt::transparent);
+            QPainter painter(&image);
+            renderer.render(&painter);
+            painter.end();
+            int visible = 0;
+            for (int y = 0; y < size; ++y)
+                for (int x = 0; x < size; ++x)
+                    visible += qAlpha(image.pixel(x, y)) > 0;
+            EXPECT_GT(visible, size * size / 5);
+            EXPECT_LT(visible, size * size * 4 / 5);
+        }
+        renderer.render(&previewPainter, QRectF((i / 2) * 80 + 23, (i % 2) * 40 + 3, 34, 34));
+    }
+    previewPainter.end();
+    const auto path = qEnvironmentVariable("NOCTIS_MODERATION_ICON_PREVIEW");
+    if (!path.isEmpty())
+        EXPECT_TRUE(preview.save(path));
+}
+
+TEST(ModerationChrome, AutomaticPinHonorsVisibilityAndAvoidsDuplicates)
+{
+    MockApplication app;
+    auto countPins = [&](bool canModerate, bool targetModerator, bool modMode) {
+        MessageBuilder builder;
+        builder.emplace<TwitchModerationElement>(canModerate, targetModerator, false);
+        builder.emplace<TextElement>("viewer: text", MessageElementFlag::Text);
+        const auto msg = builder.release();
+        MessageLayout layout(msg);
+        MessageColors colors;
+        MessageElementFlags flags{MessageElementFlag::Text};
+        if (modMode)
+            flags.set(MessageElementFlag::ModeratorTools);
+        layout.layout({.messageColors = colors, .flags = flags, .width = 500,
+                       .scale = 1.F, .message = *msg}, false);
+        QSet<const MessageLayoutElement *> pins;
+        for (int y = 0; y < layout.getHeight(); ++y)
+            for (int x = 0; x < 500; ++x)
+                if (const auto *el = layout.getElementAt(QPointF(x, y));
+                    el && el->getLink().type == Link::UserAction &&
+                    el->getLink().value.startsWith("/pin"))
+                    pins.insert(el);
+        return pins.size();
+    };
+    app.settings.showPinButtonOnModeratorsMode.setValue(1);
+    EXPECT_EQ(countPins(true, false, true), 1);
+    EXPECT_EQ(countPins(true, false, false), 0);
+    EXPECT_EQ(countPins(false, false, true), 0);
+    EXPECT_EQ(countPins(false, true, true), 1);
+    EXPECT_EQ(countPins(false, true, false), 0);
+    app.settings.showPinButtonOnModeratorsMode.setValue(0);
+    EXPECT_EQ(countPins(false, true, true), 0);
+    EXPECT_EQ(countPins(true, false, true), 1);
+    app.settings.showPinButtonOnModeratorsMode.setValue(2);
+    EXPECT_EQ(countPins(false, true, false), 1);
+    EXPECT_EQ(countPins(true, false, false), 0);
+    app.settings.moderationActions.append(ModerationAction("/pin {msg.id}"));
+    EXPECT_EQ(countPins(true, false, true), 1);
+    EXPECT_EQ(countPins(false, true, true), 1);
 }
 
 namespace {

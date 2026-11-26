@@ -838,7 +838,8 @@ void Image::actuallyLoad(bool refreshCache)
     };
     auto onError = [onFailure, retryGateway = this->retryThumbnailGatewayErrors_](const auto &result) {
         const int status = result.status().value_or(0);
-        const bool temporaryGateway = status == 502 || status == 503 || status == 504;
+        const bool temporaryGateway = status == 408 || status == 429 ||
+                                      status == 502 || status == 503 || status == 504;
         onFailure(isTransientImageError(result) || (retryGateway && temporaryGateway));
         return true;
     };

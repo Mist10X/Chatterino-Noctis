@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "util/Helpers.hpp"
+#include "widgets/helper/OutcomePercentages.hpp"
 
 #include "mocks/BaseApplication.hpp"
 #include "Test.hpp"
@@ -11,9 +12,27 @@
 #include <QTimeZone>
 
 #include <span>
+#include <vector>
 
 using namespace chatterino;
 using namespace helpers::detail;
+
+TEST(Helpers, outcomePercentages)
+{
+    const auto identity = [](auto value) { return value; };
+    const std::vector<int> two{791, 952};
+    EXPECT_EQ(outcomePercentage(two, 0, identity), 45);
+    EXPECT_EQ(outcomePercentage(two, 1, identity), 55);
+    const std::vector<int> three{1, 1, 1};
+    EXPECT_EQ(outcomePercentage(three, 0, identity), 34);
+    EXPECT_EQ(outcomePercentage(three, 1, identity), 33);
+    EXPECT_EQ(outcomePercentage(three, 2, identity), 33);
+    const std::vector<int> empty{0, 0};
+    EXPECT_EQ(outcomePercentage(empty, 0, identity), 0);
+    const std::vector<int> single{0, 100, 0};
+    EXPECT_EQ(outcomePercentage(single, 1, identity), 100);
+    EXPECT_EQ(outcomePercentage(single, 2, identity), 0);
+}
 
 TEST(Helpers, formatUserMention)
 {

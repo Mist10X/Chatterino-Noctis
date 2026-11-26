@@ -41,7 +41,8 @@ constexpr qsizetype MAX_CACHED = 300;
 constexpr qint64 KEEP_RESOLVED_MS = 30LL * 60 * 1000;
 constexpr qint64 RETRY_TRANSIENT_MS = 15000;
 constexpr qint64 KEEP_FAILED_MS = 3LL * 60 * 1000;
-constexpr int REQUEST_TIMEOUT_MS = 8000;
+// Slow image-host metadata can take longer than an ordinary page lookup.
+constexpr int REQUEST_TIMEOUT_MS = 15000;
 
 // The resolver is only used from the GUI thread.
 QHash<QString, CachedLink> &cache()
@@ -249,7 +250,7 @@ void resolveInfo(LinkInfo *info)
             }
             else
             {
-                entry.transient = status == 0 || status == 408 || status >= 500;
+                entry.transient = status == 0 || status == 408 || status == 429 || status >= 500;
                 entry.tooltip = fallbackTooltip(
                     url, uiText("This site does not provide a preview"));
             }
@@ -258,7 +259,7 @@ void resolveInfo(LinkInfo *info)
         .onError([url](const NetworkResult &result) {
             CachedLink entry;
             const int status = result.status().value_or(0);
-            entry.transient = status == 0 || status == 408 || status >= 500;
+            entry.transient = status == 0 || status == 408 || status == 429 || status >= 500;
             entry.tooltip = fallbackTooltip(
                 url, uiText(u"Preview unavailable (") % result.formatError() %
                          u')');

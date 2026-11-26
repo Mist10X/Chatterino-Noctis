@@ -14,6 +14,9 @@
 #include "widgets/splits/Split.hpp"
 
 #include <QDateTime>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QFontMetrics>
 #include <QLocale>
 #include <QScrollArea>
 
@@ -480,6 +483,34 @@ inline int runPredictionDemo(chatterino::Split &split,
     channel->setActivePoll(std::nullopt);
     pump(100);
     split.grab().save(screenshotBase + "-voting-notices.png", "PNG");
+
+    // Exercise the actual create-mode constructors at their natural size.
+    TwitchChannelTestAccess::setFixtureModRole(*channel);
+    auto *createPoll = new PollDialog(channel.get(), &split);
+    createPoll->show();
+    pump(150);
+    auto *additional = createPoll->findChild<QCheckBox *>("PollCheckBox");
+    auto *pollDuration = createPoll->findChild<QComboBox *>("PollCreateDurationCombo");
+    check("poll creation checkbox is not clipped",
+          additional && additional->width() >=
+                            additional->fontMetrics().horizontalAdvance(additional->text()) + 20);
+    check("poll creation duration is localized",
+          pollDuration && pollDuration->findText(uiText("2 minutes")) >= 0);
+    createPoll->grab().save(screenshotBase + "-create-poll.png");
+    createPoll->close();
+    delete createPoll;
+    auto *createPrediction = new PredictionDialog(channel.get(), &split);
+    createPrediction->show();
+    pump(150);
+    auto *predictionDuration = createPrediction->findChild<QComboBox *>(
+        "PredictionCreateDurationCombo");
+    check("prediction creation duration is localized",
+          predictionDuration && predictionDuration->findText(uiText("2 minutes")) >= 0);
+    check("prediction creation uses an antialiased translucent surface",
+          createPrediction->testAttribute(Qt::WA_TranslucentBackground));
+    createPrediction->grab().save(screenshotBase + "-create-prediction.png");
+    createPrediction->close();
+    delete createPrediction;
     return failed;
 }
 

@@ -100,6 +100,11 @@ namespace chatterino {
 class TwitchChannelTestAccess
 {
 public:
+    static void setFixtureModRole(TwitchChannel &channel)
+    {
+        channel.mod_ = true;
+    }
+
     static void loadStartupHistory(TwitchChannel &channel)
     {
         channel.loadRecentMessages();
@@ -1741,6 +1746,7 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
         const auto at = first(QStringLiteral("@ьшые"));
         const auto plain = first(QStringLiteral("@mist"));
         const auto none = first(QStringLiteral("@рфк"));
+        const auto ukrainian = first(QStringLiteral("@іщьущту"));
         const auto keys = TabCompletionModel::fromRussianLayout(
             QStringLiteral("ЗщпСрфьз \"ьшые1ч_ч ЛУЛ Ж)"));
         std::fprintf(stderr, "layout at=%s plain=%s none=%s keys=%s\n",
@@ -1752,6 +1758,10 @@ inline int runOwnTimeoutChecks(chatterino::Split &split, const QString &report,
                   plain.startsWith(QStringLiteral("@mist1x_x")) &&
                   none.isEmpty() &&
                   keys == QStringLiteral("PogChamp @mist1x_x KEK :)"));
+        check(QStringLiteral("Tab completes Ukrainian layout names and emote keys"),
+              ukrainian.startsWith(QStringLiteral("@someone")) &&
+                  TabCompletionModel::fromRussianLayout(QStringLiteral("Іьшду іїєґІЇЄҐ")) ==
+                      QStringLiteral("Smile s]'uS}\"U"));
     }
 
     // 23. Clicking a raid banner away must not start a selection in the chat

@@ -165,7 +165,7 @@ GifPickerDialog::GifPickerDialog(TwitchChannel *channel,
     , channel_(channel->sharedFromThis())
 {
     this->setObjectName("GifPickerDialog");
-    this->setWindowTitle(uiText("GIFs in #") + channel->getName());
+    this->setWindowTitle(uiText("GIFs in") + " " + channel->getName());
     this->getLayoutContainer()->setObjectName("GifPickerBody");
     auto *layout = new QVBoxLayout(this->getLayoutContainer());
     this->tabs_ = new QTabBar(this);

@@ -16,24 +16,49 @@
 #include <QEvent>
 #include <QMenu>
 #include <QPointer>
+#include <QProxyStyle>
 
 namespace chatterino {
 
 namespace {
 
-QString menuStyleSheet(const QFont &font)
+class MenuNoUnderlineStyle final : public QProxyStyle
+{
+public:
+    MenuNoUnderlineStyle() : QProxyStyle(QStringLiteral("Fusion")) {}
+
+    int styleHint(StyleHint hint, const QStyleOption *option,
+                  const QWidget *widget, QStyleHintReturn *data) const override
+    {
+        if (hint == QStyle::SH_UnderlineShortcut)
+        {
+            return 0;
+        }
+        return QProxyStyle::styleHint(hint, option, widget, data);
+    }
+};
+
+QStyle *menuBaseStyle()
+{
+    static QPointer<MenuNoUnderlineStyle> style;
+    if (!style)
+    {
+        style = new MenuNoUnderlineStyle();
+        style->setParent(qApp);
+    }
+    return style;
+}
+
+QString menuStyleSheet()
 {
     const bool light = getTheme()->isLightTheme();
     const auto colors = usercardChrome::palette(light);
     const QString mode = light ? QStringLiteral("light") : QStringLiteral("dark");
-    auto family = font.family();
-    family.replace(u'\\', QStringLiteral("\\\\")).replace(u'"', QStringLiteral("\\\""));
     return QStringLiteral(
                "QMenu { background: %1; border: 1px solid %2; "
-               "border-radius: 7px; padding: 3px; "
-               "font-family: \"%7\"; font-size: %8pt; }"
+               "border-radius: 7px; padding: 3px; }"
                "QMenu::item { color: %3; background: transparent; "
-               "padding: 3px 15px 3px 16px; border-radius: 4px; }"
+               "padding: 3px 12px 3px 13px; border-radius: 4px; }"
                "QMenu::item:selected { background: %4; }"
                "QMenu::item:disabled { color: %5; }"
                "QMenu::separator { height: 1px; background: %2; "
@@ -44,7 +69,7 @@ QString menuStyleSheet(const QFont &font)
                "QMenu::right-arrow { image: url(:/buttons/menu-arrow-%6.svg); "
                "width: 11px; height: 11px; right: 3px; }")
         .arg(colors.panel, colors.border, colors.foreground, colors.cover,
-             colors.disabled, mode, family, QString::number(font.pointSizeF()));
+             colors.disabled, mode);
 }
 
 void refreshMenu(QMenu *menu)
@@ -58,12 +83,15 @@ void refreshMenu(QMenu *menu)
             break;
         }
     }
-    const auto font = getApp()->getFonts()->getFont(FontStyle::UiMedium, scale);
+    // Use the actual bundled semibold face, like the tabs. Keep the nominal
+    // point size and avoid a second CSS font resolution at fractional DPI.
+    auto font = getApp()->getFonts()->getFont(FontStyle::UiTabs, scale);
+    font.setHintingPreference(QFont::PreferFullHinting);
     if (menu->font() != font)
     {
         menu->setFont(font);
     }
-    const auto sheet = menuStyleSheet(font);
+    const auto sheet = menuStyleSheet();
     if (menu->styleSheet() != sheet)
     {
         menu->setStyleSheet(sheet);
@@ -108,6 +136,7 @@ void styleMenu(QMenu *menu)
         return;
     }
     menu->setProperty("mist1xStyled", true);
+    menu->setStyle(menuBaseStyle());
     if (menu->isWindow())
     {
         menu->setWindowFlags(menu->windowFlags() | Qt::FramelessWindowHint |

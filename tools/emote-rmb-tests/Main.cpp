@@ -470,8 +470,10 @@ int main(int argc, char **argv)
             auto *openMenu = open ? open->menu() : nullptr;
             auto *copyMenu = copy ? copy->menu() : nullptr;
             check(openMenu && copyMenu && menuAction(lastMenu, uiText("Copy &message")) &&
-                      menuAction(lastMenu, uiText("Copy &full message")),
-                  QStringLiteral("image menus and distinct message copy formats are available"));
+                      !menuAction(lastMenu, uiText("Copy &full message")) &&
+                      !menuAction(lastMenu, uiText("&Translate message")) &&
+                      !menuAction(lastMenu, uiText("Open in &logs")),
+                  QStringLiteral("image menus remain available, redundant message actions are absent"));
             const QString page = QStringLiteral("&Страница смайлика");
             check(menuAction(openMenu, QStringLiteral("Изображение · &1×")) &&
                       !menuAction(openMenu, QStringLiteral("Изображение · &2×")) &&

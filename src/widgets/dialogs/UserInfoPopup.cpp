@@ -64,6 +64,7 @@
 #include "widgets/buttons/LabelButton.hpp"
 #include "widgets/buttons/PixmapButton.hpp"
 #include "widgets/buttons/SvgButton.hpp"
+#include "widgets/helper/ModerationChrome.hpp"
 #include "widgets/dialogs/EditUserNotesDialog.hpp"
 #include "widgets/helper/ChannelAvatarLabel.hpp"
 #include "widgets/helper/RoundAvatar.hpp"
@@ -2010,8 +2011,6 @@ qreal usercardMessagePreloadDistance(const Scrollbar &scrollbar)
     return std::clamp<qreal>(scrollbar.getPageSize() * 0.75, 8.0, 24.0);
 }
 
-const auto borderColor = QColor(255, 255, 255, 80);
-
 int calculateTimeoutDuration(TimeoutButton timeout)
 {
     static const QMap<QString, int> durations{
@@ -3237,11 +3236,9 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
         strip->setMouseTracking(true);
         auto *stripLayout = new QHBoxLayout(strip);
         stripLayout->setContentsMargins(10, 5, 10, 5);
-        stripLayout->addStretch(1);
         auto *timeout = new TimeoutWidget();
-        timeout->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        stripLayout->addWidget(timeout, 0, Qt::AlignVCenter);
-        stripLayout->addStretch(1);
+        timeout->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        stripLayout->addWidget(timeout, 1, Qt::AlignVCenter);
         this->ui_.timeoutWidget = timeout;
         this->ui_.moderationStrip = strip;
         strip->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
@@ -3461,12 +3458,10 @@ void UserInfoPopup::themeChangedEvent()
 
     if (this->ui_.moderationStrip)
     {
+        const auto colors = usercardChrome::palette(this->theme->isLightTheme());
         this->ui_.moderationStrip->setStyleSheet(
-            this->theme->isLightTheme()
-                ? "QWidget#UsercardModerationStrip { border-top: 1px solid "
-                  "rgba(0,0,0,0.12); background: rgba(0,0,0,0.03); }"
-                : "QWidget#UsercardModerationStrip { border-top: 1px solid "
-                  "rgba(255,255,255,0.08); background: rgba(0,0,0,0.18); }");
+            QStringLiteral("QWidget#UsercardModerationStrip { border-top: 1px solid %1; background: %2; }")
+                .arg(colors.border, colors.profile));
     }
 
     if (this->ui_.profileScroll && this->ui_.contentTabs)
@@ -3953,7 +3948,12 @@ void UserInfoPopup::drawOutline(QPainter &painter)
         partition += this->ui_.columns->handleWidth() / 2.;
     }
     const bool light = this->theme->isLightTheme();
-    usercardChrome::paint(painter, this->rect(), this->scale(), usercardChrome::palette(light), light, orientation, partition);
+    const auto *footer = this->ui_.moderationStrip;
+    const qreal footerTop = footer && footer->isVisibleTo(this)
+        ? footer->mapTo(this, QPoint(0, 0)).y() : -1.0;
+    usercardChrome::paint(painter, this->rect(), this->scale(),
+                          usercardChrome::palette(light), light, orientation,
+                          partition, footerTop);
 }
 
 void UserInfoPopup::updateQuickActionLayout()
@@ -8830,31 +8830,114 @@ void UserInfoPopup::showUsercardModerationReasonPopup(
 //
 // TimeoutWidget
 //
+namespace {
+class UsercardModerationPill final : public Button
+{
+public:
+    UsercardModerationPill(moderationchrome::Kind kind, QString label,
+                          BaseWidget *parent)
+        : Button(parent)
+        , kind_(kind)
+        , label_(std::move(label))
+    {
+        this->setCursor(Qt::PointingHandCursor);
+        this->updateSize();
+    }
+
+    void setLabel(const QString &label)
+    {
+        this->label_ = label;
+        this->updateSize();
+        this->update();
+    }
+
+protected:
+    void scaleChangedEvent(float scale) override
+    {
+        Button::scaleChangedEvent(scale);
+        this->updateSize();
+    }
+
+    void themeChangedEvent() override
+    {
+        Button::themeChangedEvent();
+        this->update();
+    }
+
+    void paintContent(QPainter &painter) override
+    {
+        const auto scale = this->scale();
+        moderationchrome::paintPill(painter, QRectF(this->rect()), this->kind_,
+                                    this->label_, this->buttonFont(), scale,
+                                    this->theme->isLightTheme(), this->mouseOver(),
+                                    this->leftMouseButtonDown());
+        QPainterPath clip;
+        clip.addRoundedRect(QRectF(this->rect()).adjusted(.5, .5, -.5, -.5),
+                            4.5 * scale, 4.5 * scale);
+        painter.setClipPath(clip, Qt::IntersectClip);
+    }
+
+private:
+    QFont buttonFont() const
+    {
+        auto font = getApp()->getFonts()->getFont(FontStyle::UiTabs, this->scale());
+        font.setHintingPreference(QFont::PreferFullHinting);
+        return font;
+    }
+
+    void updateSize()
+    {
+        const auto scale = std::max(.1F, this->scale());
+        const auto textWidth = QFontMetricsF(this->buttonFont()).horizontalAdvance(this->label_) / scale;
+        const int width = this->label_.isEmpty() ? 26 :
+            std::max(31, static_cast<int>(std::ceil(textWidth + (moderationchrome::hasGlyph(this->kind_) ? 26 : 9))));
+        this->setScaleIndependentSize(width, 26);
+    }
+
+    moderationchrome::Kind kind_;
+    QString label_;
+};
+}  // namespace
+
 UserInfoPopup::TimeoutWidget::TimeoutWidget()
     : BaseWidget(nullptr)
 {
-    // One compact row: unban, the timeouts, ban. What each button does is in
-    // its tooltip; the cross-channel actions sit next to unban / ban.
+    // Local punishments share one group. Cross-channel actions are physically
+    // separated at the opposite end, so a click near Ban cannot trigger them.
     auto layout = LayoutCreator<TimeoutWidget>(this)
                       .setLayoutType<QHBoxLayout>()
                       .withoutMargin();
-    layout->setSpacing(6);
+    layout->setSpacing(24);
+    this->localActionsGroup_ = new QWidget(this);
+    this->localActionsGroup_->setObjectName("UsercardLocalModerationActions");
+    this->localActionsGroup_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    auto *localLayout = new QHBoxLayout(this->localActionsGroup_);
+    localLayout->setContentsMargins(0, 0, 0, 0);
+    localLayout->setSpacing(3);
+    layout->addWidget(this->localActionsGroup_);
+    layout->addStretch(1);
 
-    const int buttonHeight = 26;
-    const int timeoutWidth = 34;
+    this->crossActionsGroup_ = new QWidget(this);
+    this->crossActionsGroup_->setObjectName("UsercardCrossModerationActions");
+    this->crossActionsGroup_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    auto *crossLayout = new QHBoxLayout(this->crossActionsGroup_);
+    crossLayout->setContentsMargins(0, 0, 0, 0);
+    crossLayout->setSpacing(9);
+    layout->addWidget(this->crossActionsGroup_);
+    this->crossActionsGroup_->hide();
     const QString reasonHint = uiText(
         "Use the configured reason prompt shortcut to edit the reason "
         "before sending.");
 
     const auto addButton = [&](UsercardModerationAction action,
-                               const QString &title, const QPixmap &pixmap,
+                               const QString &title,
                                QWidget **buttonOut, QWidget **crossOut,
                                const QString &crossTooltip, bool crossIsBan) {
-        auto *button = new PixmapButton(nullptr);
-        layout->addWidget(button);
-        button->setPixmap(pixmap);
-        button->setScaleIndependentSize(buttonHeight, buttonHeight);
-        button->setBorderColor(QColor(255, 255, 255, 127));
+        using Kind = moderationchrome::Kind;
+        auto *button = new UsercardModerationPill(crossIsBan ? Kind::Ban : Kind::Unban,
+                                                 {}, this);
+        localLayout->addWidget(button);
+        button->setAccessibleName(uiText(title));
         button->setToolTip(action == UsercardModerationAction::Unban
                                ? uiText(title)
                                : uiText(title) + QStringLiteral("\n") +
@@ -8882,9 +8965,11 @@ UserInfoPopup::TimeoutWidget::TimeoutWidget()
                 this->buttonClicked.invoke(request);
             });
 
-        auto *cross = new LabelButton("Cross", this, QSize{2, 0});
-        layout->addWidget(cross);
-        cross->setToolTip(crossTooltip);
+        auto *cross = new UsercardModerationPill(
+            crossIsBan ? Kind::CrossBan : Kind::CrossUnban, {}, this);
+        crossLayout->addWidget(cross);
+        cross->setToolTip(uiText(crossTooltip));
+        cross->setAccessibleName(uiText(crossTooltip));
         cross->setVisible(false);
         *crossOut = cross;
         QObject::connect(cross, &Button::leftClicked, this, [this, crossIsBan] {
@@ -8896,27 +8981,24 @@ UserInfoPopup::TimeoutWidget::TimeoutWidget()
         auto *row = new QWidget;
         row->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         this->timeoutsColumn_ = row;
-        layout->addWidget(row);
+        localLayout->addWidget(row);
         auto *rowLayout = new QHBoxLayout(row);
         rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(0);
+        rowLayout->setSpacing(3);
 
         int index = 0;
         for (const auto &item : getSettings()->timeoutButtons.getValue())
         {
-            auto *button = new LabelButton;
+            const auto text = moderationchrome::durationLabel(QString::number(item.second), item.first);
+            auto *button = new UsercardModerationPill(moderationchrome::Kind::Timeout, text, this);
             rowLayout->addWidget(button);
-            const auto text = QString::number(item.second) + item.first;
-            button->setPadding({0, 0});
-            button->setText(text);
-            button->setScaleIndependentSize(timeoutWidth, buttonHeight);
-            button->setBorderColor(borderColor);
+            button->setAccessibleName(uiText("Timeout for %1").arg(text));
 
             const auto duration = calculateTimeoutDuration(item);
             const auto reason = timeoutButtonReason(index);
             this->timeoutButtons.emplace_back(button, duration);
 
-            QObject::connect(button, &LabelButton::clicked,
+            QObject::connect(button, &Button::clicked,
                              [this, duration, reason](Qt::MouseButton mouse) {
                                  if (!shouldHandleModerationButtonClick(mouse))
                                  {
@@ -8940,11 +9022,11 @@ UserInfoPopup::TimeoutWidget::TimeoutWidget()
     };
 
     addButton(UsercardModerationAction::Unban, "Unban",
-              getResources().buttons.unban, &this->unbanButton_,
+              &this->unbanButton_,
               &this->crossUnbanButton_,
               "Unban this user in other channels you moderate", false);
     addTimeouts();
-    addButton(UsercardModerationAction::Ban, "Ban", getResources().buttons.ban,
+    addButton(UsercardModerationAction::Ban, "Ban",
               &this->banButton_, &this->crossBanButton_,
               "Ban this user in other channels you moderate", true);
 }
@@ -8973,18 +9055,24 @@ void UserInfoPopup::TimeoutWidget::setModerationVisible(bool visible)
 
 void UserInfoPopup::TimeoutWidget::setCrossVisible(bool visible)
 {
+    this->crossActionsGroup_->setVisible(visible);
     if (this->crossUnbanButton_ != nullptr)
     {
+        static_cast<UsercardModerationPill *>(this->crossUnbanButton_)
+            ->setLabel(this->moderationVisible_ ? QString() : uiText("Cross unban"));
         this->crossUnbanButton_->setVisible(visible);
     }
     if (this->crossBanButton_ != nullptr)
     {
+        static_cast<UsercardModerationPill *>(this->crossBanButton_)
+            ->setLabel(this->moderationVisible_ ? QString() : uiText("Cross ban"));
         this->crossBanButton_->setVisible(visible);
     }
 }
 
 void UserInfoPopup::TimeoutWidget::applyModerationVisibility()
 {
+    this->localActionsGroup_->setVisible(this->moderationVisible_);
     if (this->unbanButton_ != nullptr)
     {
         this->unbanButton_->setVisible(this->moderationVisible_);
@@ -9065,8 +9153,9 @@ void UserInfoPopup::previewModerationStrip()
     {
         return;
     }
-    this->ui_.timeoutWidget->setModerationVisible(true);
-    this->ui_.timeoutWidget->setCrossVisible(false);
+    this->ui_.timeoutWidget->setModerationVisible(
+        !qEnvironmentVariableIsSet("NOCTIS_PREVIEW_CROSS_ONLY"));
+    this->ui_.timeoutWidget->setCrossVisible(true);
     this->ui_.timeoutWidget->setVisible(true);
     this->setModerationStripVisible(true);
 }
@@ -9110,6 +9199,7 @@ void UserInfoPopup::setModerationStripVisible(bool visible)
         this->badgeFitExpectedSize_ = geometry.size();
     }
     this->setGeometry(geometry);
+    this->update();
 }
 
 void UserInfoPopup::updateSeventvPaintPixmap()

@@ -29,6 +29,7 @@
 #include "singletons/WindowManager.hpp"
 #include "util/DebugCount.hpp"
 #include "util/Variant.hpp"
+#include "widgets/helper/ModerationChrome.hpp"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -1774,11 +1775,11 @@ void LinkElement::watchLinkInfo()
             if (state == LinkInfo::State::Errored &&
                 this->linkInfo_.isTransientFailure() &&
                 getSettings()->showLinkTitles && this->titleText_.isEmpty() &&
-                !this->autoTitleRetryScheduled_)
+                this->autoTitleRetryCount_ < 3)
             {
                 // A temporary failure must not turn automatic titles into
-                // hover-only titles. Retry once after the resolver's cooldown.
-                this->autoTitleRetryScheduled_ = true;
+                // hover-only titles. Retry a bounded number of times after cooldown.
+                ++this->autoTitleRetryCount_;
                 QTimer::singleShot(std::max(0, this->linkInfo_.retryDelay()) + 50,
                                    Qt::PreciseTimer, &this->linkInfo_, [this] {
                     if (!isAppAboutToQuit() && tryGetApp() &&
@@ -2207,25 +2208,77 @@ int normalizeInlineActionMode(int mode)
     return 1;
 }
 
+class InlineModerationPill final : public TextIconLayoutElement
+{
+public:
+    InlineModerationPill(MessageElement &source, moderationchrome::Kind kind,
+                         QString label, QFont font, float scale, QSizeF size)
+        : TextIconLayoutElement(source, {}, {}, scale, size)
+        , kind_(kind)
+        , label_(std::move(label))
+        , font_(std::move(font))
+        , scale_(scale)
+    {
+    }
+
+    void paint(QPainter &painter, const MessageColors &) override
+    {
+        moderationchrome::paintPill(painter, this->getRect(), this->kind_,
+                                    this->label_, this->font_, this->scale_,
+                                    getTheme()->isLightTheme());
+    }
+
+private:
+    moderationchrome::Kind kind_;
+    QString label_;
+    QFont font_;
+    float scale_;
+};
+
 void addModerationActionToContainer(MessageElement &source,
                                     const ModerationAction &action,
                                     MessageLayoutContainer &container,
                                     const QSizeF &size)
 {
-    if (const auto &image = action.getImage())
+    // Explicitly configured images remain unchanged. Standard buttons use
+    // vector outlines, and timeout values stay on one readable line.
+    if (action.iconPath().isValid())
     {
-        container.addElement(
-            (new ImageLayoutElement(source, *image, size))
-                ->setLink(Link(Link::UserAction, action.getAction())));
+        if (const auto &image = action.getImage())
+        {
+            container.addElement(
+                (new ImageLayoutElement(source, *image, size))
+                    ->setLink(Link(Link::UserAction, action.getAction())));
+            return;
+        }
     }
-    else
+    using Kind = moderationchrome::Kind;
+    Kind kind = Kind::Custom;
+    QString label;
+    switch (action.getType())
     {
-        container.addElement(
-            (new TextIconLayoutElement(source, action.getLine1(),
-                                       action.getLine2(), container.getScale(),
-                                       size))
-                ->setLink(Link(Link::UserAction, action.getAction())));
+        case ModerationAction::Type::Timeout:
+            kind = Kind::Timeout;
+            label = moderationchrome::durationLabel(action.getLine1(), action.getLine2());
+            break;
+        case ModerationAction::Type::Ban: kind = Kind::Ban; break;
+        case ModerationAction::Type::Pin: kind = Kind::Pin; break;
+        case ModerationAction::Type::Delete: kind = Kind::Delete; break;
+        case ModerationAction::Type::Custom:
+            label = action.getLine1() + action.getLine2();
+            break;
     }
+    const auto scale = container.getScale();
+    auto font = getApp()->getFonts()->getFont(FontStyle::UiTabs, scale * .83F);
+    font.setHintingPreference(QFont::PreferFullHinting);
+    auto pillSize = size;
+    if (!label.isEmpty())
+    {
+        pillSize.setWidth(std::max(size.width(),
+            QFontMetricsF(font).horizontalAdvance(label) + 5 * scale));
+    }
+    container.addElement((new InlineModerationPill(source, kind, label, font, scale, pillSize))
+                             ->setLink(Link(Link::UserAction, action.getAction())));
 }
 
 }  // namespace
@@ -2296,11 +2349,12 @@ void TwitchModerationElement::addToContainer(MessageLayoutContainer &container,
         addModerationActionToContainer(*this, action, container, size);
     };
 
-    if (!hasVisiblePinAction && this->targetIsModOrBroadcaster_ &&
-        pinOnModeratorsMode != 0 &&
-        (inModerationMode || pinOnModeratorsMode == 2))
+    static const ModerationAction defaultPin("/pin {msg.id}");
+    if (!hasVisiblePinAction &&
+        this->shouldShowAction(defaultPin, inModerationMode, selfDeleteMode,
+                               pinOnModeratorsMode))
     {
-        addBuiltInAction("/pin {msg.id}");
+        addModerationActionToContainer(*this, defaultPin, container, size);
     }
 
     if (!hasVisibleDeleteAction && this->targetIsCurrentUser_ &&
@@ -2683,12 +2737,12 @@ ImagePreviewElement::ImagePreviewElement(QString url)
                          {
                              scheduleRelayout();
                          }
-                         else if (state == LinkInfo::State::Errored && !this->recoveryScheduled_ &&
+                         else if (state == LinkInfo::State::Errored && this->recoveryCount_ < 3 &&
                                   this->previewInfo_.isTransientFailure())
                          {
-                             // Ask visible views to reconsider a transient failure once,
+                             // Ask visible views to reconsider transient failures,
                              // even in a quiet chat. Destruction of this message cancels it.
-                             this->recoveryScheduled_ = true;
+                             ++this->recoveryCount_;
                              QTimer::singleShot(this->previewInfo_.retryDelay() + 100,
                                                 Qt::PreciseTimer, &this->previewInfo_, &scheduleRelayout);
                          }

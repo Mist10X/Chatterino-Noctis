@@ -30,6 +30,7 @@
 #include <QListWidgetItem>
 #include <QLocale>
 #include <QPainter>
+#include "widgets/helper/OutcomePercentages.hpp"
 #include <QPointer>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -695,6 +696,8 @@ PredictionDialog::PredictionDialog(TwitchChannel *channel, QWidget *parent)
     , channel_(channel ? channel->sharedFromThis() : nullptr)
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
+    this->setAttribute(Qt::WA_TranslucentBackground);
+    this->setAutoFillBackground(false);
     this->setObjectName("PredictionDialog");
     this->setWindowTitle(uiText("Prediction"));
     this->setScaleIndependentSize(DEFAULT_DIALOG_SIZE);
@@ -962,10 +965,8 @@ void PredictionDialog::updateInPlace()
     for (int i = 0; i < static_cast<int>(prediction.outcomes.size()); ++i)
     {
         const auto &outcome = prediction.outcomes.at(i);
-        const int pct =
-            totalPoints > 0
-                ? static_cast<int>((outcome.totalPoints * 100.0) / totalPoints)
-                : 0;
+        const int pct = outcomePercentage(prediction.outcomes, i,
+                                           [](const auto &o) { return o.totalPoints; });
         const double multiplier =
             outcome.totalPoints > 0
                 ? static_cast<double>(totalPoints) / outcome.totalPoints
@@ -1106,6 +1107,16 @@ void PredictionDialog::themeChangedEvent()
 {
     DraggablePopup::themeChangedEvent();
     this->refreshStyle();
+}
+
+void PredictionDialog::paintEvent(QPaintEvent *)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(this->theme->splits.header.border);
+    painter.setBrush(this->theme->window.background);
+    const qreal radius = 10 * this->scale();
+    painter.drawRoundedRect(QRectF(rect()).adjusted(.5, .5, -.5, -.5), radius, radius);
 }
 
 void PredictionDialog::scaleChangedEvent(float scale)
@@ -2052,7 +2063,7 @@ void PredictionDialog::buildCreateUI()
         int currentIndex = 0;
         for (int i = 0; i < static_cast<int>(std::size(DURATION_OPTIONS)); ++i)
         {
-            durationCombo->addItem(DURATION_OPTIONS[i].label,
+            durationCombo->addItem(uiText(DURATION_OPTIONS[i].label),
                                    DURATION_OPTIONS[i].seconds);
             if (DURATION_OPTIONS[i].seconds == this->draftDurationSeconds_)
             {
@@ -2411,10 +2422,8 @@ void PredictionDialog::buildManageUI()
     for (int i = 0; i < static_cast<int>(prediction.outcomes.size()); ++i)
     {
         const auto &outcome = prediction.outcomes.at(i);
-        const int percentage =
-            totalPoints > 0
-                ? static_cast<int>((outcome.totalPoints * 100.0) / totalPoints)
-                : 0;
+        const int percentage = outcomePercentage(prediction.outcomes, i,
+                                                  [](const auto &o) { return o.totalPoints; });
 
         auto *rowWidget = new QWidget(outcomesWidget);
         rowWidget->setFixedHeight(outcomeRowHeight);
@@ -2895,11 +2904,8 @@ void PredictionDialog::buildBettingUI()
                 // paid out: the losing sides fade into the card
                 color = color.darker(185);
             }
-            const int percentage =
-                totalPoints > 0
-                    ? static_cast<int>((outcome.totalPoints * 100.0) /
-                                       totalPoints)
-                    : 0;
+            const int percentage = outcomePercentage(prediction.outcomes, i,
+                                                      [](const auto &o) { return o.totalPoints; });
             const double multiplier =
                 outcome.totalPoints > 0
                     ? static_cast<double>(totalPoints) / outcome.totalPoints
@@ -3155,11 +3161,8 @@ void PredictionDialog::buildBettingUI()
                     // paid out: the losing sides fade into the card
                     color = color.darker(185);
                 }
-                const int pct =
-                    totalPoints > 0
-                        ? static_cast<int>((outcome.totalPoints * 100.0) /
-                                           totalPoints)
-                        : 0;
+                const int pct = outcomePercentage(prediction.outcomes, i,
+                                                   [](const auto &o) { return o.totalPoints; });
                 const double multiplier =
                     outcome.totalPoints > 0
                         ? static_cast<double>(totalPoints) / outcome.totalPoints
@@ -3279,11 +3282,8 @@ void PredictionDialog::buildBettingUI()
         {
             const QColor selectedColor =
                 outcomeColor(selectedOutcomeIndex, selectedOutcome->color);
-            const int pct =
-                totalPoints > 0
-                    ? static_cast<int>((selectedOutcome->totalPoints * 100.0) /
-                                       totalPoints)
-                    : 0;
+            const int pct = outcomePercentage(prediction.outcomes, selectedOutcomeIndex,
+                                               [](const auto &o) { return o.totalPoints; });
             const double multiplier = selectedOutcome->totalPoints > 0
                                           ? static_cast<double>(totalPoints) /
                                                 selectedOutcome->totalPoints
@@ -4076,7 +4076,7 @@ void PredictionDialog::refreshStyle()
     this->setStyleSheet(
         QString(R"(
             QWidget#PredictionDialogRoot {
-                background: %1;
+                background: transparent;
             }
             QWidget#PredictionCard {
                 background: %2;

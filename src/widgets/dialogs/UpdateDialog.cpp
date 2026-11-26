@@ -81,6 +81,9 @@ void UpdateDialog::updateStatusChanged(Updates::Status status)
             this->ui_.label->setText(uiText("Failed to load version information."));
         }
         break;
+        case Updates::RateLimited:
+            this->ui_.label->setText(uiText("GitHub has limited update checks. The check will retry automatically."));
+            break;
 
         case Updates::Downloading: {
             this->ui_.label->setText(uiText("Downloading update..."));

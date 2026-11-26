@@ -34,11 +34,13 @@
 #include "util/QStringHash.hpp"
 #include "widgets/helper/ChannelView.hpp"
 #include "widgets/helper/ChannelAvatarLabel.hpp"
+#include "widgets/dialogs/GifPickerDialog.hpp"
 #include "widgets/Notebook.hpp"
 #include "widgets/Scrollbar.hpp"
 
 #include <QAbstractButton>
 #include <QHBoxLayout>
+#include <QPushButton>
 #include <QGraphicsOpacityEffect>
 #include <QPropertyAnimation>
 #include <QCursor>
@@ -478,7 +480,7 @@ EmotePopup::EmotePopup(QWidget *parent)
     this->searchRow_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *layout2 = new QHBoxLayout(this->searchRow_);
     layout2->setContentsMargins(1, 2, 1, 4);
-    layout2->setSpacing(0);
+    layout2->setSpacing(5);
 
     this->search_->setObjectName("EmotePickerSearch");
     this->search_->setPlaceholderText(uiText("Search all emotes..."));
@@ -488,6 +490,16 @@ EmotePopup::EmotePopup(QWidget *parent)
         QPixmap(":/buttons/clearSearch.png"));
     this->search_->installEventFilter(this);
     layout2->addWidget(this->search_);
+    this->gifButton_ = new QPushButton("GIF", this->searchRow_);
+    this->gifButton_->setCursor(Qt::PointingHandCursor);
+    this->gifButton_->hide();
+    layout2->addWidget(this->gifButton_);
+    QObject::connect(this->gifButton_, &QPushButton::clicked, this, [this] {
+        if (this->twitchChannel_)
+        {
+            GifPickerDialog::showDialog(this->twitchChannel_, {}, nullptr);
+        }
+    });
 
     layout->addWidget(this->searchRow_);
 
@@ -814,6 +826,7 @@ void EmotePopup::loadChannel(ChannelPtr channel)
 
     this->channel_ = std::move(channel);
     this->twitchChannel_ = dynamic_cast<TwitchChannel *>(this->channel_.get());
+    this->gifButton_->setVisible(this->twitchChannel_ != nullptr);
     this->kickChannel_ = dynamic_cast<KickChannel *>(this->channel_.get());
 
     const auto displayChannel = this->channel_->getName();
@@ -1415,6 +1428,15 @@ void EmotePopup::refreshChrome()
     const int radius = std::max(4, qRound(6 * scale));
     const int pad = std::max(5, qRound(6 * scale));
     this->search_->setMinimumHeight(this->search_->fontMetrics().height() + 2 * pad);
+    this->gifButton_->setFont(fonts->getFont(FontStyle::ChatMediumBold, scale));
+    this->gifButton_->setMinimumHeight(this->search_->minimumHeight());
+    this->gifButton_->setStyleSheet(QStringLiteral(
+        "QPushButton { background: %1; color: %2; border: 1px solid %3;"
+        "border-radius: %4px; padding: 0 %5px; }"
+        "QPushButton:hover { border-color: %6; }")
+        .arg(theme->splits.input.background.name(), theme->window.text.name(),
+             theme->splits.header.border.name(), QString::number(radius),
+             QString::number(pad), theme->splits.header.focusedBorder.name()));
     this->titleRow_->setStyleSheet(QStringLiteral("QLabel { color: %1; background: transparent; }")
                                      .arg(theme->window.text.name()));
     this->search_->setStyleSheet(QStringLiteral(R"(

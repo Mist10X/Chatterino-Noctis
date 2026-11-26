@@ -519,6 +519,8 @@ private:
         QWidget *timeoutsColumn_ = nullptr;
         QWidget *crossUnbanButton_ = nullptr;
         QWidget *crossBanButton_ = nullptr;
+        QWidget *localActionsGroup_ = nullptr;
+        QWidget *crossActionsGroup_ = nullptr;
         bool moderationVisible_ = true;
         int minTimeoutSecs_ = 0;
         std::vector<std::pair<QWidget *, int>> timeoutButtons;

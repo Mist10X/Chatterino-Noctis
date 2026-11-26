@@ -45,6 +45,7 @@ public:
 
 protected:
     void themeChangedEvent() override;
+    void paintEvent(QPaintEvent *) override;
     void scaleChangedEvent(float scale) override;
     void showEvent(QShowEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
