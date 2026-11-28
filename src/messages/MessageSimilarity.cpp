@@ -106,10 +106,8 @@ void setSimilarityFlags(const MessagePtr &message, const T &messages)
         if (inMessages(message, messages) > getSettings()->similarityPercentage)
         {
             message->flags.set(MessageFlag::Similar);
-            if (getSettings()->colorSimilarDisabled)
-            {
-                message->flags.set(MessageFlag::Disabled);
-            }
+            // Similarity is metadata, not a moderation action. In particular,
+            // never assign Disabled: hideModerated would hide valid chat.
         }
     }
 }

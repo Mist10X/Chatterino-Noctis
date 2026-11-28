@@ -43,6 +43,7 @@ public:
         Signal<const seventv::eventapi::EmoteAddDispatch &> emoteAdded;
         Signal<const seventv::eventapi::EmoteUpdateDispatch &> emoteUpdated;
         Signal<const seventv::eventapi::EmoteRemoveDispatch &> emoteRemoved;
+        Signal<const QString &> emoteSetNeedsRefresh;
         Signal<const seventv::eventapi::UserConnectionUpdateDispatch &>
             userUpdated;
         Signal<const seventv::eventapi::PersonalEmoteSetAdded &>

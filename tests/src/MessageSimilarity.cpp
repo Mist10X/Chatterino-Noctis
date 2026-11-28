@@ -58,6 +58,7 @@ TEST(MessageSimilarity, R9KUsesMessageTimestamps)
     auto withinDelay = makeMessage(time.addSecs(4));
     setSimilarityFlags(withinDelay, messages);
     EXPECT_TRUE(withinDelay->flags.has(MessageFlag::Similar));
+    EXPECT_FALSE(withinDelay->flags.has(MessageFlag::Disabled));
 
     auto beyondDelay = makeMessage(time.addSecs(6));
     setSimilarityFlags(beyondDelay, messages);

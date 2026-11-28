@@ -303,6 +303,25 @@ SeventvEmotes::SeventvEmotes()
         this->managedConnections, false);
 }
 
+seventv::detail::SetChanges seventv::detail::diffEmotes(
+    const EmoteMap &previous, const EmoteMap &current)
+{
+    SetChanges changes;
+    for (const auto &[name, emote] : current)
+    {
+        const auto old = previous.find(name);
+        if (old == previous.end() || old->second->id != emote->id)
+            changes.added.push_back(emote);
+    }
+    for (const auto &[name, emote] : previous)
+    {
+        const auto next = current.find(name);
+        if (next == current.end() || next->second->id != emote->id)
+            changes.removed.push_back(emote);
+    }
+    return changes;
+}
+
 std::shared_ptr<const EmoteMap> SeventvEmotes::globalEmotes() const
 {
     return this->global_.get();
@@ -360,14 +379,37 @@ void SeventvEmotes::setGlobalEmotes(std::shared_ptr<const EmoteMap> emotes)
     this->global_.set(std::move(emotes));
 }
 
+SeventvEmotes::ChannelInfo SeventvEmotes::twitchChannelInfo(
+    const QJsonObject &json, const QString &channelID)
+{
+    const auto user = json["user"].toObject();
+    const auto set = json["emote_set"].toObject();
+    const auto connections = user["connections"].toArray();
+    size_t index = 0;
+    size_t firstTwitch = static_cast<size_t>(connections.size());
+    for (const auto &value : connections)
+    {
+        const auto connection = value.toObject();
+        if (connection["platform"].toString() == "TWITCH")
+        {
+            if (firstTwitch == static_cast<size_t>(connections.size()))
+                firstTwitch = index;
+            if (connection["id"].toString() == channelID)
+                return {user["id"].toString(), set["id"].toString(), index};
+        }
+        ++index;
+    }
+    return {user["id"].toString(), set["id"].toString(), firstTwitch};
+}
+
 void SeventvEmotes::loadChannelEmotes(
     const std::weak_ptr<Channel> &channel, const QString &channelId,
     std::function<void(EmoteMap &&, ChannelInfo)> callback, bool manualRefresh,
-    bool cacheHit)
+    bool cacheHit, bool backgroundRefresh)
 {
     auto loadAttempt = std::make_shared<std::function<void(int)>>();
     *loadAttempt = [channel, channelId, callback = std::move(callback),
-                    manualRefresh, cacheHit,
+                    manualRefresh, cacheHit, backgroundRefresh,
                     loadAttempt](int attempt) mutable -> void {
         qCDebug(chatterinoSeventv)
             << "Reloading 7TV Channel Emotes" << channelId << manualRefresh
@@ -400,21 +442,7 @@ void SeventvEmotes::loadChannelEmotes(
 
                 if (callback)
                 {
-                    auto user = json["user"].toObject();
-
-                    size_t connectionIdx = 0;
-                    for (const auto &conn : user["connections"].toArray())
-                    {
-                        if (conn.toObject()["platform"].toString() == "TWITCH")
-                        {
-                            break;
-                        }
-                        connectionIdx++;
-                    }
-
-                    callback(std::move(emoteMap),
-                             {user["id"].toString(),
-                              emoteSet["id"].toString(), connectionIdx});
+                    callback(std::move(emoteMap), twitchChannelInfo(json, channelId));
                 }
 
                 auto shared = channel.lock();
@@ -436,8 +464,18 @@ void SeventvEmotes::loadChannelEmotes(
                     }
                 }
             },
-            [channelId, channel, manualRefresh, cacheHit, attempt,
+            [channelId, channel, manualRefresh, cacheHit, backgroundRefresh, attempt,
              loadAttempt](const auto &result) mutable {
+                if (backgroundRefresh)
+                {
+                    *loadAttempt = {};
+                    if (result.status() == 404)
+                        servicehealth::success(servicehealth::SevenTV);
+                    else
+                        servicehealth::failed(servicehealth::SevenTV,
+                            QUrl(QStringLiteral("https://7tv.io/v3/users/twitch/") + channelId), result);
+                    return; // background retry is handled by the staggered scheduler
+                }
                 maybeRetryTimeoutRequest(
                     channelId, channel, result, attempt,
                     [channel, loadAttempt, attempt]() mutable {
@@ -451,7 +489,7 @@ void SeventvEmotes::loadChannelEmotes(
                             (*loadAttempt)(attempt + 1);
                         }
                     },
-                    [channelId, channel, manualRefresh, cacheHit, result,
+                    [channelId, channel, manualRefresh, cacheHit, backgroundRefresh, result,
                      loadAttempt]() {
                         auto cleanup = qScopeGuard([loadAttempt] {
                             *loadAttempt = {};
@@ -480,7 +518,7 @@ void SeventvEmotes::loadChannelEmotes(
                             qCWarning(chatterinoSeventv)
                                 << "Error fetching 7TV emotes for channel"
                                 << channelId << ", error" << errorString;
-                            if (!manualRefresh && servicehealth::relevant(result)) return;
+                            if (backgroundRefresh || (!manualRefresh && servicehealth::relevant(result))) return;
                             shared->addSystemMessage(
                                 QStringLiteral("Failed to fetch 7TV channel "
                                                "emotes. (Error: %1)")

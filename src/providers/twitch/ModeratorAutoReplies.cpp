@@ -6,6 +6,8 @@
 #include "providers/twitch/ModeratorReplyFeatures.hpp"
 #include "providers/twitch/ReplyQuestionConflicts.hpp"
 #include "providers/twitch/AutoReplyWords.hpp"
+#include "providers/twitch/RepeatCommand.hpp"
+#include "providers/twitch/RepeatCommandPage.hpp"
 
 #include "Application.hpp"
 #include "common/Args.hpp"
@@ -86,6 +88,7 @@ struct Rule {
     QString title;
     bool allWords = false;
     QList<QStringList> wordSets;
+    bool repeatCommand = false;
 
     QString label() const { return title.isEmpty() ? triggers.value(0) : title; }
 };
@@ -107,7 +110,9 @@ bool validRule(const Rule &r)
            !r.triggers.empty() && r.triggers.size() <= 30 &&
            std::all_of(r.triggers.begin(), r.triggers.end(), [](const auto &trigger) {
                return !trigger.simplified().isEmpty() && trigger.size() <= 500;
-           }) && r.title.size() <= 80 && moderator::validReply(r.reply);
+           }) && r.title.size() <= 80 && moderator::validReply(r.reply) &&
+           (!r.repeatCommand || (r.exact && !r.allWords && repeatcommand::validOutput(r.reply) &&
+               std::all_of(r.triggers.begin(), r.triggers.end(), repeatcommand::validTrigger)));
 }
 
 bool prepareRule(Rule &r)
@@ -174,6 +179,7 @@ void openModeratorHelp(QDialog &parent, const QFont &font)
     add(uiText("Full match"), uiText("The whole message must equal the question. Letter case and repeated spaces are ignored, punctuation is not. Example: !playlist matches !playlist, but not please !playlist."));
     add(uiText("Contains phrase"), uiText("The question must occur as one continuous phrase inside the message. Example: what game matches hey what game is this. A fragment may also occur inside another word, so avoid very short triggers."));
     add(uiText("All words"), uiText("All the words on one line must be present as separate, whole words, in any order. Case and punctuation are ignored. Example: long watching movie matches How long have you been watching this movie? but not How long have you been watching?"));
+    add(uiText("Repeat commands"), uiText("Configure !tg and a plain message. Send !tg 5 from your own moderator account to request five messages (1–10). Only one batch runs at a time, through normal Twitch limits."));
     add(uiText("Question variants"), uiText("Write each alternative on a separate line. Any one matching line is enough; words from different lines are not mixed. Only one reply is selected: full match first, then the shortest matching phrase, then the most specific word set. Identical variants or reordered identical word sets are marked as conflicts."));
     add(uiText("Reply variables"), uiText("{game} — current category name.\n{game_time} — time in the current uninterrupted category segment.\n{game_since} — local time when that segment began.\n{game_total} — total time in this category during the current stream, including earlier visits.\n{timer} — elapsed time of the channel's manual timer."));
     add(uiText("Manual timer"), uiText("Choose the channel and start the timer now, a specified number of minutes ago, or from a specific date and time. It survives restarting Noctis. Use it for activities such as watching a movie without changing category. Stop it when the activity ends."));
@@ -233,6 +239,7 @@ struct ModeratorAutoReplies::Impl {
     QHash<QString, QElapsedTimer> lastAccountReply;
     QSet<QString> seenEvents;
     QQueue<QString> eventOrder;
+    repeatcommand::Batch repeatBatch;
 
     explicit Impl(ModeratorAutoReplies &o) : owner(o)
     {
@@ -292,6 +299,7 @@ struct ModeratorAutoReplies::Impl {
             Rule r{object.value("channel").toString(), {}, object.value("reply").toString(),
                    object.value("exact").toBool(true), object.value("enabled").toBool(true), object.value("title").toString(),
                    object.value("allWords").toBool(false)};
+            r.repeatCommand = object.value("repeatCommand").toBool(false);
             for (const auto &value : object.value("triggers").toArray())
                 r.triggers.append(value.toString());
             if (prepareRule(r) && rules.size() < MAX_LOCAL_RULES)
@@ -315,6 +323,7 @@ struct ModeratorAutoReplies::Impl {
                 triggers.append(trigger);
             array.append(QJsonObject{{"channel", r.channel}, {"triggers", triggers},
                                      {"reply", r.reply}, {"exact", r.allWords || r.exact}, {"allWords", r.allWords},
+                                     {"repeatCommand", r.repeatCommand},
                                      {"enabled", r.enabled}, {"title", r.title}});
         }
         QSaveFile file(fileName());
@@ -323,6 +332,7 @@ struct ModeratorAutoReplies::Impl {
             {"manualTimers", moderator::encodeTimers(newTimers)}}).toJson();
         if (raw.size() > 1024 * 1024 || !file.open(QIODevice::WriteOnly) || file.write(raw) != raw.size() || !file.commit())
             return false;
+        repeatBatch.cancel();
         rules = std::move(preparedRules);
         enabled = newEnabled;
         cooldown = newCooldown;
@@ -351,6 +361,7 @@ struct ModeratorAutoReplies::Impl {
     }
     void invalidateRoles()
     {
+        repeatBatch.cancel();
         roleToken.cancel();
         ++roleGeneration;
         fetchingRoles = false;
@@ -603,7 +614,7 @@ void ModeratorAutoReplies::maybeReply(TwitchChannel &channel, Communi::TagsRef t
         return;
     const auto id = tags.getOrEmpty("id");
     const auto sender = tags.getOrEmpty("user-id");
-    if (id.isEmpty() || id.size() > 128 || !moderator::validUserId(sender) || sender == s.account ||
+    if (id.isEmpty() || id.size() > 128 || !moderator::validUserId(sender) ||
         s.seenEvents.contains(id))
         return;
     const auto roomId = tags.getOrEmpty("room-id");
@@ -618,8 +629,78 @@ void ModeratorAutoReplies::maybeReply(TwitchChannel &channel, Communi::TagsRef t
         return;
     // Reserve even a message received during a cooldown. A repeated event
     // after the cooldown must not turn into a new intent to send.
+    if (sender == s.account && !repeatcommand::parse(text)) return;
     if (!s.reserve(id))
         return;
+    if (sender == s.account)
+    {
+        const auto invocation = repeatcommand::parse(text);
+        if (!invocation || s.repeatBatch.active() || roomId != channel.roomId() || !s.policy ||
+            tags.has("historical") || !repeatcommand::ownsCommand(sender, currentId(), s.account,
+                channel.isMod() || channel.isBroadcaster()))
+            return;
+        auto findRepeat = [](const Impl &state, const QString &name, const repeatcommand::Invocation &command) -> const Rule * {
+            int eligible = 0;
+            for (const auto &rule : state.rules)
+            {
+                if (!rule.enabled || rule.channel != name || !validRule(rule)) continue;
+                if (++eligible > state.policy->maximumRules) break;
+                if (rule.repeatCommand && repeatcommand::matches(rule.triggers, command)) return &rule;
+            }
+            return nullptr;
+        };
+        const auto *rule = findRepeat(s, channel.getName(), *invocation);
+        if (!rule) return;
+        auto &last = s.lastReplies[s.account + '/' + channel.getName()];
+        auto &global = s.lastAccountReply[s.account];
+        if (fresh(last, 1000 * std::max(s.cooldown, s.policy->minimumCooldown)) || fresh(global, 1000))
+            return;
+        const auto original = rule->reply;
+        auto output = original.trimmed();
+        if (output.contains(u'{'))
+        {
+            const auto status = channel.accessStreamStatus();
+            auto expanded = moderator::expandReply(output, status->live, status->streamId,
+                status->gameId, status->game, s.categoryStates.value(channel.roomId()),
+                s.manualTimers.value(channel.getName()), QDateTime::currentSecsSinceEpoch());
+            if (!expanded) return;
+            output = *expanded;
+        }
+        output = output.simplified();
+        if (!moderator::validReply(output) || !repeatcommand::validOutput(output) ||
+            !moderatorextension::claimReplyEvent(channel.roomId(), id)) return;
+        const auto uid = s.account;
+        const auto room = channel.roomId();
+        const auto name = channel.getName();
+        const auto revision = s.policy->revision;
+        const auto weak = std::weak_ptr<Channel>(channel.sharedFromThis());
+        last.start(); global.start();
+        s.repeatBatch.start(invocation->count, [this, weak, uid, room, name, invocation, original, output, revision, findRepeat] {
+            if (isAppAboutToQuit()) return false;
+            auto &state = *impl_;
+            const auto live = std::dynamic_pointer_cast<TwitchChannel>(weak.lock());
+            if (!live || !state.enabled || state.account != uid || currentId() != uid ||
+                live->roomId() != room || !state.permittedChannel(*live) || !state.policy ||
+                state.policy->revision != revision) return false;
+            const auto *configured = findRepeat(state, name, *invocation);
+            if (!configured || configured->reply != original) return false;
+            if (original.contains(u'{'))
+            {
+                const auto status = live->accessStreamStatus();
+                if (!moderator::expandReply(original, status->live, status->streamId,
+                    status->gameId, status->game, state.categoryStates.value(room),
+                    state.manualTimers.value(name), QDateTime::currentSecsSinceEpoch())) return false;
+            }
+            const auto &restriction = live->ownRestrictionOf(uid);
+            using Restriction = TwitchChannel::OwnRestriction::Kind;
+            if (restriction.kind == Restriction::Banned || (restriction.kind == Restriction::TimedOut &&
+                restriction.until > QDateTime::currentDateTimeUtc())) return false;
+            bool sent = false;
+            live->sendMessageSignal.invoke(output, sent);
+            return sent;
+        });
+        return;
+    }
     if (!moderator::acceptsRole(s.senderRoles, moderator::senderRole(tags))) return;
     auto &last = s.lastReplies[s.account + '/' + channel.getName()];
     auto &global = s.lastAccountReply[s.account];
@@ -628,10 +709,12 @@ void ModeratorAutoReplies::maybeReply(TwitchChannel &channel, Communi::TagsRef t
         return;
     std::vector<moderator::MatchRule> inputs;
     QList<const Rule *> candidates;
+    size_t eligible = 0;
     for (const auto &rule : s.rules)
     {
         if (!rule.enabled || rule.channel != channel.getName() || !validRule(rule)) continue;
-        if (inputs.size() >= static_cast<size_t>(s.policy->maximumRules)) break;
+        if (++eligible > static_cast<size_t>(s.policy->maximumRules)) break;
+        if (rule.repeatCommand) continue;
         inputs.push_back({rule.triggers, rule.exact, rule.allWords, rule.wordSets});
         candidates.append(&rule);
     }
@@ -703,7 +786,6 @@ void ModeratorAutoReplies::open(QWidget *parent)
     header->addWidget(help);
     auto *moderation = new QPushButton(bundle.label("moderation","Automatic moderation"), &dialog);
     moderation->setObjectName("AutoModerationButton");
-    QObject::connect(moderation, &QPushButton::clicked, &dialog, [&dialog] { openAutoModeration(&dialog); });
     header->addWidget(moderation);
     header->addWidget(enabled);
     layout->addLayout(header);
@@ -778,7 +860,9 @@ void ModeratorAutoReplies::open(QWidget *parent)
     edit->setObjectName("ModeratorTriggerVariants");
     edit->setPlaceholderText(uiText("One question per line"));
     const auto updateTriggerHint = [edit, matchMode] {
-        edit->setPlaceholderText(uiText(matchMode->currentIndex() == 2
+        edit->setPlaceholderText(uiText(matchMode->currentIndex() == 3
+            ? "One command per line, e.g. !tg. Type !tg 5 in chat."
+            : matchMode->currentIndex() == 2
             ? "All words on any one line must appear in the message, in any order."
             : "One question per line"));
     };
@@ -798,12 +882,17 @@ void ModeratorAutoReplies::open(QWidget *parent)
         auto *section = new QWidget(textFields);
         auto *sectionLayout = new QVBoxLayout(section);
         sectionLayout->setContentsMargins(0, 0, 0, 0);
-        sectionLayout->addWidget(new QLabel(caption, section));
+        auto *label = new QLabel(caption, section);
+        sectionLayout->addWidget(label);
         sectionLayout->addWidget(input, 1);
         textFields->addWidget(section);
+        return label;
     };
-    addTextField(uiText("Question variants"), edit);
+    auto *triggerLabel = addTextField(uiText("Question variants"), edit);
     addTextField(uiText("Reply text"), reply);
+    QObject::connect(matchMode, &QComboBox::currentIndexChanged, &dialog, [matchMode, triggerLabel] {
+        triggerLabel->setText(uiText(matchMode->currentIndex() == 3 ? "Repeat commands" : "Question variants"));
+    });
     fields->addWidget(textFields, 1);
     auto *variables = new QLabel(uiText("Variables: {game}, {game_time}, {game_since}, {game_total}, {timer}"), editor);
     variables->setObjectName("SecondaryText");
@@ -919,7 +1008,7 @@ void ModeratorAutoReplies::open(QWidget *parent)
     status->setTextFormat(Qt::PlainText);
     layout->addWidget(status);
 
-    auto draft = s.rules;
+    auto draft = repeatcommand::onlyRules(s.rules, false);
     QList<int> visibleRows;
     int activeRule = -1;
     bool filling = false;
@@ -931,6 +1020,7 @@ void ModeratorAutoReplies::open(QWidget *parent)
         r.reply = reply->toPlainText().trimmed().replace(u'\n', u' ');
         r.exact = matchMode->currentIndex() != 1;
         r.allWords = matchMode->currentIndex() == 2;
+        r.repeatCommand = false;
         r.enabled = ruleEnabled->isChecked();
         const auto row = visibleRows.indexOf(activeRule);
         if (row >= 0 && row < table->rowCount())
@@ -952,6 +1042,7 @@ void ModeratorAutoReplies::open(QWidget *parent)
         reply->setPlainText(valid ? draft[activeRule].reply : QString{});
         matchMode->setCurrentIndex(!valid ? 0 : draft[activeRule].allWords ? 2 : draft[activeRule].exact ? 0 : 1);
         updateTriggerHint();
+        triggerLabel->setText(uiText(valid && draft[activeRule].repeatCommand ? "Repeat commands" : "Question variants"));
         ruleEnabled->setChecked(!valid || draft[activeRule].enabled);
         filling = false;
     };
@@ -1083,7 +1174,20 @@ void ModeratorAutoReplies::open(QWidget *parent)
             selectLocation(location.rule, location.line);
             return;
         }
-        auto rules = draft;
+        auto rules = repeatcommand::mergeRules(draft, s.rules);
+        if (rules.size() > MAX_LOCAL_RULES)
+        {
+            status->setText(uiText("Check the trigger and reply before saving."));
+            return;
+        }
+        const auto combinedConflicts = replyquestions::findConflicts(rules, -1,
+            [&](const Rule &rule) { return allowed.contains(rule.channel); },
+            [](const Rule &rule, const QString &phrase) { return autoreplywords::conflictKey(phrase, rule.allWords); });
+        if (combinedConflicts.first)
+        {
+            status->setText(replyquestions::describe(combinedConflicts, rules));
+            return;
+        }
         QHash<QString, int> counts;
         for (auto &r : rules)
         {
@@ -1100,6 +1204,27 @@ void ModeratorAutoReplies::open(QWidget *parent)
         }
         status->setText(s.save(s.enabled, cooldown->value(), rules, s.senderRoles, s.manualTimers)
             ? uiText("Auto-reply rules saved.") : uiText("Unable to save rules."));
+    });
+    QObject::connect(moderation, &QPushButton::clicked, &dialog, [&] {
+        const auto preferred = tabs->tabText(tabs->currentIndex());
+        openAutoModeration(&dialog, {}, [&](QWidget *page) {
+            return repeatcommand::makePage(page, s.rules, allowed, preferred,
+                [&](const QList<Rule> &commands) -> QString {
+                    if (!accessStillValid() || !s.rolesValid()) return uiText("Unable to save rules.");
+                    const auto merged = repeatcommand::mergeRules(s.rules, commands);
+                    if (merged.size() > MAX_LOCAL_RULES) return uiText("Check the trigger and reply before saving.");
+                    QHash<QString, int> counts;
+                    for (const auto &rule : merged)
+                        if (!validRule(rule) || (allowed.contains(rule.channel) && ++counts[rule.channel] > maximumRules))
+                            return uiText("Check the trigger and reply before saving.");
+                    const auto conflicts = replyquestions::findConflicts(merged, -1,
+                        [&](const Rule &rule) { return allowed.contains(rule.channel); },
+                        [](const Rule &rule, const QString &phrase) { return autoreplywords::conflictKey(phrase, rule.allWords); });
+                    if (conflicts.first) return replyquestions::describe(conflicts, merged);
+                    return s.save(s.enabled, s.cooldown, merged, s.senderRoles, s.manualTimers)
+                        ? QString{} : uiText("Unable to save rules.");
+                });
+        });
     });
 
     auto refreshTimer = [&] {

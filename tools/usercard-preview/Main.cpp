@@ -1865,9 +1865,7 @@ int main(int argc, char **argv)
                                                  QStringLiteral(
                                                      "fixture_old_login");
                                       }));
-                const auto *activityCount = popup.findChild<QLabel *>("UsercardActivityCount");
-                check("activity counts only the target UID including older login", activityCount &&
-                      activityCount->text() == QStringLiteral("19"));
+                check("obsolete activity block is absent", !popup.findChild<QWidget *>("UsercardActivity"));
             }
 
             {
@@ -2108,13 +2106,8 @@ int main(int argc, char **argv)
                 const int baseHeight = badges->height();
                 const int basePopupHeight = popup.height();
                 const int prefix = badges->property("firstRowBadgeCount").toInt();
-                const auto count = popup.findChild<QLabel *>("UsercardActivityCount");
-                const auto latest = popup.findChild<QLabel *>("UsercardActivityLatest");
-                check("activity shows loaded messages and last timestamp", count && latest &&
-                      count->text() == QStringLiteral("18") && latest->text() != QStringLiteral("—"));
-                const auto *activity = popup.findChild<QWidget *>("UsercardActivity");
-                check("activity does not show intrusive tooltips", activity && count && latest &&
-                      activity->toolTip().isEmpty() && count->toolTip().isEmpty() && latest->toolTip().isEmpty());
+                check("obsolete activity count is absent", !popup.findChild<QLabel *>("UsercardActivityCount"));
+                check("obsolete activity block is absent", !popup.findChild<QWidget *>("UsercardActivity"));
                 const auto *headingChannel = popup.findChild<QLabel *>("UsercardHeadingChannel");
                 const auto *headingAvatar = popup.findChild<QLabel *>("ChannelIdentityAvatar");
                 check("channel identity shows name without hash and a round channel avatar", headingChannel && headingAvatar &&
@@ -2561,7 +2554,7 @@ int main(int argc, char **argv)
         {
             // after the synthetic profile data (which hides the strip) is set
             QTimer::singleShot(500, &popup, [&] {
-                popup.previewModerationStrip();
+                popup.previewModerationStrip(false);
             });
             QTimer::singleShot(600, &popup, [&] {
                 auto *local = popup.findChild<QWidget *>("UsercardLocalModerationActions");
@@ -2569,12 +2562,41 @@ int main(int argc, char **argv)
                 const bool crossOnly = qEnvironmentVariableIsSet("NOCTIS_PREVIEW_CROSS_ONLY");
                 const bool visible = local && cross && cross->isVisibleTo(&popup) &&
                     (local->isVisibleTo(&popup) != crossOnly);
-                const int gap = visible && !crossOnly
-                    ? cross->geometry().left() - local->geometry().right() - 1 : 0;
-                const bool separated = visible && (crossOnly || gap >= 24);
+                // At constrained DPI, the local panel may extend beyond the
+                // scroll viewport. Compare the actual visible/clipped regions.
+                const auto *viewport = popup.findChild<QWidget *>("UsercardProfileViewport");
+                const auto cardRect = [&](const QWidget *widget) {
+                    return QRect(widget->mapTo(&popup, QPoint()), widget->size());
+                };
+                const auto clippedLocal = visible && viewport && !crossOnly
+                    ? cardRect(local).intersected(cardRect(viewport)) : QRect{};
+                const int gap = visible && !crossOnly && viewport
+                    ? cross->mapTo(&popup, QPoint()).y() -
+                      clippedLocal.bottom() - 1 : 0;
+                const bool separated = visible && (crossOnly ||
+                    (viewport && !cardRect(viewport).intersects(cardRect(cross)) &&
+                     (clippedLocal.isEmpty() || gap >= 0)));
                 checksPassed &= separated;
                 checks.append(QJsonObject{{"name", "cross-channel actions separated from local punishments"},
                                          {"ok", separated}, {"gap", gap}});
+                const auto *counts = popup.findChild<QLabel *>("UsercardModerationCounts");
+                const auto unknown = QStringLiteral("—");
+                const bool countsLayout = counts && (crossOnly ? !counts->isVisibleTo(&popup) :
+                    counts->isVisibleTo(&popup) && counts->text() == uiText("Bans: %1 · Timeouts: %2").arg(unknown, unknown));
+                checksPassed &= countsLayout;
+                checks.append(QJsonObject{{"name", "moderation counts appear only in the local panel"},
+                                         {"ok", countsLayout}});
+                const auto before = popup.geometry();
+                const auto labelSize = counts ? counts->size() : QSize{};
+                popup.previewModerationStrip(true);
+                QTimer::singleShot(20, &popup, [&, counts, before, labelSize, crossOnly] {
+                    const bool stable = popup.geometry() == before && counts &&
+                        (crossOnly || (counts->size() == labelSize &&
+                            counts->text() == uiText("Bans: %1 · Timeouts: %2").arg(0).arg(0)));
+                    checksPassed &= stable;
+                    checks.append(QJsonObject{{"name", "zero counts replace placeholders without moving or resizing the card"},
+                                             {"ok", stable}});
+                });
                 auto *footer = popup.findChild<QWidget *>("UsercardModerationStrip");
                 const auto raster = popup.grab().toImage();
                 const auto dpr = raster.devicePixelRatio();

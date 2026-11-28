@@ -86,6 +86,11 @@ namespace seventv::detail {
 
 EmoteMap parseEmotes(const QJsonArray &emoteSetEmotes,
                      SeventvEmoteSetKind kind);
+struct SetChanges {
+    std::vector<EmotePtr> added;
+    std::vector<EmotePtr> removed;
+};
+SetChanges diffEmotes(const EmoteMap &previous, const EmoteMap &current);
 
 }
 
@@ -97,6 +102,7 @@ public:
         QString emoteSetID;
         size_t twitchConnectionIndex;
     };
+    static ChannelInfo twitchChannelInfo(const QJsonObject &json, const QString &channelID);
 
     SeventvEmotes();
 
@@ -107,7 +113,7 @@ public:
     static void loadChannelEmotes(
         const std::weak_ptr<Channel> &channel, const QString &channelId,
         std::function<void(EmoteMap &&, ChannelInfo)> callback,
-        bool manualRefresh, bool cacheHit);
+        bool manualRefresh, bool cacheHit, bool backgroundRefresh = false);
     static void loadKickChannelEmotes(
         const std::weak_ptr<KickChannel> &channel, uint64_t userID,
         std::function<void(EmoteMap &&, ChannelInfo)> callback,

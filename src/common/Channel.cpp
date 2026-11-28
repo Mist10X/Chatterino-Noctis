@@ -211,7 +211,8 @@ void Channel::noteChatter(const Message &message)
         !message.flags.has(MessageFlag::System))
     {
         getApp()->getSeventvPaints()->noteTwitchChatter(message.loginName,
-                                                       message.userID);
+                                                       message.userID,
+                                                       !message.flags.has(MessageFlag::RecentMessage));
     }
 }
 

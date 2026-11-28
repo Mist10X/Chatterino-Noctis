@@ -213,36 +213,6 @@ MoltorinoPage::MoltorinoPage()
                      "right-clicking a message."))
         ->addTo(*view);
 
-    view->addDropdown<int>(
-            uiText("Show pin button on mods and broadcaster"),
-            {"Never", "In moderation mode", "Always"},
-            s.showPinButtonOnModeratorsMode,
-            [](auto val) {
-                switch (val)
-                {
-                    case 0:
-                        return QString("Never");
-                    case 2:
-                        return QString("Always");
-                    default:
-                        return QString("In moderation mode");
-                }
-            },
-            [](auto args) {
-                if (args.value == "Never")
-                {
-                    return 0;
-                }
-                if (args.value == "Always")
-                {
-                    return 2;
-                }
-                return 1;
-            },
-            false)
-        ->setToolTip(uiText("Controls the inline Pin action beside moderator and "
-                     "broadcaster messages."));
-
     SettingWidget::checkbox(uiText("Show pinned messages"), s.enablePinnedMessages)
         ->setTooltip(uiText("Show the pinned message banner above chat."))
         ->addTo(*view);

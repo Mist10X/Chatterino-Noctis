@@ -13,12 +13,15 @@
 #include "mocks/Helix.hpp"
 #include "mocks/Logging.hpp"
 #include "mocks/TwitchIrcServer.hpp"
+#include "messages/Emote.hpp"
+#include "messages/Image.hpp"
 #include "providers/twitch/PubSubManager.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/WindowManager.hpp"
 #include "Test.hpp"
+#include "TwitchChannelTestAccess.hpp"
 #include "widgets/dialogs/PredictionDialog.hpp"
 
 #include <QApplication>
@@ -1090,6 +1093,59 @@ TEST(Commands, E2E)
     getApp()->getCommands()->execCommand(
         "/unban --channel id:11148817 --channel testaccount_420 forsen",
         channel, false);
+}
+
+TEST(Commands, ChannelBadgeCatalogSurvivesRestart)
+{
+    MockApplication app;
+    StrictMock<mock::Helix> helix;
+    initializeHelix(&helix);
+    EXPECT_CALL(helix, update).Times(1);
+    EXPECT_CALL(helix, loadBlocks).Times(1);
+    auto account = std::make_shared<TwitchAccount>("test_badges", "token", "client", "42");
+    app.accounts.twitch.accounts.append(account);
+    app.accounts.twitch.currentUsername = "test_badges";
+    app.accounts.twitch.load();
+
+    const auto catalog = [](QString version, QString url) {
+        return HelixChannelBadges(QJsonObject{{"data", QJsonArray{QJsonObject{
+            {"set_id", "subscriber"}, {"versions", QJsonArray{QJsonObject{
+                {"id", version}, {"title", "Fixture badge"}, {"image_url_1x", url},
+                {"image_url_2x", url}, {"image_url_4x", url}}}}}}}});
+    };
+    auto channel = std::make_shared<TwitchChannel>("badge_cache_fixture");
+    TwitchChannelTestAccess::setRoomId(*channel, "912345678");
+    ResultCallback<HelixChannelBadges> stale;
+    EXPECT_CALL(helix, getChannelBadges(QString("912345678"), _, _))
+        .WillOnce([&](auto, auto success, auto) { stale = success; })
+        .WillOnce([&](auto, auto success, auto) {
+            success(catalog("3", "https://example.invalid/sub3.png"));
+        })
+        .WillOnce([&](auto, auto success, auto) {
+            success(catalog("6", "https://example.invalid/sub6.png"));
+        })
+        .WillOnce([](auto, auto, auto) {});
+    channel->initialize();
+    channel->initialize();
+    stale(catalog("3", "https://example.invalid/stale.png"));
+    auto badge = channel->twitchBadge("subscriber", "3");
+    ASSERT_TRUE(badge);
+    EXPECT_EQ((*badge)->images.getImage1()->url().string, "https://example.invalid/sub3.png");
+    channel->initialize();
+    channel.reset();
+
+    auto restored = std::make_shared<TwitchChannel>("badge_cache_fixture");
+    TwitchChannelTestAccess::setRoomId(*restored, "912345678");
+    restored->initialize(); // official catalog has not returned yet
+    for (const auto &version : {QStringLiteral("3"), QStringLiteral("6")})
+    {
+        auto cached = restored->twitchBadge("subscriber", version);
+        ASSERT_TRUE(cached);
+        EXPECT_EQ((*cached)->images.getImage1()->url().string,
+                  QString("https://example.invalid/sub%1.png").arg(version));
+    }
+    TwitchChannelTestAccess::setRoomId(*restored, "912345679");
+    EXPECT_FALSE(restored->twitchBadge("subscriber", "3"));
 }
 
 TEST(Commands, PredictionCommandOpensDialogInsteadOfCreatingViaArgs)

@@ -348,6 +348,7 @@ TwitchIrcServer::TwitchIrcServer()
         {
             qCDebug(chatterinoIrc)
                 << "Write connection did not finish login; reconnecting";
+            this->writeConnection_->logEvent(QStringLiteral("login timed out; reconnecting"));
             this->reconnectWriteConnection(true);
         }
     });
@@ -360,15 +361,16 @@ TwitchIrcServer::TwitchIrcServer()
             this->writeConfirmationWatchdog_.stop();
             return;
         }
-        if (this->writeRecovery_.expired(IrcWriteRecovery::Clock::now()))
+        const auto now = IrcWriteRecovery::Clock::now();
+        const auto expired = this->writeRecovery_.takeExpiredUnconfirmedChannels(now);
+        if (!expired.isEmpty())
         {
-            qCDebug(chatterinoIrc)
-                << "Twitch write confirmation timed out; reconnecting writer";
-            // Reconnect only the write socket. An accepted socket write may
-            // already have been delivered; never replay it automatically.
-            this->reconnectWriteConnection(true);
+            // Missing an ACK/nonce is not proof that the socket is dead. The
+            // independent IRC heartbeat and socket failure still reconnect it.
+            this->writeConnection_->logEvent(QStringLiteral("delivery confirmation timed out; keeping current connection"));
+            this->notifyUnconfirmedChannels(expired);
         }
-        this->writeRecovery_.pruneConfirmed(IrcWriteRecovery::Clock::now());
+        this->writeRecovery_.pruneConfirmed(now);
         if (!this->writeRecovery_.hasPending())
         {
             this->writeConfirmationWatchdog_.stop();
@@ -473,6 +475,10 @@ void TwitchIrcServer::initialize()
     QObject::connect(&this->channelPointsBackgroundTimer_, &QTimer::timeout,
                      this, &TwitchIrcServer::pollChannelPointsInBackground);
     this->channelPointsBackgroundTimer_.start();
+    this->sevenTVSnapshotTimer_.setInterval(5000);
+    QObject::connect(&this->sevenTVSnapshotTimer_, &QTimer::timeout,
+                     this, &TwitchIrcServer::pollSevenTVSnapshots);
+    this->sevenTVSnapshotTimer_.start();
     restoreWhispersWithBadges(this->whispersChannel);
     this->signalHolder.managedConnect(
         getApp()->getAccounts()->twitch.currentUserDisplayNameChanged, [this] {
@@ -725,6 +731,7 @@ void TwitchIrcServer::initialize()
 void TwitchIrcServer::aboutToQuit()
 {
     this->channelPointsBackgroundTimer_.stop();
+    this->sevenTVSnapshotTimer_.stop();
     ++this->writeAccountEpoch_;
     this->writeLoginTimeout_.stop();
     this->writeConfirmationWatchdog_.stop();
@@ -1579,6 +1586,14 @@ void TwitchIrcServer::initEventAPIs(BttvLiveUpdates *bttvLiveUpdates,
     if (seventvEventAPI != nullptr)
     {
         this->signalHolder.managedConnect(
+            seventvEventAPI->signals_.emoteSetNeedsRefresh, [&](const QString &set) {
+                postToThread([this, set] {
+                    this->forEachSeventvEmoteSet(set, [](TwitchChannel &channel) {
+                        channel.requestSevenTVSnapshot();
+                    });
+                }, this);
+            });
+        this->signalHolder.managedConnect(
             seventvEventAPI->signals_.emoteAdded, [&](const auto &data) {
                 if (getApp()->getSeventvPersonalEmotes()->hasEmoteSet(
                         data.emoteSetID))
@@ -1586,9 +1601,7 @@ void TwitchIrcServer::initEventAPIs(BttvLiveUpdates *bttvLiveUpdates,
                     getApp()->getSeventvPersonalEmotes()->updateEmoteSet(
                         data.emoteSetID, data);
                 }
-                else
-                {
-                    postToThread(
+                postToThread(
                         [this, data] {
                             this->forEachSeventvEmoteSet(
                                 data.emoteSetID, [data](TwitchChannel &chan) {
@@ -1596,7 +1609,6 @@ void TwitchIrcServer::initEventAPIs(BttvLiveUpdates *bttvLiveUpdates,
                                 });
                         },
                         this);
-                }
             });
         this->signalHolder.managedConnect(
             seventvEventAPI->signals_.emoteUpdated, [&](const auto &data) {
@@ -1606,9 +1618,7 @@ void TwitchIrcServer::initEventAPIs(BttvLiveUpdates *bttvLiveUpdates,
                     getApp()->getSeventvPersonalEmotes()->updateEmoteSet(
                         data.emoteSetID, data);
                 }
-                else
-                {
-                    postToThread(
+                postToThread(
                         [this, data] {
                             this->forEachSeventvEmoteSet(
                                 data.emoteSetID, [data](TwitchChannel &chan) {
@@ -1616,7 +1626,6 @@ void TwitchIrcServer::initEventAPIs(BttvLiveUpdates *bttvLiveUpdates,
                                 });
                         },
                         this);
-                }
             });
         this->signalHolder.managedConnect(
             seventvEventAPI->signals_.emoteRemoved, [&](const auto &data) {
@@ -1626,9 +1635,7 @@ void TwitchIrcServer::initEventAPIs(BttvLiveUpdates *bttvLiveUpdates,
                     getApp()->getSeventvPersonalEmotes()->updateEmoteSet(
                         data.emoteSetID, data);
                 }
-                else
-                {
-                    postToThread(
+                postToThread(
                         [this, data] {
                             this->forEachSeventvEmoteSet(
                                 data.emoteSetID, [data](TwitchChannel &chan) {
@@ -1636,14 +1643,15 @@ void TwitchIrcServer::initEventAPIs(BttvLiveUpdates *bttvLiveUpdates,
                                 });
                         },
                         this);
-                }
             });
         this->signalHolder.managedConnect(
             seventvEventAPI->signals_.userUpdated, [&](const auto &data) {
-                this->forEachSeventvUser(data.userID,
+                postToThread([this, data] {
+                    this->forEachSeventvUser(data.userID,
                                          [data](TwitchChannel &chan) {
                                              chan.updateSeventvUser(data);
                                          });
+                }, this);
             });
         this->signalHolder.managedConnect(
             seventvEventAPI->signals_.personalEmoteSetAdded,
@@ -1723,7 +1731,7 @@ void TwitchIrcServer::forEachSeventvEmoteSet(
 {
     this->forEachChannel([emoteSetId, func](const auto &chan) {
         if (auto *channel = dynamic_cast<TwitchChannel *>(chan.get());
-            channel->seventvEmoteSetID() == emoteSetId)
+            channel && channel->seventvEmoteSetID() == emoteSetId)
         {
             func(*channel);
         }
@@ -1734,7 +1742,7 @@ void TwitchIrcServer::forEachSeventvUser(
 {
     this->forEachChannel([userId, func](const auto &chan) {
         if (auto *channel = dynamic_cast<TwitchChannel *>(chan.get());
-            channel->seventvUserID() == userId)
+            channel && channel->seventvUserID() == userId)
         {
             func(*channel);
         }
@@ -1886,6 +1894,27 @@ void TwitchIrcServer::pollChannelPointsInBackground()
         });
 }
 
+void TwitchIrcServer::pollSevenTVSnapshots()
+{
+    assertInGuiThread();
+    if (isAppAboutToQuit() || getApp()->isTest() ||
+        !getSettings()->enableSevenTVChannelEmotes)
+        return;
+    std::vector<std::shared_ptr<TwitchChannel>> candidates;
+    this->forEachChannel([&](const ChannelPtr &channel) {
+        auto twitch = std::dynamic_pointer_cast<TwitchChannel>(channel);
+        if (twitch && twitch->isSevenTVSnapshotDue())
+            candidates.push_back(std::move(twitch));
+    });
+    // One staggered HTTP snapshot per tick, even with many tabs.
+    channelpoints::pollNextChannel(candidates, this->lastSevenTVSnapshotChannel_,
+        [](const auto &channel) { return channel->getName(); },
+        [](const auto &channel) {
+            channel->refreshSevenTVChannelEmotes(false, true);
+            return true;
+        });
+}
+
 void TwitchIrcServer::connect()
 {
     assertInGuiThread();
@@ -1988,6 +2017,8 @@ void TwitchIrcServer::createWriteConnection()
         }
         qCDebug(chatterinoIrc)
             << "Write connection reconnect requested. Timeout:" << timeout;
+        writer->logEvent(timeout ? QStringLiteral("reconnect reason: heartbeat timeout")
+                                 : QStringLiteral("reconnect reason: socket disconnected"));
         this->reconnectWriteConnection(true);
     });
 }
@@ -2080,6 +2111,7 @@ bool TwitchIrcServer::trySendRawMessage(const QString &rawMessage)
     {
         qCDebug(chatterinoIrc)
             << "Write socket refused command; reconnecting without replay";
+        this->writeConnection_->logEvent(QStringLiteral("reconnect reason: raw write refused (no replay)"));
         this->reconnectWriteConnection();
     }
     return accepted;
@@ -2132,7 +2164,12 @@ bool TwitchIrcServer::trySendChatMessage(
 void TwitchIrcServer::reportUnconfirmedWrites()
 {
     this->writeConfirmationWatchdog_.stop();
-    for (const auto &name : this->writeRecovery_.takeUnconfirmedChannels())
+    this->notifyUnconfirmedChannels(this->writeRecovery_.takeUnconfirmedChannels());
+}
+
+void TwitchIrcServer::notifyUnconfirmedChannels(const QStringList &channels)
+{
+    for (const auto &name : channels)
     {
         auto channel = this->getChannelOrEmpty(name);
         if (channel && !channel->isEmpty())

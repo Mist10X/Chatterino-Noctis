@@ -21,6 +21,9 @@ class IrcWriteRecovery
 public:
     using Clock = std::chrono::steady_clock;
     static constexpr auto CONFIRMATION_TIMEOUT = std::chrono::seconds(12);
+    // Keep timed-out slots briefly to correlate delayed USERSTATE/echoes
+    // with the old send, instead of accidentally consuming a newer one.
+    static constexpr auto LATE_CONFIRMATION_RETENTION = std::chrono::seconds(60);
 
     void bindAccount(const QString &id)
     {
@@ -47,7 +50,7 @@ public:
     void noteWrite(const QString &channel, Clock::time_point now,
                    const QString &nonce = {})
     {
-        this->pending_.push_back({channel, now, nonce, {}, {}});
+        this->pending_.push_back({channel, now, nonce, {}, {}, false});
     }
 
     // A nonce echo on the live socket is exact evidence. Keep its pending
@@ -102,7 +105,7 @@ public:
                 if (inChannel(pending) && pending.echoId == id)
                 {
                     pending.ackId = id;
-                    return true;
+                    return !pending.timeoutReported;
                 }
             }
         }
@@ -114,6 +117,7 @@ public:
             });
         if (item != this->pending_.end())
         {
+            const bool firstReport = !item->timeoutReported;
             if (id.isEmpty())
             {
                 // Explicit rejection from Twitch; no resend.
@@ -124,7 +128,7 @@ public:
                 // Keep the nonce until the receive-side echo can correlate it.
                 item->ackId = id;
             }
-            return true;
+            return firstReport;
         }
         return false;
     }
@@ -132,8 +136,13 @@ public:
     void pruneConfirmed(Clock::time_point now)
     {
         std::erase_if(this->pending_, [&](const auto &pending) {
+            const auto age = now - pending.writtenAt;
+            if (pending.timeoutReported)
+            {
+                return age >= LATE_CONFIRMATION_RETENTION;
+            }
             return (!pending.echoId.isEmpty() || !pending.ackId.isEmpty()) &&
-                   now - pending.writtenAt >= CONFIRMATION_TIMEOUT;
+                   age >= CONFIRMATION_TIMEOUT;
         });
     }
 
@@ -145,9 +154,31 @@ public:
     bool expired(Clock::time_point now) const
     {
         return std::ranges::any_of(this->pending_, [&](const auto &pending) {
-            return pending.echoId.isEmpty() && pending.ackId.isEmpty() &&
+            return !pending.timeoutReported && pending.echoId.isEmpty() && pending.ackId.isEmpty() &&
                    now - pending.writtenAt >= CONFIRMATION_TIMEOUT;
         });
+    }
+
+    // Delivery uncertainty is not a transport failure. Report each expired
+    // dispatch once, without discarding younger pending sends or replaying.
+    QStringList takeExpiredUnconfirmedChannels(Clock::time_point now)
+    {
+        QStringList channels;
+        for (auto &pending : this->pending_)
+        {
+            if (pending.timeoutReported || !pending.echoId.isEmpty() ||
+                !pending.ackId.isEmpty() ||
+                now - pending.writtenAt < CONFIRMATION_TIMEOUT)
+            {
+                continue;
+            }
+            pending.timeoutReported = true;
+            if (!channels.contains(pending.channel, Qt::CaseInsensitive))
+            {
+                channels.push_back(pending.channel);
+            }
+        }
+        return channels;
     }
 
     QStringList takeUnconfirmedChannels()
@@ -155,7 +186,7 @@ public:
         QStringList channels;
         for (const auto &pending : this->pending_)
         {
-            if (pending.echoId.isEmpty() && pending.ackId.isEmpty() &&
+            if (!pending.timeoutReported && pending.echoId.isEmpty() && pending.ackId.isEmpty() &&
                 !channels.contains(pending.channel, Qt::CaseInsensitive))
             {
                 channels.push_back(pending.channel);
@@ -172,6 +203,7 @@ private:
         QString nonce;
         QString echoId;
         QString ackId;
+        bool timeoutReported;
     };
     std::optional<QString> account_;
     std::deque<Pending> pending_;

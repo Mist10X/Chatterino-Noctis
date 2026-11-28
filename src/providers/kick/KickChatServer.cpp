@@ -248,8 +248,7 @@ void KickChatServer::onChatMessage(KickChannel *channel, BoostJsonObject data)
         channel->applySimilarityFilters(msg);
 
         if (!msg->flags.has(MessageFlag::Similar) ||
-            (!getSettings()->hideSimilar &&
-             getSettings()->shownSimilarTriggerHighlights))
+            getSettings()->shownSimilarTriggerHighlights)
         {
             MessageBuilder::triggerHighlights(channel, msg, highlight);
         }

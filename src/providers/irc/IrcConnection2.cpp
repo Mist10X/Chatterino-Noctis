@@ -199,6 +199,7 @@ IrcConnection::IrcConnection(QObject *parent)
 
             if (this->waitingForPong_.load())
             {
+                this->logEvent(QStringLiteral("heartbeat timed out; closing connection"));
                 this->close();
                 this->connectionLost.invoke(true);
             }

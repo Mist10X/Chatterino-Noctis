@@ -20,6 +20,12 @@
 namespace chatterino {
 
 class TwitchAccount;
+struct GqlUsercardModerationCounts {
+    int bans = 0;
+    int timeouts = 0;
+    bool moreBans = false;
+    bool moreTimeouts = false;
+};
 
 struct CustomAuthValidationResult {
     QString normalizedToken;
@@ -354,6 +360,11 @@ void getModerationActionLogs(
     const QString &channelId, const QString &cursor, const QString &oauthToken,
     std::function<void(GqlModerationActionLogPage)> successCallback,
     std::function<void(const QString &)> failureCallback);
+std::optional<GqlUsercardModerationCounts> parseUsercardModerationCounts(
+    const QJsonValue &response);
+void getUsercardModerationCounts(
+    const QString &channelId, const QString &targetId, const QString &oauthToken,
+    std::function<void(std::optional<GqlUsercardModerationCounts>)> callback);
 void getActivePrediction(
     const QString &channelLogin, const QString &oauthToken,
     std::function<void(std::optional<TwitchChannel::PredictionEvent>)>

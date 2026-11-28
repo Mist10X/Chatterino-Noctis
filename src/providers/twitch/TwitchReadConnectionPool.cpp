@@ -4,20 +4,25 @@
 #include "Application.hpp"
 #include "common/Common.hpp"
 #include "common/QLogging.hpp"
+#include "controllers/accounts/AccountController.hpp"
 #include "messages/Message.hpp"
 #include "messages/MessageBuilder.hpp"
 #include "providers/irc/IrcConnection2.hpp"
+#include "providers/twitch/TwitchAccount.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
+#include "providers/twitch/TwitchReadJoinLimiter.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/QStringHash.hpp"  // IWYU pragma: keep
-#include "util/RatelimitBucket.hpp"
 
 #include <boost/unordered/unordered_flat_map.hpp>
 #include <QDateTime>
 #include <QHash>
+#include <QSet>
+#include <QTimer>
 
+#include <array>
 #include <span>
 
 namespace {
@@ -226,12 +231,19 @@ private:
     void onDisconnected();
 
     void markChannelsConnected();
+    QString currentReadIdentity() const;
+    bool isCurrentReadIdentity() const;
+    void drainJoins();
+    void confirmJoin(const QString &name);
 
     QObjectPtr<IrcConnection> connection = nullptr;
 
     // Our rate limiting bucket for the Twitch join rate limits
     // https://dev.twitch.tv/docs/irc/guide#rate-limits
-    QObjectPtr<RatelimitBucket> joinBucket;
+    TwitchReadJoinLimiter joinLimiter;
+    QTimer joinTimer;
+    bool authenticatedRead = false;
+    QSet<QString> joinedChannels;
 
     pajlada::Signals::SignalHolder signalHolder;
     boost::unordered_flat_map<QString, std::weak_ptr<TwitchChannel>> channels;
@@ -243,25 +255,18 @@ TwitchReadConnectionPoolSingle::TwitchReadConnectionPoolSingle(
     TwitchIrcServer *parent)
     : TwitchReadConnectionPool(parent)
     , connection(new IrcConnection)
+    , joinLimiter(getSettings()->useBotLimitsJoin ? BOT_JOIN_RATELIMIT_BUDGET
+                                                : JOIN_RATELIMIT_BUDGET,
+                  std::chrono::milliseconds(JOIN_RATELIMIT_COOLDOWN))
     , server(parent)
 {
     assert(this->server);
     this->connection->setDiagnosticsLabel(QStringLiteral("read"));
 
-    // Apply a leaky bucket rate limiting to JOIN messages
-    auto actuallyJoin = [&](const QString &name) {
-        if (!this->channels.contains(name))
-        {
-            return;
-        }
-        qCDebug(chatterinoIrc) << "Joining" << name;
-        this->connection->sendRaw("JOIN #" + name);
-    };
-    const int joinBudget = getSettings()->useBotLimitsJoin
-                               ? BOT_JOIN_RATELIMIT_BUDGET
-                               : JOIN_RATELIMIT_BUDGET;
-    this->joinBucket.reset(new RatelimitBucket(
-        joinBudget, JOIN_RATELIMIT_COOLDOWN, actuallyJoin, this));
+    this->joinTimer.setSingleShot(true);
+    this->joinTimer.setTimerType(Qt::PreciseTimer);
+    QObject::connect(&this->joinTimer, &QTimer::timeout, this,
+                     &TwitchReadConnectionPoolSingle::drainJoins);
 
     // Listen to read connection message signals
     this->connection->moveToThread(QCoreApplication::instance()->thread());
@@ -271,7 +276,10 @@ TwitchReadConnectionPoolSingle::TwitchReadConnectionPoolSingle(
     QObject::connect(this->connection.get(),
                      &Communi::IrcConnection::privateMessageReceived, this,
                      [this](auto *msg) {
-                         this->privateMessageReceived.invoke(msg);
+                         if (this->isCurrentReadIdentity())
+                         {
+                             this->privateMessageReceived.invoke(msg);
+                         }
                      });
     QObject::connect(this->connection.get(), &Communi::IrcConnection::connected,
                      this, &TwitchReadConnectionPoolSingle::onConnected);
@@ -301,46 +309,111 @@ TwitchReadConnectionPoolSingle::TwitchReadConnectionPoolSingle(
     });
 }
 
+QString TwitchReadConnectionPoolSingle::currentReadIdentity() const
+{
+    const auto account = getApp()->getAccounts()->twitch.getCurrent();
+    if (!this->authenticatedRead || account->isAnon())
+    {
+        return QStringLiteral("anonymous");
+    }
+    const auto uid = account->getUserId();
+    return uid.isEmpty() ? QStringLiteral("login:") + account->getUserName()
+                         : QStringLiteral("uid:") + uid;
+}
+
+bool TwitchReadConnectionPoolSingle::isCurrentReadIdentity() const
+{
+    return this->joinLimiter.belongsTo(this->currentReadIdentity());
+}
+
+void TwitchReadConnectionPoolSingle::drainJoins()
+{
+    this->joinTimer.stop();
+    if (!this->connection->isConnected() || !this->isCurrentReadIdentity())
+    {
+        return;
+    }
+    while (this->connection->isConnected() && this->isCurrentReadIdentity())
+    {
+        auto name = this->joinLimiter.takeNext(TwitchReadJoinLimiter::Clock::now());
+        if (!name)
+        {
+            break;
+        }
+        if (this->channels.contains(*name))
+        {
+            qCDebug(chatterinoIrc) << "Joining" << *name;
+            this->connection->sendRaw("JOIN #" + *name);
+        }
+    }
+    if (!this->connection->isConnected() || !this->isCurrentReadIdentity())
+    {
+        return;
+    }
+    if (const auto delay = this->joinLimiter.nextDelay(TwitchReadJoinLimiter::Clock::now()))
+    {
+        this->connection->logEvent(QStringLiteral("channel join pending; account limit, wait %1 ms")
+                                       .arg(delay->count()));
+        this->joinTimer.start(*delay);
+    }
+}
+
 void TwitchReadConnectionPoolSingle::onChannelCreated(TwitchChannel &channel)
 {
     this->channels.emplace(channel.getName(), channel.weakFromThis());
     if (this->connection->isConnected())
     {
-        this->joinBucket->send(channel.getName());
+        this->joinLimiter.enqueue(channel.getName());
+        this->drainJoins();
     }
     this->signalHolder.managedConnect(
         channel.destroyed, [this, name = channel.getName()] {
             this->channels.erase(name);
+            this->joinLimiter.remove(name);
+            this->joinedChannels.remove(name);
             qCDebug(chatterinoIrc) << "[read] parting" << name;
-            this->connection->sendRaw("PART #" + name);
+            if (this->connection->isConnected() && this->isCurrentReadIdentity())
+            {
+                this->connection->sendRaw("PART #" + name);
+            }
         });
 }
 
 void TwitchReadConnectionPoolSingle::reconnect()
 {
-    this->connection->close();
+    this->close();
+    this->authenticatedRead = getSettings()->twitchReadConnectionMode ==
+                              TwitchReadConnectionMode::Authenticated;
+    this->joinLimiter.bind(this->currentReadIdentity());
     TwitchIrcServer::initializeConnection(
         this->connection.get(), TwitchIrcServer::ConnectionType::Read);
 }
 
 void TwitchReadConnectionPoolSingle::close()
 {
+    this->joinTimer.stop();
+    this->joinLimiter.clearPending();
     this->connection->close();
 }
 
 void TwitchReadConnectionPoolSingle::rejoin(const QString &channelName)
 {
     if (!this->channels.contains(channelName) ||
-        !this->connection->isConnected())
+        !this->connection->isConnected() || !this->isCurrentReadIdentity())
     {
         return;
     }
     this->connection->sendRaw("PART #" + channelName);
-    this->joinBucket->send(channelName);
+    this->joinLimiter.enqueue(channelName);
+    this->drainJoins();
 }
 
 void TwitchReadConnectionPoolSingle::onMessageReceived(Communi::IrcMessage *msg)
 {
+    if (!this->isCurrentReadIdentity())
+    {
+        return;
+    }
     if (msg->type() == Communi::IrcMessage::Type::Private)
     {
         // We already have a handler for private messages
@@ -358,11 +431,41 @@ void TwitchReadConnectionPoolSingle::onMessageReceived(Communi::IrcMessage *msg)
         return;
     }
 
+    // A connected IRC socket has not joined the channel until Twitch
+    // acknowledges that particular JOIN. Do not clear its outage early.
+    if (command == "JOIN" &&
+        msg->nick().compare(this->connection->nickName(), Qt::CaseInsensitive) == 0)
+    {
+        this->confirmJoin(msg->parameter(0).mid(1).toLower());
+    }
     this->messageReceived.invoke(msg);
+}
+
+void TwitchReadConnectionPoolSingle::confirmJoin(const QString &name)
+{
+    if (this->joinedChannels.contains(name))
+    {
+        return;
+    }
+    const auto it = this->channels.find(name);
+    if (it != this->channels.end())
+    {
+        if (auto channel = it->second.lock())
+        {
+            this->joinedChannels.insert(name);
+            this->connection->logEvent(QStringLiteral("channel joined: ") + name);
+            const std::array<ChannelPtr, 1> confirmed{channel};
+            appendConnectedMessage(confirmed);
+        }
+    }
 }
 
 void TwitchReadConnectionPoolSingle::onConnected()
 {
+    if (!this->isCurrentReadIdentity())
+    {
+        return;
+    }
     std::vector<ChannelPtr> activeChannels;
     activeChannels.reserve(this->channels.size());
     for (const auto &[name, weak] : this->channels)
@@ -383,14 +486,16 @@ void TwitchReadConnectionPoolSingle::onConnected()
     // join channels
     for (const auto &channel : activeChannels)
     {
-        this->joinBucket->send(channel->getName());
+        this->joinLimiter.enqueue(channel->getName());
     }
-
-    appendConnectedMessage(activeChannels);
+    this->drainJoins();
 }
 
 void TwitchReadConnectionPoolSingle::onDisconnected()
 {
+    this->joinTimer.stop();
+    this->joinLimiter.clearPending();
+    this->joinedChannels.clear();
     for (const auto &[name, weak] : this->channels)
     {
         auto chan = weak.lock();
@@ -408,7 +513,7 @@ void TwitchReadConnectionPoolSingle::markChannelsConnected()
 {
     for (const auto &[name, weak] : this->channels)
     {
-        if (auto c = weak.lock())
+        if (auto c = weak.lock(); c && this->joinedChannels.contains(name))
         {
             c->markConnected();
         }

@@ -21,6 +21,7 @@
 #include <QFontMetrics>
 #include <QFrame>
 #include <QGuiApplication>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QIntValidator>
@@ -727,20 +728,21 @@ PredictionDialog::PredictionDialog(TwitchChannel *channel, QWidget *parent)
 
     this->headerWidget_ = new QWidget(container);
 
-    auto *headerLayout = new QHBoxLayout(this->headerWidget_);
-    auto *headerTextLayout = new QVBoxLayout();
-    headerTextLayout->setContentsMargins(0, 0, 0, 0);
+    auto *headerLayout = new QGridLayout(this->headerWidget_);
+    headerLayout->setColumnStretch(0, 1);
 
     this->headerTitleLabel_ = new QLabel(this->headerWidget_);
     this->headerTitleLabel_->setObjectName("PredictionHeaderTitle");
-    headerTextLayout->addWidget(this->headerTitleLabel_);
+    headerLayout->addWidget(this->headerTitleLabel_, 0, 0);
 
     this->headerSubtitleLabel_ = new QLabel(this->headerWidget_);
     this->headerSubtitleLabel_->setObjectName("PredictionHeaderSubtitle");
-    headerTextLayout->addWidget(withChannelAvatar(this->headerSubtitleLabel_, this->channel_->getName()));
-
-    headerLayout->addLayout(headerTextLayout);
-    headerLayout->addStretch(1);
+    this->headerSubtitleLabel_->setWordWrap(true);
+    // The channel and status have their own row, so translating or showing
+    // any of the action buttons cannot overlap them or steal their width.
+    headerLayout->addWidget(withChannelAvatar(this->headerSubtitleLabel_,
+                                               this->channel_->getName()),
+                            1, 0, 1, 4);
 
     this->modBettingView_ = (getSettings()->predictionModAction == 0);
 
@@ -753,7 +755,7 @@ PredictionDialog::PredictionDialog(TwitchChannel *channel, QWidget *parent)
                          this->modBettingView_ = !this->modBettingView_;
                          this->updateUI();
                      });
-    headerLayout->addWidget(this->modToggleButton_);
+    headerLayout->addWidget(this->modToggleButton_, 0, 1, Qt::AlignVCenter);
 
     this->pinButton_ = this->createPinButton();
     this->pinButton_->setToolTip(uiText("Pin Prediction Popup"));
@@ -762,7 +764,7 @@ PredictionDialog::PredictionDialog(TwitchChannel *channel, QWidget *parent)
     {
         this->ensurePinned();
     }
-    headerLayout->addWidget(this->pinButton_);
+    headerLayout->addWidget(this->pinButton_, 0, 2, Qt::AlignVCenter);
 
     this->closeButton_ = new SvgButton(
         {
@@ -776,7 +778,7 @@ PredictionDialog::PredictionDialog(TwitchChannel *channel, QWidget *parent)
     QObject::connect(this->closeButton_, &Button::leftClicked, this, [this] {
         this->close();
     });
-    headerLayout->addWidget(this->closeButton_);
+    headerLayout->addWidget(this->closeButton_, 0, 3, Qt::AlignVCenter);
 
     this->mainLayout_->addWidget(this->headerWidget_);
     auto *headerSeparator = new Line(false);
@@ -1542,12 +1544,12 @@ void PredictionDialog::refreshHeader()
                 this->modToggleButton_->setText(
                     this->modBettingView_
                         ? uiText("Manage")
-                        : (broadcasterView ? "Overview" : "Bet"));
+                        : uiText(broadcasterView ? "Overview" : "Bet"));
                 this->modToggleButton_->setToolTip(
                     this->modBettingView_
                         ? uiText("Switch to manage view (lock/resolve/cancel)")
-                        : (broadcasterView ? "Switch to prediction overview"
-                                           : "Switch to betting view"));
+                        : uiText(broadcasterView ? "Switch to prediction overview"
+                                                 : "Switch to betting view"));
                 this->modToggleButton_->show();
             }
         }

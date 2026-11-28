@@ -49,12 +49,10 @@ constexpr int SAVE_DELAY_MS = 30 * 1000;
 /// the lookup is what catches a paint changed on the site.
 constexpr qint64 LOOKUP_AFTER_S = 5 * 60;
 /// Your own paint: asked again this soon (on your messages and by the timer).
-constexpr qint64 OWN_LOOKUP_AFTER_S = 20;
-constexpr std::chrono::seconds OWN_REFRESH_INTERVAL{60};
+constexpr std::chrono::seconds OWN_REFRESH_INTERVAL{15};
+constexpr qint64 ACTIVE_CHATTER_LIFETIME_S = 120;
+constexpr size_t ACTIVE_CHATTER_LIMIT = 512;
 constexpr int LOOKUP_INTERVAL_MS = 1000;
-/// 7TV refuses a query over its complexity limit (12 chatters pass, 16 not).
-constexpr size_t LOOKUP_BATCH = 10;
-constexpr size_t LOOKUP_QUEUE_MAX = 2000;
 // Only touched on the owning GUI thread, and erased when that provider is
 // destroyed. Keep this auxiliary queue independent of the paint cache.
 struct MentionLookupState {
@@ -209,6 +207,7 @@ void SeventvPaints::ensureLoaded() const
             QObject::connect(self->ownTimer_.get(), &QTimer::timeout,
                              [self] {
                                  self->refreshOwn();
+                                 self->refreshActive();
                              });
             self->ownTimer_->start(OWN_REFRESH_INTERVAL);
         });
@@ -221,6 +220,35 @@ void SeventvPaints::refreshOwn()
     if (account && !account->isAnon())
     {
         this->queueLookup(account->getUserName(), account->getUserId());
+    }
+}
+
+void SeventvPaints::refreshActive()
+{
+    if (!getSettings()->displaySevenTVPaints)
+    {
+        return;
+    }
+    const auto now = nowSeconds();
+    std::vector<std::pair<QString, QString>> active;
+    {
+        std::unique_lock lock(this->lookupMutex_);
+        std::erase_if(this->activeChatters_, [now](const auto &entry) {
+            return now - entry.second.second >= ACTIVE_CHATTER_LIFETIME_S;
+        });
+        for (const auto &[login, entry] : this->activeChatters_)
+        {
+            active.emplace_back(login, entry.first);
+        }
+    }
+    // Only known wearers are periodically refreshed. Unpainted chatters are
+    // checked on new messages, not polled forever after one message.
+    for (const auto &[login, userID] : active)
+    {
+        if (this->getPaint(login, false))
+        {
+            this->queueLookup(login, userID);
+        }
     }
 }
 
@@ -262,8 +290,8 @@ void SeventvPaints::load()
             {
                 continue;
             }
-            map[it.key()] = paint->second;
-            confirmed[it.key()] = when;
+            map[it.key().toLower()] = paint->second;
+            confirmed[it.key().toLower()] = when;
         }
     };
     restore(root["twitch"].toObject(), this->twitchPaintMap_,
@@ -300,7 +328,7 @@ void SeventvPaints::load()
         const auto when = static_cast<qint64>(it.value().toDouble());
         if (when >= fresh)
         {
-            this->lookupTimes_[it.key()] = when;
+            this->lookupTimes_[it.key().toLower()] = when;
         }
     }
 
@@ -405,7 +433,7 @@ void SeventvPaints::save()
 }
 
 void SeventvPaints::noteTwitchChatter(const QString &login,
-                                      const QString &userID)
+                                      const QString &userID, bool live)
 {
     if (login.isEmpty() || userID.isEmpty() ||
         (!getSettings()->displaySevenTVPaints &&
@@ -414,7 +442,17 @@ void SeventvPaints::noteTwitchChatter(const QString &login,
         return;
     }
     this->ensureLoaded();
-    this->queueLookup(login, userID);
+    if (live)
+    {
+        std::unique_lock lock(this->lookupMutex_);
+        const auto key = login.toLower();
+        if (this->activeChatters_.contains(key) ||
+            this->activeChatters_.size() < ACTIVE_CHATTER_LIMIT)
+        {
+            this->activeChatters_[key] = {userID, nowSeconds()};
+        }
+    }
+    this->queueLookup(login, userID, live);
 }
 
 void SeventvPaints::noteTwitchMention(const QString &login)
@@ -436,7 +474,7 @@ void SeventvPaints::noteTwitchMention(const QString &login)
     }
     {
         std::unique_lock lock(this->lookupMutex_);
-        if (this->lookedUp_.contains(key))
+        if (this->lookupQueue_.contains(key))
         {
             return;
         }
@@ -495,7 +533,8 @@ void SeventvPaints::resolveMentionLogins()
         }, [] {});
 }
 
-void SeventvPaints::queueLookup(const QString &login, const QString &userID)
+void SeventvPaints::queueLookup(const QString &login, const QString &userID,
+                                bool live)
 {
     const auto key = login.toLower();
     if (key.isEmpty() || userID.isEmpty())
@@ -507,9 +546,13 @@ void SeventvPaints::queueLookup(const QString &login, const QString &userID)
     const bool own =
         account && !account->isAnon() &&
         account->getUserName().compare(key, Qt::CaseInsensitive) == 0;
-    const auto after = own ? OWN_LOOKUP_AFTER_S : LOOKUP_AFTER_S;
+    const auto priority = own ? seventv::PaintLookupPriority::Own
+                              : live ? seventv::PaintLookupPriority::Live
+                                     : seventv::PaintLookupPriority::History;
     {
         std::shared_lock lock(this->mutex_);
+        const auto after = seventv::PaintLookupQueue::refreshAfter(
+            priority, this->twitchPaintMap_.contains(key));
         auto it = this->lookupTimes_.find(key);
         if (it != this->lookupTimes_.end() &&
             nowSeconds() - it->second < after)
@@ -519,24 +562,9 @@ void SeventvPaints::queueLookup(const QString &login, const QString &userID)
     }
 
     std::unique_lock lock(this->lookupMutex_);
-    if (own)
-    {
-        // Your own goes first: with many channels open the queue holds
-        // thousands of chatters (minutes at 10 a second), or is full.
-        std::erase_if(this->lookupQueue_, [&](const auto &entry) {
-            return entry.first == key;
-        });
-        this->lookedUp_.insert(key);
-        this->lookupQueue_.emplace_front(key, userID);
-    }
-    else if (this->lookupQueue_.size() >= LOOKUP_QUEUE_MAX ||
-             !this->lookedUp_.insert(key).second)
+    if (!this->lookupQueue_.enqueue(key, userID, priority))
     {
         return;
-    }
-    else
-    {
-        this->lookupQueue_.emplace_back(key, userID);
     }
     lock.unlock();
     this->armLookup();
@@ -544,6 +572,7 @@ void SeventvPaints::queueLookup(const QString &login, const QString &userID)
 
 void SeventvPaints::armLookup()
 {
+    int delay;
     {
         std::unique_lock lock(this->lookupMutex_);
         if (this->lookupArmed_ || this->lookupQueue_.empty())
@@ -551,22 +580,24 @@ void SeventvPaints::armLookup()
             return;
         }
         this->lookupArmed_ = true;
+        delay = this->lookupDelayMs_;
     }
-    QTimer::singleShot(LOOKUP_INTERVAL_MS, this, [this] {
+    QTimer::singleShot(delay, this, [this] {
         this->lookUpChatters();
     });
 }
 
 void SeventvPaints::lookUpChatters()
 {
-    std::vector<std::pair<QString, QString>> batch;
+    std::vector<seventv::PaintLookupQueue::Entry> batch;
     {
         std::unique_lock lock(this->lookupMutex_);
-        while (!this->lookupQueue_.empty() && batch.size() < LOOKUP_BATCH)
-        {
-            batch.push_back(std::move(this->lookupQueue_.front()));
-            this->lookupQueue_.pop_front();
-        }
+        batch = this->lookupQueue_.takeBatch();
+    }
+
+    {
+        std::unique_lock lock(this->mutex_);
+        this->paintLookupEvents_.begin(batch);
     }
     if (batch.empty())
     {
@@ -579,7 +610,7 @@ void SeventvPaints::lookUpChatters()
     for (size_t i = 0; i < batch.size(); i++)
     {
         // Twitch user IDs are digits only
-        auto id = batch[i].second;
+        auto id = batch[i].userID;
         id.remove(QRegularExpression(QStringLiteral("[^0-9]")));
         query += QStringLiteral("u%1:userByConnection(platform:TWITCH,id:\"%2\")")
                      .arg(i)
@@ -601,22 +632,30 @@ void SeventvPaints::lookUpChatters()
                 qCWarning(chatterinoSeventv)
                     << "7TV paint lookup refused:" << root["errors"];
             }
-            this->applyLookup(batch, root["data"].toObject());
+            {
+                std::unique_lock lock(this->lookupMutex_);
+                this->lookupDelayMs_ = root["data"].toObject().isEmpty()
+                    ? std::min(this->lookupDelayMs_ * 2, 30000)
+                    : LOOKUP_INTERVAL_MS;
+            }
+            this->applyLookup(batch, root["data"].toObject(), root.contains("errors"));
         })
-        .onError([](const NetworkResult &result) {
+        .onError([this](const NetworkResult &result) {
             qCWarning(chatterinoSeventv)
                 << "7TV paint lookup failed:" << result.formatError();
+            std::unique_lock lock(this->lookupMutex_);
+            this->lookupDelayMs_ = result.status() == 429
+                ? 30000 : std::min(this->lookupDelayMs_ * 2, 30000);
         })
         .finally([this, batch] {
             {
+                std::unique_lock lock(this->mutex_);
+                this->paintLookupEvents_.finish();
+            }
+            {
                 std::unique_lock lock(this->lookupMutex_);
                 this->lookupArmed_ = false;
-                // looked up: the next message after LOOKUP_AFTER_S asks again
-                // (a new paint or badge shows without a restart)
-                for (const auto &entry : batch)
-                {
-                    this->lookedUp_.erase(entry.first);
-                }
+                this->lookupQueue_.finish(batch);
             }
             this->armLookup();
         })
@@ -624,17 +663,25 @@ void SeventvPaints::lookUpChatters()
 }
 
 void SeventvPaints::applyLookup(
-    const std::vector<std::pair<QString, QString>> &batch,
-    const QJsonObject &data)
+    const std::vector<seventv::PaintLookupQueue::Entry> &batch,
+    const QJsonObject &data, bool partial)
 {
     auto *badges = getApp()->getSeventvBadges();
     QSet<QString> changedUsers;
     for (size_t i = 0; i < batch.size(); i++)
     {
-        const auto &[login, userID] = batch[i];
-        const auto user = data[QStringLiteral("u%1").arg(i)].toObject();
+        const auto &[login, userID, priority] = batch[i];
+        const auto value = data[QStringLiteral("u%1").arg(i)];
+        const auto user = value.toObject();
         if (user.isEmpty())
         {
+            // Explicit absence is a successful negative lookup. Missing or
+            // failed data can be retried, without clearing a remembered paint.
+            if (value.isNull() && !partial)
+            {
+                std::unique_lock lock(this->mutex_);
+                this->lookupTimes_[login] = nowSeconds();
+            }
             continue;  // 7TV didn't answer for this one
         }
         const std::vector<seventv::eventapi::User> users{
@@ -644,32 +691,46 @@ void SeventvPaints::applyLookup(
             }),
         };
 
+        const auto style = user["style"].toObject();
+        if (style.isEmpty())
+        {
+            continue; // a partial or failed response cannot clear cosmetics
+        }
         {
             std::unique_lock lock(this->mutex_);
             this->lookupTimes_[login] = nowSeconds();
         }
-        const auto style = user["style"].toObject();
-        const auto previousBadge = badges->getBadge(UserId{userID});
-        this->applyBadge(userID, style["badge"].toObject());
-        if (previousBadge != badges->getBadge(UserId{userID}))
+        if (style.contains("badge") && (!partial || style["badge"].isObject()))
         {
-            changedUsers.insert(userID);
+            const auto previousBadge = badges->getBadge(UserId{userID});
+            this->applyBadge(userID, style["badge"].toObject());
+            if (previousBadge != badges->getBadge(UserId{userID}))
+            {
+                changedUsers.insert(userID);
+            }
         }
 
+        if (!style.contains("paint"))
+        {
+            continue;
+        }
         const auto paint = style["paint"].toObject();
         const auto paintID = paint["id"].toString();
         if (paintID.isEmpty())
         {
             // no paint (any more): drop a remembered one
-            if (auto old = this->getPaint(login, false))
+            if (!partial && style["paint"].isNull())
             {
-                this->clearPaintFromUsers(old->id, users);
+                if (auto old = this->getPaint(login, false))
+                {
+                    this->clearPaintFromUsers(old->id, users, true);
+                }
             }
         }
         else
         {
             this->addPaint(paint);
-            this->assignPaintToUsers(paintID, users);
+            this->assignPaintToUsers(paintID, users, true);
         }
     }
     this->queueSave();
@@ -717,7 +778,7 @@ std::shared_ptr<Paint> SeventvPaints::getPaint(const QString &userName,
     }
     else
     {
-        const auto it = this->twitchPaintMap_.find(userName);
+        const auto it = this->twitchPaintMap_.find(userName.toLower());
         if (it != this->twitchPaintMap_.end())
         {
             return it->second;
@@ -750,21 +811,21 @@ void SeventvPaints::addPaint(const QJsonObject &paintJson)
 }
 
 void SeventvPaints::assignPaintToUsers(
-    const QString &paintID, std::span<const seventv::eventapi::User> users)
+    const QString &paintID, std::span<const seventv::eventapi::User> users,
+    bool fromLookup)
 {
     this->ensureLoaded();
     std::unique_lock lock(this->mutex_);
 
     const auto paintIt = this->knownPaints_.find(paintID);
-    if (paintIt == this->knownPaints_.end())
-    {
-        return;
-    }
-
     bool changed = false;
     int64_t nAdded = 0;
     const auto now = nowSeconds();
     auto addToMap = [&](auto &map, const QString &username) {
+        if (paintIt == this->knownPaints_.end())
+        {
+            return;
+        }
         auto it = map.find(username);
         if (it == map.end())
         {
@@ -782,10 +843,19 @@ void SeventvPaints::assignPaintToUsers(
     {
         std::visit(variant::Overloaded{
                        [&](const seventv::eventapi::TwitchUser &u) {
-                           addToMap(this->twitchPaintMap_, u.userName);
-                           this->twitchConfirmed_[u.userName] = now;
+                           const auto login = u.userName.toLower();
+                           if (!this->paintLookupEvents_.accept(login, fromLookup) || paintIt == this->knownPaints_.end())
+                           {
+                               return;
+                           }
+                           addToMap(this->twitchPaintMap_, login);
+                           this->twitchConfirmed_[login] = now;
                        },
                        [&](const seventv::eventapi::KickUser &u) {
+                           if (paintIt == this->knownPaints_.end())
+                           {
+                               return;
+                           }
                            addToMap(this->kickPaintMap_, u.userName);
                            this->kickConfirmed_[u.userName] = now;
                        },
@@ -809,7 +879,8 @@ void SeventvPaints::assignPaintToUsers(
 }
 
 void SeventvPaints::clearPaintFromUsers(
-    const QString &paintID, std::span<const seventv::eventapi::User> users)
+    const QString &paintID, std::span<const seventv::eventapi::User> users,
+    bool fromLookup)
 {
     this->ensureLoaded();
     std::unique_lock lock(this->mutex_);
@@ -829,8 +900,13 @@ void SeventvPaints::clearPaintFromUsers(
     {
         std::visit(variant::Overloaded{
                        [&](const seventv::eventapi::TwitchUser &u) {
+                           const auto login = u.userName.toLower();
+                           if (!this->paintLookupEvents_.accept(login, fromLookup))
+                           {
+                               return;
+                           }
                            removeFromMap(this->twitchPaintMap_,
-                                         this->twitchConfirmed_, u.userName);
+                                         this->twitchConfirmed_, login);
                        },
                        [&](const seventv::eventapi::KickUser &u) {
                            removeFromMap(this->kickPaintMap_,
@@ -850,5 +926,6 @@ void SeventvPaints::clearPaintFromUsers(
         this->queueSave();
     }
 }
+
 
 }  // namespace chatterino

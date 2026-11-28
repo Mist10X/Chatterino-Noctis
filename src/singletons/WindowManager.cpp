@@ -238,8 +238,6 @@ WindowManager::WindowManager(const Args &appArgs_, const Paths &paths,
     this->forceLayoutChannelViewsListener.add(settings.collpseMessagesMinLines);
     this->forceLayoutChannelViewsListener.add(settings.enableRedeemedHighlight);
     this->forceLayoutChannelViewsListener.add(settings.enableGigantifyEmotes);
-    this->forceLayoutChannelViewsListener.add(
-        settings.showPinButtonOnModeratorsMode);
     this->forceLayoutChannelViewsListener.add(settings.showSelfDeleteButton);
     this->forceLayoutChannelViewsListener.add(
         settings.enableRepeatedMessageDetector);
@@ -710,7 +708,7 @@ void WindowManager::showMainWindow()
 {
     assertInGuiThread();
 
-    if (this->mainWindow_ == nullptr)
+    if (this->mainWindow_ == nullptr || this->shuttingDown_)
     {
         return;
     }
@@ -1086,6 +1084,10 @@ void WindowManager::queueSave()
 {
     using namespace std::chrono_literals;
 
+    if (this->shuttingDown_)
+    {
+        return;
+    }
     this->saveTimer->start(10s);
 }
 
@@ -1237,8 +1239,13 @@ void WindowManager::closeAll()
 {
     assertInGuiThread();
 
+    if (this->shuttingDown_)
+    {
+        return;
+    }
     qCDebug(chatterinoWindowmanager) << "Shutting down (closing windows)";
     this->shuttingDown_ = true;
+    this->saveTimer->stop();
 
     for (Window *window : this->windows_)
     {

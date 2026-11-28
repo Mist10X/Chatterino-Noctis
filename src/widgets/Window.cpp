@@ -212,7 +212,13 @@ void Window::closeEvent(QCloseEvent *event)
 
     if (this->type_ == WindowType::Main)
     {
-        QApplication::exit();
+        // exit() emits aboutToQuit synchronously. Finish the actual close
+        // event first, so the OS can hide the main window before any slow
+        // network/controller teardown starts. The layout was saved above
+        // while the native window was still in its real pre-close state.
+        QTimer::singleShot(0, qApp, [] {
+            QApplication::exit();
+        });
     }
 }
 
@@ -591,8 +597,8 @@ void Window::addShortcuts()
          }},
         {"toggleLocalR9K",
          [](std::vector<QString>) -> QString {
-             getSettings()->hideSimilar.setValue(!getSettings()->hideSimilar);
-             getApp()->getWindows()->forceLayoutChannelViews();
+             getSettings()->hideSimilar.setValue(false);
+             getSettings()->similarityEnabled.setValue(!getSettings()->similarityEnabled);
              return "";
          }},
         {"openQuickSwitcher",

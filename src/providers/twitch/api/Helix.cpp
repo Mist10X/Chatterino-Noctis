@@ -2871,7 +2871,8 @@ void Helix::getChannelBadges(
     urlQuery.addQueryItem("broadcaster_id", broadcasterID);
 
     this->makeGet("chat/badges", urlQuery)
-        .onSuccess([successCallback](auto result) {
+        .timeout(15000)
+        .onSuccess([successCallback, failureCallback](auto result) {
             if (result.status() != 200)
             {
                 qCWarning(chatterinoTwitch)
@@ -2880,6 +2881,11 @@ void Helix::getChannelBadges(
             }
 
             auto response = result.parseJson();
+            if (!response.value("data").isArray())
+            {
+                failureCallback(Error::Unknown, QStringLiteral("Invalid channel badge catalog"));
+                return;
+            }
             successCallback(HelixChannelBadges(response));
         })
         .onError([failureCallback](const auto &result) -> void {

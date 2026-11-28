@@ -59,6 +59,7 @@
 #include "util/Helpers.hpp"
 #include "util/IncognitoBrowser.hpp"
 #include "util/LayoutCreator.hpp"
+#include "widgets/layout/FlowLayout.hpp"
 #include "util/PostToThread.hpp"
 #include "widgets/buttons/FollowButton.hpp"
 #include "widgets/buttons/LabelButton.hpp"
@@ -71,7 +72,6 @@
 #include "widgets/helper/ChannelView.hpp"
 #include "widgets/helper/MenuStyle.hpp"
 #include "widgets/helper/NoctisTooltip.hpp"
-#include "widgets/helper/UsercardActivity.hpp"
 #include "widgets/helper/UsercardChrome.hpp"
 #include "widgets/helper/UsercardRolesPage.hpp"
 #include "widgets/helper/UsercardMotionViewport.hpp"
@@ -3006,39 +3006,11 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
                            uiText("ID copied"), this->ui_.quickCopyId, {}, 1600);
     });
     layout->addWidget(quick);
-    auto *activityHost = new QWidget(this->ui_.profile);
-    auto *activityHostLayout = new QVBoxLayout(activityHost);
-    activityHostLayout->setContentsMargins(10, 0, 10, 8);
-    this->ui_.activity = new QWidget(activityHost);
-    this->ui_.activity->setObjectName("UsercardActivity");
-    this->ui_.activity->setAttribute(Qt::WA_StyledBackground);
-    auto *activityLayout = new QGridLayout(this->ui_.activity);
-    activityLayout->setContentsMargins(14, 8, 14, 8);
-    activityLayout->setHorizontalSpacing(8);
-    activityLayout->setVerticalSpacing(5);
-    auto *activityTitle = new QLabel(uiText("Channel activity"), this->ui_.activity);
-    activityTitle->setObjectName("UsercardActivityTitle");
-    activityLayout->addWidget(activityTitle, 0, 0, 1, 2);
-    auto addActivityRow = [&](int row, const QString &title, const QString &name) {
-        auto *label = new QLabel(title, this->ui_.activity);
-        label->setObjectName("UsercardActivityLabel");
-        label->setWordWrap(true);
-        auto *value = new QLabel(QStringLiteral("—"), this->ui_.activity);
-        value->setObjectName(name);
-        value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        activityLayout->addWidget(label, row, 0);
-        activityLayout->addWidget(value, row, 1);
-        return value;
-    };
-    this->ui_.activityCount = addActivityRow(1, uiText("Messages in loaded history"), "UsercardActivityCount");
-    this->ui_.activityLatest = addActivityRow(2, uiText("Last message"), "UsercardActivityLatest");
-    activityLayout->setColumnStretch(0, 1);
-    activityHostLayout->addWidget(this->ui_.activity);
-    layout->addWidget(activityHost);
-    this->activityRefreshTimer_ = new QTimer(this);
-    this->activityRefreshTimer_->setSingleShot(true);
-    this->activityRefreshTimer_->setInterval(120);
-    QObject::connect(this->activityRefreshTimer_, &QTimer::timeout, this, &UserInfoPopup::refreshUsercardActivity);
+    this->ui_.localModerationHost = new QWidget(this->ui_.profile);
+    auto *moderationLayout = new QVBoxLayout(this->ui_.localModerationHost);
+    moderationLayout->setContentsMargins(10, 0, 10, 8);
+    layout->addWidget(this->ui_.localModerationHost);
+    this->ui_.localModerationHost->hide();
     QObject::connect(this->ui_.columns, &QSplitter::splitterMoved, this,
                      [this] { this->updateQuickActionLayout(); });
     std::ignore = this->userStateChanged_.connect([this] {
@@ -3227,8 +3199,8 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
     notesPreview->setWordWrap(true);
     notesPreview->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
-    // Moderation: one strip across the whole card, under both columns, so
-    // every button is visible without scrolling.
+    // Local moderation is below the quick actions; only cross-channel
+    // actions occupy the physically separate footer.
     {
         auto *strip = new QWidget(this);
         strip->setObjectName("UsercardModerationStrip");
@@ -3236,7 +3208,7 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
         strip->setMouseTracking(true);
         auto *stripLayout = new QHBoxLayout(strip);
         stripLayout->setContentsMargins(10, 5, 10, 5);
-        auto *timeout = new TimeoutWidget();
+        auto *timeout = new TimeoutWidget(this->ui_.localModerationHost);
         timeout->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         stripLayout->addWidget(timeout, 1, Qt::AlignVCenter);
         this->ui_.timeoutWidget = timeout;
@@ -3250,13 +3222,22 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, Split *split,
         // we only connect once
         std::ignore =
             this->userStateChanged_.connect([this, timeout]() mutable {
-                const bool moderation = this->shouldShowModerationActions();
-                const bool cross = this->crossActionAvailable();
+                const bool moderation = this->showLocalModerationPanel();
+                const bool cross = this->crossActionAvailable(false);
                 timeout->setModerationVisible(moderation);
                 timeout->setCrossVisible(cross);
-                timeout->setVisible(moderation || cross);
-                this->setModerationStripVisible(moderation || cross);
+                timeout->setActionsEnabled(moderation && this->shouldShowModerationActions(),
+                                           cross && !this->userName_.isEmpty());
+                timeout->setVisible(cross);
+                this->setModerationStripVisible(cross);
+                this->refreshUsercardModerationCounts();
+                this->scheduleExpandedBadgeFit();
             });
+        if (this->split_)
+        {
+            this->signalHolder_.managedConnect(this->split_->moderationModeChanged,
+                [this] { this->userStateChanged_.invoke(); });
+        }
         getSettings()->showCrossActionsInUnmoderatedChannels.connect(
             [this](bool, auto) {
                 this->userStateChanged_.invoke();
@@ -3493,11 +3474,10 @@ void UserInfoPopup::themeChangedEvent()
                     "QWidget#UsercardFacts { background: %5; "
                     "border: 1px solid %3; border-radius: 8px; }"
                     "QWidget#UsercardFacts * { color: %2; }"
-                    "QWidget#UsercardActivity { background: %5; "
+                    "QWidget#UsercardLocalModerationActions { background: %5; "
                     "border: 1px solid %3; border-radius: 8px; }"
-                    "QWidget#UsercardActivity QLabel { color: %2; background: transparent; }"
-                    "QWidget#UsercardActivity QLabel#UsercardActivityTitle { color: %6; }"
-                    "QWidget#UsercardActivity QLabel#UsercardActivityLabel { color: %9; }"
+                    "QWidget#UsercardLocalModerationActions QLabel { color: %9; background: transparent; }"
+                    "QWidget#UsercardLocalModerationActions QLabel#UsercardModerationTitle { color: %6; }"
                     "QToolButton#UsercardActions { color: %2; border: 0; "
                     "padding: 2px 6px; }"
                     "QToolButton#UsercardActions:hover { background: %3; "
@@ -3550,11 +3530,11 @@ void UserInfoPopup::themeChangedEvent()
         const auto font =
             getApp()->getFonts()->getFont(FontStyle::UiMedium, this->scale());
         this->ui_.contentTabs->setFont(font);
-        if (this->ui_.activity)
+        if (this->ui_.localModerationHost)
         {
-            for (auto *label : this->ui_.activity->findChildren<QLabel *>())
+            for (auto *label : this->ui_.localModerationHost->findChildren<QLabel *>())
                 label->setFont(getApp()->getFonts()->getFont(
-                    label->objectName() == "UsercardActivityTitle" ? FontStyle::ChatMediumBold : FontStyle::ChatMedium,
+                    label->objectName() == "UsercardModerationTitle" ? FontStyle::ChatMediumBold : FontStyle::ChatMedium,
                     this->scale()));
         }
         // Use the same legible semi-bold face as the navigation tabs.
@@ -3632,8 +3612,10 @@ void UserInfoPopup::scaleChangedEvent(float scale)
 bool UserInfoPopup::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
 {
     const bool handled = DraggablePopup::nativeEvent(eventType, message, result);
+    // A delayed profile fit can start after the press. Keep the entire drag
+    // in Qt instead of entering a nested Windows caption-move loop.
     if (handled && static_cast<MSG *>(message)->message == WM_NCHITTEST &&
-        *result == HTCAPTION && this->badgeFitInProgress_)
+        *result == HTCAPTION)
         *result = HTCLIENT;
     return handled;
 }
@@ -3641,9 +3623,14 @@ bool UserInfoPopup::nativeEvent(const QByteArray &eventType, void *message, qint
 
 void UserInfoPopup::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && this->badgeFitInProgress_)
+#ifdef Q_OS_WIN
+    const bool useQtDrag = true;
+#else
+    const bool useQtDrag = this->badgeFitInProgress_;
+#endif
+    if (event->button() == Qt::LeftButton && useQtDrag)
     {
-        this->badgeDragOffset_ = event->globalPosition().toPoint() - this->pos();
+        this->cardDragOffset_ = event->globalPosition().toPoint() - this->pos();
         this->grabMouse();
         event->accept();
         return;
@@ -3653,10 +3640,21 @@ void UserInfoPopup::mousePressEvent(QMouseEvent *event)
 
 void UserInfoPopup::mouseMoveEvent(QMouseEvent *event)
 {
-    if (this->badgeDragOffset_ && event->buttons().testFlag(Qt::LeftButton))
+    if (this->cardDragOffset_)
     {
-        this->badgeFitMoved_ = true;
-        this->move(event->globalPosition().toPoint() - *this->badgeDragOffset_);
+        if (event->buttons().testFlag(Qt::LeftButton))
+        {
+            const auto target = event->globalPosition().toPoint() - *this->cardDragOffset_;
+            if (target != this->pos())
+            {
+                this->userMovedCard_ = true;
+                this->move(target);
+            }
+        }
+        else
+        {
+            this->finishCardDrag();
+        }
         event->accept();
         return;
     }
@@ -3665,15 +3663,36 @@ void UserInfoPopup::mouseMoveEvent(QMouseEvent *event)
 
 void UserInfoPopup::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && this->badgeDragOffset_)
+    if (event->button() == Qt::LeftButton && this->cardDragOffset_)
     {
-        this->badgeDragOffset_.reset();
-        if (QWidget::mouseGrabber() == this)
-            this->releaseMouse();
+        this->finishCardDrag();
         event->accept();
         return;
     }
     DraggablePopup::mouseReleaseEvent(event);
+}
+
+void UserInfoPopup::finishCardDrag()
+{
+    this->cardDragOffset_.reset();
+    if (QWidget::mouseGrabber() == this)
+    {
+        this->releaseMouse();
+    }
+}
+
+void UserInfoPopup::applyAutoFitGeometry(const QRect &geometry)
+{
+    // All automatic adjustments may change size, but must not compete with
+    // the pointer or undo a position the user already chose.
+    if (this->cardDragOffset_ || this->userMovedCard_)
+    {
+        this->resize(geometry.size());
+    }
+    else
+    {
+        this->setGeometry(geometry);
+    }
 }
 
 void UserInfoPopup::resizeEvent(QResizeEvent *event)
@@ -3729,7 +3748,6 @@ void UserInfoPopup::beginBadgeFit(bool expanded, int expandedBadgeHeight)
         this->badgeFitBase_ = this->geometry();
         this->badgeFitBaseProfileHeight_ = scroll->height();
     }
-    this->badgeFitMoved_ = this->badgeDragOffset_.has_value();
     this->badgeFitInProgress_ = true;
     this->ui_.profile->layout()->activate();
     const auto *profileLayout = this->ui_.profile->layout();
@@ -3800,12 +3818,12 @@ void UserInfoPopup::applyBadgeFit(qreal fraction)
     const int interpolated = qRound(base.height() + (this->badgeFitTargetHeight_ - base.height()) * fraction);
     const bool opening = this->ui_.badgeStrip->property("expanded").toBool();
     const int h = opening ? std::max(this->height(), interpolated) : interpolated;
-    const int y = this->badgeFitMoved_ || this->badgeDragOffset_ ? this->y() : std::clamp(this->y(), available.top(), std::max(available.top(), available.bottom() - h + 1));
+    const int y = std::clamp(this->y(), available.top(), std::max(available.top(), available.bottom() - h + 1));
     const QRect desired(this->x(), y, this->width(), h);
     if (desired != this->geometry())
     {
         this->badgeFitExpectedSize_ = desired.size();
-        this->setGeometry(desired);
+        this->applyAutoFitGeometry(desired);
     }
     if (this->ui_.columns->orientation() == Qt::Vertical)
     {
@@ -3892,7 +3910,7 @@ void UserInfoPopup::ensureExpandedBadgeFit()
     {
         this->badgeFitApplying_ = true;
         const int y = std::clamp(this->y(), available.top(), std::max(available.top(), available.bottom() - newHeight + 1));
-        this->setGeometry(this->x(), y, this->width(), newHeight);
+        this->applyAutoFitGeometry(QRect(this->x(), y, this->width(), newHeight));
         if (this->ui_.columns->orientation() == Qt::Vertical)
         {
             const int total = this->ui_.columns->height() - this->ui_.columns->handleWidth();
@@ -4571,7 +4589,6 @@ void UserInfoPopup::setOfflinePreviewData(const UserInfoPreviewData &data)
     this->setWindowTitle(tr("%1 — offline usercard preview").arg(data.login));
     this->scheduleHistoryViewportFill();
     this->updatePublicHistoryButton();
-    this->refreshUsercardActivity();
 }
 
 void UserInfoPopup::loadProfileBanner(const QString &url)
@@ -5079,6 +5096,8 @@ void UserInfoPopup::installEvents()
         this->signalHolder_);
     getSettings()->moltorinoAuthAccounts.connect(
         [this](const QString &, auto) {
+            this->moderationCountsKey_.clear();
+            ++this->moderationCountsGeneration_;
             if (!this->isKick_ && !this->userId_.isEmpty() &&
                 getSettings()->showFollowButtonInUsercard)
             {
@@ -5105,15 +5124,16 @@ void UserInfoPopup::installEvents()
 
 void UserInfoPopup::refreshTargetModerationStatus()
 {
-    if (this->userName_.isEmpty() || !this->underlyingChannel_ ||
+    if ((this->userName_.isEmpty() && this->userId_.isEmpty()) || !this->underlyingChannel_ ||
         !this->underlyingChannel_->isTwitchChannel())
     {
         return;
     }
 
-    this->isBroadcaster_ =
-        this->userName_.compare(this->underlyingChannel_->getName(),
-                                Qt::CaseInsensitive) == 0;
+    auto *channel = dynamic_cast<TwitchChannel *>(this->underlyingChannel_.get());
+    this->isBroadcaster_ = channel && !this->userId_.isEmpty() && !channel->roomId().isEmpty()
+        ? this->userId_ == channel->roomId()
+        : this->userName_.compare(this->underlyingChannel_->getName(), Qt::CaseInsensitive) == 0;
 
     for (const auto &message : this->underlyingChannel_->getMessageSnapshot())
     {
@@ -5129,12 +5149,14 @@ void UserInfoPopup::refreshTargetModerationStatus()
 bool UserInfoPopup::updateTargetModerationStatusFromMessage(
     const MessagePtr &message)
 {
-    if (message == nullptr || this->userName_.isEmpty())
+    if (message == nullptr || (this->userName_.isEmpty() && this->userId_.isEmpty()))
     {
         return false;
     }
 
-    if (message->loginName.compare(this->userName_, Qt::CaseInsensitive) != 0)
+    if (!this->userId_.isEmpty()
+            ? message->userID != this->userId_
+            : message->loginName.compare(this->userName_, Qt::CaseInsensitive) != 0)
     {
         return false;
     }
@@ -5159,13 +5181,82 @@ bool UserInfoPopup::updateTargetModerationStatusFromMessage(
     return changed;
 }
 
-bool UserInfoPopup::shouldShowModerationActions() const
+bool UserInfoPopup::showLocalModerationPanel() const
+{
+    return (!this->split_ || this->split_->getModerationMode()) &&
+           this->shouldShowModerationActions(false);
+}
+
+void UserInfoPopup::refreshUsercardModerationCounts()
+{
+    if (!this->ui_.timeoutWidget || this->offlinePreview_)
+    {
+        return;
+    }
+    const auto *channel = dynamic_cast<TwitchChannel *>(this->underlyingChannel_.get());
+    const auto account = getApp()->getAccounts()->twitch.getCurrent();
+    const bool showCounts = channel && this->showLocalModerationPanel();
+    const bool available = showCounts && channel->hasModRights() &&
+                           !channel->roomId().isEmpty() && !this->userId_.isEmpty() &&
+                           account && !account->isAnon() && this->showLocalModerationPanel();
+    const auto key = available ? QStringList{channel->roomId(), this->userId_,
+                                             account->getUserId()}.join(u'|') : QString{};
+    const auto placeholder = showCounts
+        ? uiText("Bans: %1 · Timeouts: %2").arg(QStringLiteral("—"), QStringLiteral("—"))
+        : QString{};
+    if (key == this->moderationCountsKey_ && available)
+    {
+        return;
+    }
+    this->moderationCountsKey_ = key;
+    const auto generation = ++this->moderationCountsGeneration_;
+    this->ui_.timeoutWidget->setPunishmentCounts(placeholder);
+    if (!available)
+    {
+        return;
+    }
+    const auto saved = MoltorinoAuth::resolveSelectedUserToken();
+    const auto token = saved.userId == account->getUserId() && saved.hasToken()
+                           ? saved.token : account->getOAuthToken();
+    const auto channelId = channel->roomId();
+    const auto accountId = account->getUserId();
+    const auto targetId = this->userId_;
+    const QPointer<UserInfoPopup> self(this);
+    TwitchGql::getUsercardModerationCounts(channelId, targetId, token,
+        [self, generation, channelId, accountId, targetId](std::optional<GqlUsercardModerationCounts> counts) {
+            if (!self || generation != self->moderationCountsGeneration_ ||
+                self->userId_ != targetId || !self->showLocalModerationPanel())
+            {
+                return;
+            }
+            const auto *source = dynamic_cast<TwitchChannel *>(self->underlyingChannel_.get());
+            const auto current = getApp()->getAccounts()->twitch.getCurrent();
+            if (!source || source->roomId() != channelId || !source->hasModRights() ||
+                !current || current->getUserId() != accountId)
+            {
+                return;
+            }
+            if (counts)
+            {
+                const auto format = [](int count, bool more) {
+                    return QLocale().toString(count) + (more ? QStringLiteral("+") : QString());
+                };
+                self->ui_.timeoutWidget->setPunishmentCounts(
+                    uiText("Bans: %1 · Timeouts: %2").arg(
+                        format(counts->bans, counts->moreBans),
+                        format(counts->timeouts, counts->moreTimeouts)));
+            }
+        });
+}
+
+bool UserInfoPopup::shouldShowModerationActions(bool requireResolvedLogin) const
 {
     if (this->isYouTube_)
     {
         return false;
     }
-    if (this->userName_.isEmpty() || !this->underlyingChannel_)
+    if (!this->underlyingChannel_ ||
+        (this->userName_.isEmpty() && (requireResolvedLogin || this->userId_.isEmpty())))
     {
         return false;
     }
@@ -5173,9 +5264,10 @@ bool UserInfoPopup::shouldShowModerationActions() const
     if (auto *twitchChannel =
             dynamic_cast<TwitchChannel *>(this->underlyingChannel_.get()))
     {
-        const bool isMyself =
-            getApp()->getAccounts()->twitch.getCurrent()->getUserName().compare(
-                this->userName_, Qt::CaseInsensitive) == 0;
+        const auto account = getApp()->getAccounts()->twitch.getCurrent();
+        const bool isMyself = !this->userId_.isEmpty()
+            ? account->getUserId() == this->userId_
+            : account->getUserName().compare(this->userName_, Qt::CaseInsensitive) == 0;
         if (isMyself || !twitchChannel->hasModRights())
         {
             return false;
@@ -5212,19 +5304,21 @@ bool UserInfoPopup::shouldShowModerationActions() const
     return false;
 }
 
-bool UserInfoPopup::crossActionAvailable() const
+bool UserInfoPopup::crossActionAvailable(bool requireResolvedLogin) const
 {
     const auto *twitchChannel =
         dynamic_cast<TwitchChannel *>(this->underlyingChannel_.get());
-    if (this->isKick_ || this->isYouTube_ || this->userName_.isEmpty() ||
+    if (this->isKick_ || this->isYouTube_ ||
+        (this->userName_.isEmpty() && (requireResolvedLogin || this->userId_.isEmpty())) ||
         twitchChannel == nullptr || twitchChannel->roomId().isEmpty())
     {
         return false;
     }
 
-    const bool isMyself =
-        getApp()->getAccounts()->twitch.getCurrent()->getUserName().compare(
-            this->userName_, Qt::CaseInsensitive) == 0;
+    const auto account = getApp()->getAccounts()->twitch.getCurrent();
+    const bool isMyself = !this->userId_.isEmpty()
+        ? account->getUserId() == this->userId_
+        : account->getUserName().compare(this->userName_, Qt::CaseInsensitive) == 0;
     if (isMyself)
     {
         return false;
@@ -5269,6 +5363,9 @@ void UserInfoPopup::setData(const QString &name,
     {
         return;
     }
+    this->moderationCountsKey_.clear();
+    ++this->moderationCountsGeneration_;
+    this->ui_.timeoutWidget->setPunishmentCounts({});
     const QStringView idPrefix = u"id:";
     bool isId = name.startsWith(idPrefix);
     this->historyProfileDisplayName_.clear();
@@ -5746,8 +5843,6 @@ void UserInfoPopup::updateLatestMessages()
 
 void UserInfoPopup::updateUsercardMessagesVisibility()
 {
-    if (this->activityRefreshTimer_ && !this->activityRefreshTimer_->isActive())
-        this->activityRefreshTimer_->start();
     const bool hasMessages = this->usercardMessagesChannel_ &&
                              this->usercardMessagesChannel_->hasMessages();
     const bool hadMessages = this->ui_.latestMessages->isVisible();
@@ -5778,29 +5873,6 @@ void UserInfoPopup::updateUsercardMessagesVisibility()
         // empty/non-empty transitions; only its child layout needs updating.
         this->ui_.messagesPage->updateGeometry();
     }
-}
-
-void UserInfoPopup::refreshUsercardActivity()
-{
-    if (!this->ui_.activityCount || !this->ui_.activityLatest)
-        return;
-    const auto channelName = this->underlyingChannel_ ? this->underlyingChannel_->getName() : QString();
-    const auto activity = this->usercardMessagesChannel_
-        ? summarizeUsercardActivity(this->usercardMessagesChannel_->getMessageSnapshot(), this->userId_, channelName)
-        : UsercardActivity{};
-    const auto count = this->userId_.isEmpty() ? QStringLiteral("—") :
-        QLocale().toString(qulonglong(activity.messageCount));
-    if (this->ui_.activityCount->text() != count)
-        this->ui_.activityCount->setText(count);
-    QString latest = QStringLiteral("—");
-    if (activity.latestMessage.isValid())
-    {
-        // Use a stable local timestamp, with no timer or periodic history scan.
-        const auto time = activity.latestMessage.toLocalTime();
-        latest = time.date() == QDate::currentDate() ? time.toString("HH:mm") : time.toString("dd.MM.yy HH:mm");
-    }
-    if (this->ui_.activityLatest->text() != latest)
-        this->ui_.activityLatest->setText(latest);
 }
 
 bool UserInfoPopup::canUsePublicHistory() const
@@ -6381,7 +6453,6 @@ void UserInfoPopup::resetUsercardMessageLoader()
     this->usercardMessagesLazyLoadEnabled_ =
         getSettings()->alwaysLoadMoreUsercardMessages;
     this->usercardMessagesChannel_.reset();
-    this->refreshUsercardActivity();
     this->updateLoadMoreMessagesButton();
 }
 
@@ -6725,6 +6796,7 @@ void UserInfoPopup::updateUserData()
         }
 
         this->userId_ = user.id;
+        this->refreshUsercardModerationCounts();
         this->ui_.rolesPage->setTarget(user.id, user.login);
         this->historyProfileDisplayName_ = user.displayName;
         this->refreshFollowingStatus(false);
@@ -8899,8 +8971,9 @@ private:
 };
 }  // namespace
 
-UserInfoPopup::TimeoutWidget::TimeoutWidget()
+UserInfoPopup::TimeoutWidget::TimeoutWidget(QWidget *localHost)
     : BaseWidget(nullptr)
+    , localHost_(localHost)
 {
     // Local punishments share one group. Cross-channel actions are physically
     // separated at the opposite end, so a click near Ban cannot trigger them.
@@ -8908,13 +8981,25 @@ UserInfoPopup::TimeoutWidget::TimeoutWidget()
                       .setLayoutType<QHBoxLayout>()
                       .withoutMargin();
     layout->setSpacing(24);
-    this->localActionsGroup_ = new QWidget(this);
+    this->localActionsGroup_ = new QWidget(localHost);
     this->localActionsGroup_->setObjectName("UsercardLocalModerationActions");
-    this->localActionsGroup_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    auto *localLayout = new QHBoxLayout(this->localActionsGroup_);
-    localLayout->setContentsMargins(0, 0, 0, 0);
-    localLayout->setSpacing(3);
-    layout->addWidget(this->localActionsGroup_);
+    this->localActionsGroup_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    auto *localLayout = new QVBoxLayout(this->localActionsGroup_);
+    this->localActionsGroup_->setAttribute(Qt::WA_StyledBackground);
+    localLayout->setContentsMargins(12, 8, 12, 8);
+    localLayout->setSpacing(5);
+    auto *modTitle = new QLabel(uiText("Moderation"), this->localActionsGroup_);
+    modTitle->setObjectName("UsercardModerationTitle");
+    localLayout->addWidget(modTitle);
+    this->punishmentCounts_ = new QLabel(this->localActionsGroup_);
+    this->punishmentCounts_->setObjectName("UsercardModerationCounts");
+    this->punishmentCounts_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    localLayout->addWidget(this->punishmentCounts_);
+    this->punishmentCounts_->hide();
+    localHost->layout()->addWidget(this->localActionsGroup_);
+    auto *actionLayout = new QHBoxLayout;
+    actionLayout->setContentsMargins(0, 0, 0, 0);
+    actionLayout->setSpacing(6);
     layout->addStretch(1);
 
     this->crossActionsGroup_ = new QWidget(this);
@@ -8935,8 +9020,8 @@ UserInfoPopup::TimeoutWidget::TimeoutWidget()
                                const QString &crossTooltip, bool crossIsBan) {
         using Kind = moderationchrome::Kind;
         auto *button = new UsercardModerationPill(crossIsBan ? Kind::Ban : Kind::Unban,
-                                                 {}, this);
-        localLayout->addWidget(button);
+                                                 uiText(title), this);
+        actionLayout->addWidget(button);
         button->setAccessibleName(uiText(title));
         button->setToolTip(action == UsercardModerationAction::Unban
                                ? uiText(title)
@@ -8979,12 +9064,10 @@ UserInfoPopup::TimeoutWidget::TimeoutWidget()
 
     const auto addTimeouts = [&] {
         auto *row = new QWidget;
-        row->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        row->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         this->timeoutsColumn_ = row;
         localLayout->addWidget(row);
-        auto *rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(3);
+        auto *rowLayout = new FlowLayout(row, {0, 4, 4});
 
         int index = 0;
         for (const auto &item : getSettings()->timeoutButtons.getValue())
@@ -9029,6 +9112,24 @@ UserInfoPopup::TimeoutWidget::TimeoutWidget()
     addButton(UsercardModerationAction::Ban, "Ban",
               &this->banButton_, &this->crossBanButton_,
               "Ban this user in other channels you moderate", true);
+    actionLayout->addStretch(1);
+    localLayout->addLayout(actionLayout);
+}
+
+void UserInfoPopup::TimeoutWidget::setPunishmentCounts(const QString &text)
+{
+    if (this->punishmentCounts_->text() == text)
+        return;
+    this->punishmentCounts_->setText(text);
+    this->punishmentCounts_->setVisible(!text.isEmpty());
+}
+
+void UserInfoPopup::TimeoutWidget::setActionsEnabled(bool localEnabled, bool crossEnabled)
+{
+    this->unbanButton_->setEnabled(localEnabled);
+    this->banButton_->setEnabled(localEnabled);
+    this->timeoutsColumn_->setEnabled(localEnabled);
+    this->crossActionsGroup_->setEnabled(crossEnabled);
 }
 
 void UserInfoPopup::TimeoutWidget::paintEvent(QPaintEvent *)
@@ -9059,20 +9160,20 @@ void UserInfoPopup::TimeoutWidget::setCrossVisible(bool visible)
     if (this->crossUnbanButton_ != nullptr)
     {
         static_cast<UsercardModerationPill *>(this->crossUnbanButton_)
-            ->setLabel(this->moderationVisible_ ? QString() : uiText("Cross unban"));
+            ->setLabel(uiText("Cross unban"));
         this->crossUnbanButton_->setVisible(visible);
     }
     if (this->crossBanButton_ != nullptr)
     {
         static_cast<UsercardModerationPill *>(this->crossBanButton_)
-            ->setLabel(this->moderationVisible_ ? QString() : uiText("Cross ban"));
+            ->setLabel(uiText("Cross ban"));
         this->crossBanButton_->setVisible(visible);
     }
 }
 
 void UserInfoPopup::TimeoutWidget::applyModerationVisibility()
 {
-    this->localActionsGroup_->setVisible(this->moderationVisible_);
+    this->localHost_->setVisible(this->moderationVisible_);
     if (this->unbanButton_ != nullptr)
     {
         this->unbanButton_->setVisible(this->moderationVisible_);
@@ -9147,7 +9248,7 @@ void UserInfoPopup::refreshSeventvPaint()
     this->updateSeventvPaintPixmap();
 }
 
-void UserInfoPopup::previewModerationStrip()
+void UserInfoPopup::previewModerationStrip(bool countsLoaded)
 {
     if (!this->offlinePreview_ || !this->ui_.timeoutWidget)
     {
@@ -9155,9 +9256,14 @@ void UserInfoPopup::previewModerationStrip()
     }
     this->ui_.timeoutWidget->setModerationVisible(
         !qEnvironmentVariableIsSet("NOCTIS_PREVIEW_CROSS_ONLY"));
+    const auto value = countsLoaded ? QStringLiteral("0") : QStringLiteral("—");
+    this->ui_.timeoutWidget->setPunishmentCounts(
+        uiText("Bans: %1 · Timeouts: %2").arg(value, value));
     this->ui_.timeoutWidget->setCrossVisible(true);
+    this->ui_.timeoutWidget->setActionsEnabled(countsLoaded, countsLoaded);
     this->ui_.timeoutWidget->setVisible(true);
     this->setModerationStripVisible(true);
+    this->scheduleExpandedBadgeFit();
 }
 
 void UserInfoPopup::setModerationStripVisible(bool visible)
@@ -9198,7 +9304,7 @@ void UserInfoPopup::setModerationStripVisible(bool visible)
                                                this->badgeFitBase_->height(), cap);
         this->badgeFitExpectedSize_ = geometry.size();
     }
-    this->setGeometry(geometry);
+    this->applyAutoFitGeometry(geometry);
     this->update();
 }
 

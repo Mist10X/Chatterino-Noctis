@@ -31,13 +31,13 @@ public:
     void setDiagnosticsLabel(const QString &label);
     /// Readable reason of the last failure ("" while none).
     QString lastError() const;
+    /// Record a transport/recovery diagnostic (never chat content or tokens).
+    void logEvent(const QString &text) const;
 
     virtual void open();
     virtual void close();
 
 private:
-    void logEvent(const QString &text) const;
-
     QString label_ = QStringLiteral("irc");
     QString lastError_;
     QTimer pingTimer_;

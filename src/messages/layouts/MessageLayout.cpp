@@ -368,7 +368,6 @@ void MessageLayout::actuallyLayout(const MessageLayoutContext &ctx)
     bool hideBlockedTermAutomodMessages =
         getSettings()->showBlockedTermAutomodMessages.getEnum() ==
         ShowModerationState::Never;
-    bool hideSimilar = getSettings()->hideSimilar;
     bool hideReplies = !ctx.flags.has(MessageElementFlag::RepliedMessage);
     const bool hideGigantifyReward =
         this->message_->usesTwitchGigantifyPresentation();
@@ -415,11 +414,6 @@ void MessageLayout::actuallyLayout(const MessageLayoutContext &ctx)
             {
                 continue;
             }
-        }
-
-        if (hideSimilar && this->message_->flags.has(MessageFlag::Similar))
-        {
-            continue;
         }
 
         if (hideReplies &&
@@ -830,12 +824,17 @@ void MessageLayout::updateBuffer(QPixmap *buffer,
         // A soft rounded box around just the visible text, drawn under it.
         const qreal padX = 3.0 * this->scale_;
         const qreal padY = 1.0 * this->scale_;
-        const bool headerOnly = !this->message_->flags.has(MessageFlag::System);
-        auto box = headerOnly && kind == NoticeIcon::Subscription
-                       ? this->container_.getContentBounds(MessageElementFlag::SubscriptionHeader)
-                       : headerOnly && kind == NoticeIcon::WatchStreak
-                             ? this->container_.getContentBounds(MessageElementFlag::WatchStreakHeader)
-                             : this->container_.getContentBounds();
+        const bool hasComment = !this->message_->flags.has(MessageFlag::System);
+        auto box = this->container_.getContentBounds();
+        if (hasComment &&
+            ((kind == NoticeIcon::Subscription &&
+              this->container_.getContentBounds(MessageElementFlag::SubscriptionHeader).isEmpty()) ||
+             (kind == NoticeIcon::WatchStreak &&
+              this->container_.getContentBounds(MessageElementFlag::WatchStreakHeader).isEmpty())))
+        {
+            // A hidden event header must not style the ordinary chat text.
+            box = {};
+        }
         if (!box.isEmpty())
         {
             box = box.adjusted(-padX, -padY, padX, padY);

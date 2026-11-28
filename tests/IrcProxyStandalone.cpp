@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "providers/irc/IrcProxy.hpp"
+#include "providers/twitch/AutoReplyAttemptHistory.hpp"
 #include "providers/twitch/IrcWriteRecovery.hpp"
 #include "providers/twitch/ChatDeliveryEvidence.hpp"
 
@@ -137,6 +138,60 @@ void writeRecoveryTests()
     recovery.pruneConfirmed(now + 20s);
     check("accepted reply plus duplicate refusal leaves no unconfirmed writes",
           !recovery.hasPending() && recovery.takeUnconfirmedChannels().isEmpty());
+
+    // No ACK is not evidence of a broken transport: it must not retire the
+    // authenticated writer or lose other pending sends. Late responses still
+    // consume the correct earlier slot, without a second warning or a resend.
+    recovery.noteWrite("first", now, "unconfirmed-old");
+    recovery.noteWrite("first", now + 8s, "newer");
+    check("expired send reported without invalidating the authenticated writer",
+          recovery.takeExpiredUnconfirmedChannels(now + 12s) == QStringList{"first"} &&
+              recovery.canSend("100", true));
+    check("same expired send is reported only once",
+          recovery.takeExpiredUnconfirmedChannels(now + 13s).isEmpty() &&
+              !recovery.expired(now + 13s));
+    check("late ACK is associated with expired slot, not a newer send",
+          !recovery.noteResponse("first", "old-id") && recovery.expired(now + 20s));
+    recovery.noteEcho("first", "100", "newer", "new-id");
+    check("a newer send is still independently confirmed by its nonce",
+          recovery.takeExpiredUnconfirmedChannels(now + 20s).isEmpty());
+    recovery.pruneConfirmed(now + 60s);
+    check("reported timeouts have a bounded retention and are cleaned up",
+          !recovery.hasPending());
+    recovery.noteWrite("first", now, "old-warning");
+    recovery.noteWrite("other", now + 10s, "still-in-flight");
+    check("confirmation timeout only reports entries whose deadline elapsed",
+          recovery.takeExpiredUnconfirmedChannels(now + 12s) == QStringList{"first"});
+    check("actual later disconnect does not repeat already-reported warning",
+          recovery.takeUnconfirmedChannels() == QStringList{"other"} && !recovery.hasPending());
+    recovery.unbindAccount();
+    check("account invalidation clears old timeouts and prevents sending",
+          !recovery.canSend("100", true) && !recovery.hasPending());
+
+    // Reserve event IDs before even invoking the sender so that the result
+    // of dispatch (preflight error, success or uncertainty) is immaterial.
+    chatterino::AutoReplyAttemptHistory attempts;
+    int dispatches = 0;
+    const auto reserveThenDispatch = [&](const QString &id) {
+        if (!attempts.reserve(id))
+            return;
+        ++dispatches;
+        check("auto-reply rejects same-event reservation during dispatch", !attempts.reserve(id));
+    };
+    reserveThenDispatch("mention-1");
+    reserveThenDispatch("mention-1");
+    check("duplicate receipt after dispatch cannot retry auto-reply", dispatches == 1);
+    reserveThenDispatch("mention-2");
+    check("distinct inbound event still permits independently matching reply",
+          dispatches == 2 && !attempts.reserve({}));
+    for (int i = 0; i < 6400; ++i)
+        attempts.reserve(QString::number(i));
+    check("busy auto-reply history retains accepted and failed intent identities",
+          !attempts.reserve("mention-1") && !attempts.reserve("mention-2"));
+    for (int i = 6400; i < chatterino::AutoReplyAttemptHistory::CAPACITY; ++i)
+        attempts.reserve(QString::number(i));
+    check("auto-reply event history has a bounded retention limit",
+          attempts.reserve("mention-1"));
 
     chatterino::ChatDeliveryEvidence evidence;
     evidence.watch("100", now);

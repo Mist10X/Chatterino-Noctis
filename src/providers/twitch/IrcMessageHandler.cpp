@@ -1725,8 +1725,7 @@ void IrcMessageHandler::addMessage(Communi::IrcMessage *message,
         sink.applySimilarityFilters(msg);
 
         if (!msg->flags.has(MessageFlag::Similar) ||
-            (!getSettings()->hideSimilar &&
-             getSettings()->shownSimilarTriggerHighlights))
+            getSettings()->shownSimilarTriggerHighlights)
         {
             MessageBuilder::triggerHighlights(chan, msg, alert);
         }

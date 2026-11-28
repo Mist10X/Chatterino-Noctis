@@ -51,6 +51,7 @@
 #include "providers/twitch/TwitchAccount.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
 #include "providers/twitch/TwitchUsers.hpp"
+#include "singletons/Paths.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/FormatTime.hpp"
@@ -62,11 +63,13 @@
 #include <IrcConnection>
 #include <QDateTime>
 #include <QCoreApplication>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLocale>
+#include <QSaveFile>
 #include <QStringBuilder>
 #include <QThread>
 #include <QTimer>
@@ -1251,39 +1254,95 @@ void TwitchChannel::refreshBadgesProviders()
     }
 }
 
-void TwitchChannel::refreshSevenTVChannelEmotes(bool manualRefresh)
+bool TwitchChannel::isSevenTVSnapshotDue() const
+{
+    return !this->roomId().isEmpty() && getSettings()->enableSevenTVChannelEmotes &&
+           (!this->seventvSnapshotAttempt_.isValid() || this->seventvSnapshotAttempt_.hasExpired(90000));
+}
+
+void TwitchChannel::requestSevenTVSnapshot()
+{
+    // A partial live event is evidence that the set is out of sync.
+    // Advance the revision so in-flight snapshots cannot roll it back.
+    ++this->seventvLiveRevision_;
+    this->seventvSnapshotAttempt_.invalidate();
+}
+
+void TwitchChannel::refreshSevenTVChannelEmotes(bool manualRefresh, bool backgroundRefresh)
 {
     if (!Settings::instance().enableSevenTVChannelEmotes)
     {
+        ++this->seventvSnapshotRequest_;
+        this->seventvSnapshotLoaded_ = false;
         this->seventvEmotes_.set(EMPTY_EMOTE_MAP);
         return;
     }
+    if (this->roomId().isEmpty())
+        return;
 
-    bool cacheHit = readProviderEmotesCache(
+    if (!this->seventvSnapshotLoaded_ && !backgroundRefresh)
+    {
+    readProviderEmotesCache(
         this->roomId(), "seventv", [this](auto jsonDoc) {
             const auto json = jsonDoc.object();
             const auto emoteSet = json["emote_set"].toObject();
+            if (!emoteSet["emotes"].isArray())
+                return;
             const auto parsedEmotes = emoteSet["emotes"].toArray();
             auto emoteMap = seventv::detail::parseEmotes(
                 parsedEmotes, SeventvEmoteSetKind::Channel);
             this->setSeventvEmotes(std::make_shared<const EmoteMap>(emoteMap));
+            const auto info = SeventvEmotes::twitchChannelInfo(json, this->roomId());
+            this->seventvUserTwitchConnectionIndex_ = info.twitchConnectionIndex;
+            this->updateSeventvData(info.userID, info.emoteSetID);
+            this->seventvSnapshotLoaded_ = true;
         });
+    }
+    const bool cacheHit = this->seventvSnapshotLoaded_;
+
+    this->seventvSnapshotAttempt_.start();
+    const auto request = ++this->seventvSnapshotRequest_;
+    const auto revision = this->seventvLiveRevision_;
 
     SeventvEmotes::loadChannelEmotes(
         this->weak_from_this(), this->roomId(),
-        [weak = this->weakFromThis()](auto &&emoteMap,
+        [weak = this->weakFromThis(), request, revision, backgroundRefresh](auto &&emoteMap,
                                       const auto &channelInfo) {
             if (auto shared = weak.lock())
             {
+                if (shared->seventvSnapshotRequest_ != request ||
+                    shared->seventvLiveRevision_ != revision ||
+                    !getSettings()->enableSevenTVChannelEmotes)
+                    return;
+                const auto previous = shared->seventvEmotes();
+                const bool announce = backgroundRefresh && shared->seventvSnapshotLoaded_ &&
+                    shared->seventvEmoteSetID() == channelInfo.emoteSetID;
                 shared->setSeventvEmotes(
-                    std::make_shared<const EmoteMap>(emoteMap));
+                    std::make_shared<const EmoteMap>(std::move(emoteMap)));
                 shared->updateSeventvData(channelInfo.userID,
                                           channelInfo.emoteSetID);
                 shared->seventvUserTwitchConnectionIndex_ =
                     channelInfo.twitchConnectionIndex;
+                shared->seventvSnapshotLoaded_ = true;
+                if (announce)
+                {
+                    const auto current = shared->seventvEmotes();
+                    const auto [added, removed] = seventv::detail::diffEmotes(*previous, *current);
+                    // A REST snapshot has no dependable actor information.
+                    // Report the actual differences, without inventing a nickname.
+                    if (added.size() + removed.size() <= 12)
+                    {
+                        for (const auto &emote : removed)
+                            shared->addOrReplaceLiveUpdatesAddRemove(false,"7TV",{},LiveUpdateEmote{emote});
+                        for (const auto &emote : added)
+                            shared->addOrReplaceLiveUpdatesAddRemove(true,"7TV",{},LiveUpdateEmote{emote});
+                    }
+                    else
+                        shared->addSystemMessage(uiText("7TV channel emotes synchronized."));
+                }
             }
         },
-        manualRefresh, cacheHit);
+        manualRefresh, cacheHit, backgroundRefresh);
 }
 
 void TwitchChannel::setBttvEmotes(std::shared_ptr<const EmoteMap> &&map)
@@ -2366,6 +2425,11 @@ void TwitchChannel::setRoomId(const QString &id)
 {
     if (*this->roomID_.accessConst() != id)
     {
+        if (!this->roomId().isEmpty())
+        {
+            // Only a change between two identities invalidates existing art.
+            this->badgeSets_.access()->clear();
+        }
         *this->roomID_.access() = id;
         // This is intended for tests and benchmarks. See comment in constructor.
         if (!getApp()->isTest())
@@ -2728,6 +2792,12 @@ void TwitchChannel::removeBttvEmote(
 void TwitchChannel::addSeventvEmote(
     const seventv::eventapi::EmoteAddDispatch &dispatch)
 {
+    if (!getSettings()->enableSevenTVChannelEmotes) return;
+    ++this->seventvLiveRevision_;
+    const auto previous = this->seventvEmotes();
+    const auto existing = previous->find(EmoteName{dispatch.emoteJson["name"].toString()});
+    if (existing != previous->end() && existing->second->id.string == dispatch.emoteID)
+        return;
     auto emote = SeventvEmotes::addEmote(this->seventvEmotes_, dispatch);
     if (!emote)
     {
@@ -2741,6 +2811,13 @@ void TwitchChannel::addSeventvEmote(
 void TwitchChannel::updateSeventvEmote(
     const seventv::eventapi::EmoteUpdateDispatch &dispatch)
 {
+    if (!getSettings()->enableSevenTVChannelEmotes) return;
+    ++this->seventvLiveRevision_;
+    const auto current = this->seventvEmotes();
+    const auto existing = current->find(EmoteName{dispatch.emoteName});
+    if (existing != current->end() && existing->second->id.string == dispatch.emoteID &&
+        dispatch.oldEmoteName != dispatch.emoteName)
+        return;
     auto updated = SeventvEmotes::updateEmote(this->seventvEmotes_, dispatch);
     if (!updated)
     {
@@ -2756,6 +2833,8 @@ void TwitchChannel::updateSeventvEmote(
 void TwitchChannel::removeSeventvEmote(
     const seventv::eventapi::EmoteRemoveDispatch &dispatch)
 {
+    if (!getSettings()->enableSevenTVChannelEmotes) return;
+    ++this->seventvLiveRevision_;
     auto removed = SeventvEmotes::removeEmote(this->seventvEmotes_, dispatch);
     if (!removed)
     {
@@ -2769,22 +2848,31 @@ void TwitchChannel::removeSeventvEmote(
 void TwitchChannel::updateSeventvUser(
     const seventv::eventapi::UserConnectionUpdateDispatch &dispatch)
 {
+    if (!getSettings()->enableSevenTVChannelEmotes) return;
     if (dispatch.connectionIndex != this->seventvUserTwitchConnectionIndex_)
     {
         // A different connection was updated
         return;
     }
 
+    ++this->seventvLiveRevision_;
+    const auto revision = this->seventvLiveRevision_;
     this->updateSeventvData(this->seventvUserID_, dispatch.emoteSetID);
+    this->seventvSnapshotAttempt_.invalidate();
     SeventvEmotes::getEmoteSet(
         dispatch.emoteSetID,
-        [weak = this->weakFromThis(), dispatch](auto &&emotes,
+        [weak = this->weakFromThis(), dispatch, revision](auto &&emotes,
                                                 const auto &name) {
-            postToThread([weak, dispatch, emotes, name]() {
+            postToThread([weak, dispatch, emotes, name, revision]() {
                 if (auto shared = weak.lock())
                 {
+                    if (shared->seventvLiveRevision_ != revision ||
+                        shared->seventvEmoteSetID() != dispatch.emoteSetID ||
+                        !getSettings()->enableSevenTVChannelEmotes) return;
                     shared->seventvEmotes_.set(
                         std::make_shared<EmoteMap>(emotes));
+                    shared->seventvSnapshotLoaded_ = true;
+                    shared->seventvSnapshotAttempt_.start();
                     auto builder =
                         MessageBuilder(liveUpdatesUpdateEmoteSetMessage, "7TV",
                                        dispatch.actorName, name);
@@ -2793,11 +2881,15 @@ void TwitchChannel::updateSeventvUser(
                 }
             });
         },
-        [weak = this->weakFromThis()](const auto &reason) {
-            postToThread([weak, reason]() {
+        [weak = this->weakFromThis(), dispatch, revision](const auto &reason) {
+            postToThread([weak, reason, dispatch, revision]() {
                 if (auto shared = weak.lock())
                 {
-                    shared->seventvEmotes_.set(EMPTY_EMOTE_MAP);
+                    if (shared->seventvLiveRevision_ != revision ||
+                        shared->seventvEmoteSetID() != dispatch.emoteSetID ||
+                        !getSettings()->enableSevenTVChannelEmotes) return;
+                    // Retain the last usable set until the automatic snapshot succeeds.
+                    shared->seventvSnapshotAttempt_.invalidate();
                     shared->addSystemMessage(
                         QString("Failed updating 7TV emote set (%1).")
                             .arg(reason));
@@ -2825,11 +2917,16 @@ void TwitchChannel::updateSeventvData(const QString &newUserID,
 
     this->seventvUserID_ = newUserID;
     this->seventvEmoteSetID_ = newEmoteSetID;
-    runInGuiThread([this, oldUserID, oldEmoteSetID]() {
+    // Registry iteration may hold the channel mutex. Queue this operation
+    // instead of synchronously reentering dropSeventvChannel from it.
+    QMetaObject::invokeMethod(QCoreApplication::instance(),
+        [weak = this->weakFromThis(), oldUserID, oldEmoteSetID]() {
+        if (isAppAboutToQuit()) return;
         if (getApp()->getSeventvEventAPI())
         {
-            getApp()->getSeventvEventAPI()->subscribeUser(
-                this->seventvUserID_, this->seventvEmoteSetID_);
+            if (const auto shared = weak.lock())
+                getApp()->getSeventvEventAPI()->subscribeUser(
+                    shared->seventvUserID_, shared->seventvEmoteSetID_);
 
             if (oldUserID || oldEmoteSetID)
             {
@@ -2838,7 +2935,7 @@ void TwitchChannel::updateSeventvData(const QString &newUserID,
                     oldEmoteSetID.value_or(QString()));
             }
         }
-    });
+    }, Qt::QueuedConnection);
 }
 
 void TwitchChannel::addOrReplaceLiveUpdatesAddRemove(bool isEmoteAdd,
@@ -3853,83 +3950,166 @@ void TwitchChannel::cleanUpReplyThreads()
     }
 }
 
+namespace {
+
+QString channelBadgeCachePath(const QString &id)
+{
+    return getApp()->getPaths().cacheFilePath(id + u".twitch-channel-badges"_s);
+}
+
+void saveChannelBadgeCatalog(const QString &id, const HelixChannelBadges &catalog)
+{
+    // Merge by exact set and version; older subscriptions may still appear
+    // in restored history even if a newer response omits their artwork.
+    std::map<QString, std::map<QString, QJsonObject>> merged;
+    const auto merge = [&merged](const HelixChannelBadges &source) {
+        for (const auto &set : source.badgeSets)
+        {
+            for (const auto &version : set.versions)
+            {
+                if (set.setID.isEmpty() || version.id.isEmpty() || version.imageURL1x.string.isEmpty())
+                {
+                    continue;
+                }
+                merged[set.setID][version.id] = QJsonObject{
+                    {"id", version.id}, {"image_url_1x", version.imageURL1x.string},
+                    {"image_url_2x", version.imageURL2x.string},
+                    {"image_url_4x", version.imageURL4x.string},
+                    {"title", version.title}, {"click_url", version.clickURL.string}};
+            }
+        }
+    };
+    QFile previous(channelBadgeCachePath(id));
+    if (previous.open(QIODevice::ReadOnly) && previous.size() <= 2 * 1024 * 1024)
+    {
+        merge(HelixChannelBadges(QJsonDocument::fromJson(previous.readAll()).object()));
+    }
+    previous.close();
+    merge(catalog);
+    QJsonArray sets;
+    for (const auto &[setId, entries] : merged)
+    {
+        QJsonArray versions;
+        for (const auto &[versionId, version] : entries)
+        {
+            versions.append(version);
+        }
+        sets.append(QJsonObject{{"set_id", setId}, {"versions", versions}});
+    }
+    // A partial/empty response must never erase a previously usable catalog.
+    if (sets.isEmpty())
+    {
+        return;
+    }
+    QSaveFile file(channelBadgeCachePath(id));
+    const auto bytes = QJsonDocument(QJsonObject{{"data", sets}}).toJson(QJsonDocument::Compact);
+    if (file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size())
+    {
+        file.commit();
+    }
+}
+
+}  // namespace
+
 void TwitchChannel::refreshBadges()
 {
-    if (this->roomId().isEmpty())
+    const auto id = this->roomId();
+    if (id.isEmpty() || !std::ranges::all_of(id, [](QChar c) {
+            return c >= u'0' && c <= u'9';
+        }))
     {
         return;
     }
 
-    if (getApp()->getAccounts()->twitch.getCurrent()->isAnon())
+    if (this->badgeSets_.accessConst()->empty())
     {
-        // The official Helix endpoint needs a user or app token. The public
-        // IVR badge catalog returns the same badge-set schema without one.
-        // No account data or credentials are sent.
-        const auto id = this->roomId();
+        QFile file(channelBadgeCachePath(id));
+        if (file.open(QIODevice::ReadOnly) && file.size() <= 2 * 1024 * 1024)
+        {
+            const auto cached = QJsonDocument::fromJson(file.readAll());
+            if (cached.isObject() && cached.object().value("data").isArray())
+            {
+                this->addTwitchBadgeSets(HelixChannelBadges(cached.object()));
+            }
+        }
+    }
+    this->requestChannelBadges(id, ++this->channelBadgeRequestGeneration_, 0);
+}
+
+void TwitchChannel::requestChannelBadges(const QString &id, uint64_t generation, int attempt)
+{
+    // Superseded requests, channel closures and stale room IDs cannot publish.
+    const auto current = [weak = this->weakFromThis(), id, generation] {
+        auto shared = weak.lock();
+        if (shared && shared->roomId() == id &&
+            shared->channelBadgeRequestGeneration_ == generation && !isAppAboutToQuit())
+        {
+            return shared;
+        }
+        return std::shared_ptr<TwitchChannel>{};
+    };
+    const auto publish = [current, id](const HelixChannelBadges &catalog) {
+        if (auto shared = current())
+        {
+            shared->addTwitchBadgeSets(catalog);
+            saveChannelBadgeCatalog(id, catalog);
+        }
+    };
+    const auto retry = [current, id, generation, attempt] {
+        auto shared = current();
+        if (!shared)
+        {
+            return;
+        }
+        if (attempt >= 2)
+        {
+            qCWarning(chatterinoTwitch) << "Channel badge catalog unavailable after retries for"
+                                      << shared->getName();
+            return;
+        }
+        const int delay = (attempt == 0 ? 5000 : 20000) + int(qHash(id) % 3000);
+        QTimer::singleShot(delay, QCoreApplication::instance(), [current, id, generation, attempt] {
+            if (auto shared = current())
+            {
+                shared->requestChannelBadges(id, generation, attempt + 1);
+            }
+        });
+    };
+    const auto publicCatalog = [current, publish, retry, id] {
+        if (!current())
+        {
+            return;
+        }
+        // Public channel badge art needs no account data, also when Helix
+        // has temporarily failed for a signed-in viewer.
         NetworkRequest("https://api.ivr.fi/v2/twitch/badges/channel?id=" + id)
             .timeout(12000)
-            .cache()
-            .onSuccess([weak = this->weakFromThis(), id](const NetworkResult &result) {
-                if (auto shared = weak.lock();
-                    shared && shared->roomId() == id &&
-                    getApp()->getAccounts()->twitch.getCurrent()->isAnon())
+            .onSuccess([publish, retry](const NetworkResult &result) {
+                const auto doc = QJsonDocument::fromJson(result.getData());
+                const auto sets = doc.isArray() ? doc.array() : doc.object().value("data").toArray();
+                if (sets.isEmpty())
                 {
-                    const auto sets = result.parseJsonArray();
-                    if (!sets.isEmpty())
-                    {
-                        shared->addTwitchBadgeSets(HelixChannelBadges(
-                            QJsonObject{{"data", sets}}));
-                    }
+                    retry();
+                    return;
                 }
+                publish(HelixChannelBadges(QJsonObject{{"data", sets}}));
             })
+            .onError([retry](const NetworkResult &) { retry(); })
             .execute();
+    };
+    if (getApp()->getAccounts()->twitch.getCurrent()->isAnon())
+    {
+        publicCatalog();
         return;
     }
-
-    getHelix()->getChannelBadges(
-        this->roomId(),
-        // successCallback
-        [weak = this->weakFromThis()](const auto &channelBadges) {
-            auto shared = weak.lock();
-            if (!shared)
+    getHelix()->getChannelBadges(id, publish,
+        [current, publicCatalog](auto, const auto &message) {
+            if (auto shared = current())
             {
-                // The channel has been closed inbetween us making the request and the request finishing
-                return;
+                qCWarning(chatterinoTwitch) << "Channel badge catalog request failed for"
+                                          << shared->getName() << message;
+                publicCatalog();
             }
-
-            shared->addTwitchBadgeSets(channelBadges);
-        },
-        // failureCallback
-        [weak = this->weakFromThis()](auto error, const auto &message) {
-            auto shared = weak.lock();
-            if (!shared)
-            {
-                // The channel has been closed inbetween us making the request and the request finishing
-                return;
-            }
-
-            // Without a login Twitch gives no channel badges: not an error
-            if (getApp()->getAccounts()->twitch.getCurrent()->isAnon())
-            {
-                return;
-            }
-            QString errorMessage("Failed to load channel badges - ");
-
-            switch (error)
-            {
-                case HelixGetChannelBadgesError::Forwarded: {
-                    errorMessage += message;
-                }
-                break;
-
-                // This would most likely happen if the service is down, or if the JSON payload returned has changed format
-                case HelixGetChannelBadgesError::Unknown: {
-                    errorMessage += "An unknown error has occurred.";
-                }
-                break;
-            }
-
-            shared->addSystemMessage(errorMessage);
         });
 }
 
@@ -3942,6 +4122,10 @@ void TwitchChannel::addTwitchBadgeSets(const HelixChannelBadges &channelBadges)
             const auto &setID = badgeSet.setID;
             for (const auto &version : badgeSet.versions)
             {
+                if (setID.isEmpty() || version.id.isEmpty() || version.imageURL1x.string.isEmpty())
+                {
+                    continue;
+                }
                 auto emote = Emote{
                     .name = EmoteName{},
                     .images =

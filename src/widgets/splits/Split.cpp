@@ -2326,8 +2326,13 @@ void Split::updateChannelConnections()
 
 void Split::setModerationMode(bool value)
 {
+    const bool changed = this->moderationMode_ != value;
     this->moderationMode_ = value;
     this->refreshModerationMode();
+    if (changed)
+    {
+        this->moderationModeChanged.invoke();
+    }
 }
 
 bool Split::getModerationMode() const

@@ -390,7 +390,7 @@ inline const std::map<HotkeyCategory, ActionDefinitionMap> actionNames{
                   "Should streamer mode be enabled, disabled, toggled (on/off) "
                   "or set to auto",
           }},
-         {"toggleLocalR9K", ActionDefinition{"Toggle local unique chat (R9K)"}},
+         {"toggleLocalR9K", ActionDefinition{"Toggle similarity checks"}},
          {"zoom",
           ActionDefinition{
               .displayName = "Zoom in/out",

@@ -20,7 +20,8 @@ void setAutoModerationRoleFetcherForTesting(AutoModerationRoleFetcher fetcher);
 // the current signed grant AND verified moderator role.
 bool permittedAutoModeration(TwitchChannel &channel);
 void openAutoModeration(QWidget *parent,
-                        AutoModerationRewardsFetcher fixtureFetcher = {});
+                        AutoModerationRewardsFetcher fixtureFetcher = {},
+                        std::function<QWidget *(QWidget *)> commandPage = {});
 void observeAutoModerationMessage(TwitchChannel &channel, Communi::TagsRef tags,
                                   const QString &author, const QString &text);
 void observeAutoModerationTimeout(TwitchChannel &channel, Communi::TagsRef tags);

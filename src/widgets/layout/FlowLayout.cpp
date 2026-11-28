@@ -185,6 +185,11 @@ int FlowLayout::doLayout(const QRect &rect, bool testOnly) const
             continue;
         }
 
+        if (item->isEmpty())
+        {
+            continue;
+        }
+
         auto space = this->getSpacing(item);
         int nextX = x + item->sizeHint().width() + space.width();
         if (nextX - space.width() > effectiveRect.right() && lineHeight > 0)

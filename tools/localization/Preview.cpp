@@ -902,7 +902,7 @@ int main(int argc, char **argv)
                 auto *save = dialog->findChild<QPushButton *>("SaveRules");
                 auto *matchMode = dialog->findChild<QComboBox *>("ModeratorMatchMode");
                 check(matchMode && matchMode->count() == 3 && matchMode->currentIndex() == 0,
-                      "three matching modes, legacy exact remains default");
+                      "three ordinary matching modes, legacy exact remains default");
                 check(group && group->isEnabled() && reply && save, "moderator rule has group and variable editor");
                 if (group && reply && save && trigger && status)
                 {
@@ -1003,6 +1003,57 @@ int main(int argc, char **argv)
                   "timer start survives rule-profile reload");
             if (action) action->click();
             check(elapsed && elapsed->text() == uiText("Timer stopped"), "timer can be stopped after reload");
+            if (primary) primary->setCurrentIndex(0);
+            if (tabs) tabs->setCurrentIndex(1);
+            check(matchMode && matchMode->count() == 3, "repeat commands are not ordinary reply modes");
+            QTimer::singleShot(0, [&] {
+                if (auto *moderation = automationdialog::current())
+                {
+                    auto *pages = moderation->findChild<QTabWidget *>("AutoModerationTabs");
+                    auto *page = moderation->findChild<QWidget *>("RepeatCommandPage");
+                    check(pages && page, "moderation has the commands tab");
+                    if (pages && page)
+                    {
+                        pages->setCurrentWidget(page);
+                        qt.processEvents();
+                        check(moderation->width() <= 740 && moderation->height() <= 520,
+                              "automoderation opens at compact size");
+                        moderation->resize(540,390);
+                        qt.processEvents();
+                        check(moderation->width() == 540 && moderation->height() == 390,
+                              "automoderation can shrink without forcing a large window");
+                        moderation->resize(720,500);
+                        page->findChild<QPushButton *>("RepeatCommandAdd")->click();
+                        page->findChild<QPlainTextEdit *>("RepeatCommandTrigger")->setPlainText(QStringLiteral("!тг"));
+                        page->findChild<QPlainTextEdit *>("RepeatCommandReply")->setPlainText("Telegram fixture");
+                        page->findChild<QPushButton *>("RepeatCommandSave")->click();
+                        moderation->grab().save(output+"/moderation-commands.png");
+                    }
+                    moderation->reject();
+                }
+            });
+            dialog->findChild<QPushButton *>("AutoModerationButton")->click();
+            dialog->reject();
+        });
+        if (button) Q_EMIT button->leftClicked();
+        ModeratorAutoRepliesTestAccess::reload(module);
+        QTimer::singleShot(0, [&] {
+            auto *dialog = automationdialog::current();
+            if (!dialog) return;
+            if (auto *tabs = dialog->findChild<QTabBar *>("ModeratorChannelTabs")) tabs->setCurrentIndex(1);
+            QTimer::singleShot(0, [&] {
+                if (auto *moderation = automationdialog::current())
+                {
+                    auto *pages = moderation->findChild<QTabWidget *>("AutoModerationTabs");
+                    auto *page = moderation->findChild<QWidget *>("RepeatCommandPage");
+                    if (pages && page) pages->setCurrentWidget(page);
+                    auto *trigger = page ? page->findChild<QPlainTextEdit *>("RepeatCommandTrigger") : nullptr;
+                    check(trigger && trigger->toPlainText() == QStringLiteral("!тг"),
+                          "repeat command survives profile reload in dedicated tab");
+                    moderation->reject();
+                }
+            });
+            dialog->findChild<QPushButton *>("AutoModerationButton")->click();
             dialog->reject();
         });
         if (button) Q_EMIT button->leftClicked();

@@ -789,7 +789,7 @@ public:
 
 private:
     bool shouldShowAction(const ModerationAction &action, bool inModerationMode,
-                          int selfDeleteMode, int pinOnModeratorsMode) const;
+                          int selfDeleteMode) const;
 
     bool canModerateUser_ = true;
     bool targetIsModOrBroadcaster_ = false;

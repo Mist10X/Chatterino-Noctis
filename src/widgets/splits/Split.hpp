@@ -65,6 +65,7 @@ public:
     ~Split() override;
 
     pajlada::Signals::NoArgSignal channelChanged;
+    pajlada::Signals::NoArgSignal moderationModeChanged;
     pajlada::Signals::NoArgSignal focused;
     pajlada::Signals::NoArgSignal focusLost;
 

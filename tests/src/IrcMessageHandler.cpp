@@ -43,6 +43,7 @@
 #include "providers/homies/HomiesBadges.hpp"
 #include "providers/seventv/SeventvBadges.hpp"
 #include "providers/seventv/SeventvPersonalEmotes.hpp"
+#include "providers/seventv/eventapi/Dispatch.hpp"
 #include "providers/twitch/api/Helix.hpp"
 #include "providers/twitch/ChannelPointReward.hpp"
 #include "providers/twitch/TwitchAccount.hpp"
@@ -734,6 +735,37 @@ TEST(TestIrcMessageHandlerP, Integrity)
     ASSERT_FALSE(UPDATE_SNAPSHOTS);  // make sure fixtures are actually tested
 }
 
+TEST(IrcMessageHandler, SeparateSimilarMessagesRemainVisibleForAllRoles)
+{
+    MockApplication app(QString::fromUtf8(SETTINGS_DEFAULT));
+    initializeHelix(&app.helix);
+    app.settings.similarityEnabled = true;
+    app.settings.hideSimilar = true; // legacy saved setting must not hide chat
+    app.settings.colorSimilarDisabled = true;
+    app.settings.hideModerated = true;
+    auto channel = std::make_shared<TwitchChannel>("pajlada");
+    for (const bool moderator : {false,true})
+    {
+        VectorMessageSink sink;
+        for (int i=0; i<2; ++i)
+        {
+            const QByteArray data = "@tmi-sent-ts=1790452460376;id=fixture-repeat-" +
+                QByteArray::number(i) + ";room-id=11148817;user-id=730001;display-name=FixtureUser;"
+                "badge-info=;flags=;user-type=;emotes=;badges=" +
+                (moderator ? QByteArray("moderator/1;mod=1") : QByteArray(";mod=0")) +
+                " :fixtureuser!fixtureuser@fixtureuser.tmi.twitch.tv PRIVMSG #pajlada :fixture text";
+            std::unique_ptr<Communi::IrcMessage> irc(Communi::IrcMessage::fromData(data,nullptr));
+            ASSERT_NE(irc,nullptr);
+            IrcMessageHandler::parseMessageInto(irc.get(),sink,channel.get());
+        }
+        ASSERT_EQ(sink.messages().size(),2u);
+        EXPECT_NE(sink.messages()[0]->id,sink.messages()[1]->id);
+        EXPECT_TRUE(sink.messages()[1]->flags.has(MessageFlag::Similar));
+        for (const auto &message : sink.messages())
+            EXPECT_FALSE(message->flags.has(MessageFlag::Disabled));
+    }
+}
+
 TEST(IrcMessageHandler, RecentMessagesDoNotUpdateCurrentUserState)
 {
     MockApplication app(QString::fromUtf8(SETTINGS_DEFAULT));
@@ -963,6 +995,36 @@ TEST_P(TestIrcMessageHandlerP, CloneElements)
                 << QJsonDocument(clonedObj).toJson();
         }
     }
+}
+
+TEST(IrcMessageHandler, SevenTVLiveAdditionUpdatesChatAndCatalogueOnce)
+{
+    MockApplication app(u"{}"_s);
+    auto channel = std::make_shared<TwitchChannel>("seven-fixture");
+    using namespace seventv::eventapi;
+    const Dispatch dispatch(QJsonObject{{"type","emote_set.update"},
+        {"body",QJsonObject{{"id","seven-set"},{"actor",QJsonObject{{"display_name","fixture-mod"}}}}}});
+    const QJsonObject emote{{"id","hero-id"},{"name","hero"},
+        {"data",QJsonObject{{"name","hero"},{"listed",true},
+            {"owner",QJsonObject{{"display_name","fixture-owner"}}},
+            {"host",QJsonObject{{"url","//127.0.0.1:9051"},
+                {"files",QJsonArray{QJsonObject{{"name","1x.webp"},{"format","WEBP"},
+                    {"width",32},{"height",32}}}}}}}}};
+    const EmoteAddDispatch added(dispatch,emote);
+    ASSERT_TRUE(added.validate());
+    channel->addSeventvEmote(added);
+    ASSERT_TRUE(channel->seventvEmote(EmoteName{"hero"}));
+    auto messages = channel->getMessageSnapshot();
+    ASSERT_EQ(messages.size(),1u);
+    EXPECT_TRUE(messages.back()->flags.has(MessageFlag::LiveUpdatesAdd));
+    EXPECT_TRUE(messages.back()->messageText.contains("hero"));
+    channel->addSeventvEmote(added);
+    EXPECT_EQ(channel->getMessageSnapshot().size(),1u);
+    channel->removeSeventvEmote(EmoteRemoveDispatch(dispatch,emote));
+    EXPECT_FALSE(channel->seventvEmote(EmoteName{"hero"}));
+    messages = channel->getMessageSnapshot();
+    ASSERT_EQ(messages.size(),2u);
+    EXPECT_TRUE(messages.back()->flags.has(MessageFlag::LiveUpdatesRemove));
 }
 
 TEST(IrcMessageHandler, DuplicateChannelPointRewardIrcMessageIgnored)

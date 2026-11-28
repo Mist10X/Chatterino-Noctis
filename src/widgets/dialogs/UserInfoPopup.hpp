@@ -113,7 +113,7 @@ public:
 
     void setOfflinePreviewData(const UserInfoPreviewData &data);
     /// Offline preview only: show the moderation strip as for a moderator.
-    void previewModerationStrip();
+    void previewModerationStrip(bool countsLoaded = true);
 
 public:
     static void openUserChannelAction(const QString &userName,
@@ -150,8 +150,9 @@ private:
     void updateUserData();
     void updateLatestMessages();
     void updateUsercardMessagesVisibility();
-    void refreshUsercardActivity();
     void beginBadgeFit(bool expanded, int expandedBadgeHeight);
+    void applyAutoFitGeometry(const QRect &geometry);
+    void finishCardDrag();
     void applyBadgeFit(qreal fraction);
     void finishBadgeFit(bool expanded);
     void setBadgeScrollbarSuppressed(bool suppressed);
@@ -261,8 +262,10 @@ private:
     void appendCommonProfileActions(QMenu *menu);
     void refreshTargetModerationStatus();
     bool updateTargetModerationStatusFromMessage(const MessagePtr &message);
-    bool shouldShowModerationActions() const;
-    bool crossActionAvailable() const;
+    bool shouldShowModerationActions(bool requireResolvedLogin = true) const;
+    bool showLocalModerationPanel() const;
+    void refreshUsercardModerationCounts();
+    bool crossActionAvailable(bool requireResolvedLogin = true) const;
     void runCrossAction(const QString &command);
 
     enum class UsercardModerationAction { Ban, Unban, Timeout };
@@ -354,6 +357,8 @@ private:
         followingStatusChangedConnection_;
 
     std::unique_ptr<pajlada::Signals::ScopedConnection> refreshConnection_;
+    QString moderationCountsKey_;
+    size_t moderationCountsGeneration_ = 0;
     std::unique_ptr<pajlada::Signals::ScopedConnection>
         twitchUserStateConnection_;
     std::unique_ptr<pajlada::Signals::ScopedConnection>
@@ -368,7 +373,6 @@ private:
     const bool closeAutomatically_;
     const bool offlinePreview_;
 
-    QTimer *activityRefreshTimer_ = nullptr;
     QTimer *badgeFitTimer_ = nullptr;
     std::optional<QRect> badgeFitBase_;
     std::optional<QSize> badgeFitExpectedSize_;
@@ -377,8 +381,8 @@ private:
     int badgeFitTargetProfileHeight_ = 0;
     bool badgeFitApplying_ = false;
     bool badgeFitInProgress_ = false;
-    bool badgeFitMoved_ = false;
-    std::optional<QPoint> badgeDragOffset_;
+    bool userMovedCard_ = false;
+    std::optional<QPoint> cardDragOffset_;
     bool badgeScrollbarSuppressed_ = false;
     bool manualProfileSize_ = false;
 
@@ -397,9 +401,7 @@ private:
         QLabel *banner = nullptr;
         QWidget *badgeStrip = nullptr;
         QWidget *quickActions = nullptr;
-        QWidget *activity = nullptr;
-        QLabel *activityCount = nullptr;
-        QLabel *activityLatest = nullptr;
+        QWidget *localModerationHost = nullptr;
         UsercardResizeGrip *resizeGrip = nullptr;
         QToolButton *quickWhisper = nullptr;
         QToolButton *quickProfile = nullptr;
@@ -499,7 +501,7 @@ private:
     class TimeoutWidget : public BaseWidget
     {
     public:
-        TimeoutWidget();
+        explicit TimeoutWidget(QWidget *localHost);
 
         pajlada::Signals::Signal<UsercardModerationRequest> buttonClicked;
         pajlada::Signals::Signal<bool> crossActionClicked;
@@ -507,6 +509,8 @@ private:
         void setMinTimeout(int minSecs);
         void setModerationVisible(bool visible);
         void setCrossVisible(bool visible);
+        void setActionsEnabled(bool localEnabled, bool crossEnabled);
+        void setPunishmentCounts(const QString &text);
 
     protected:
         void paintEvent(QPaintEvent *event) override;
@@ -519,8 +523,10 @@ private:
         QWidget *timeoutsColumn_ = nullptr;
         QWidget *crossUnbanButton_ = nullptr;
         QWidget *crossBanButton_ = nullptr;
+        QWidget *localHost_ = nullptr;
         QWidget *localActionsGroup_ = nullptr;
         QWidget *crossActionsGroup_ = nullptr;
+        QLabel *punishmentCounts_ = nullptr;
         bool moderationVisible_ = true;
         int minTimeoutSecs_ = 0;
         std::vector<std::pair<QWidget *, int>> timeoutButtons;

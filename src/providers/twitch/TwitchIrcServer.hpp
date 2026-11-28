@@ -230,10 +230,12 @@ private:
     bool trySendChatMessage(const std::shared_ptr<TwitchChannel> &channel,
                             const QString &message, const QString &replyId = {});
     void reportUnconfirmedWrites();
+    void notifyUnconfirmedChannels(const QStringList &channels);
 
     void refreshModeratedChannels();
     void applyModeratedChannelInfo();
     void pollChannelPointsInBackground();
+    void pollSevenTVSnapshots();
 
     QMap<QString, std::weak_ptr<Channel>> channels;
     QMap<QString, std::weak_ptr<Channel>> anonymousChannels;
@@ -249,6 +251,8 @@ private:
     QTimer writeReconnectTimer_;
     QTimer channelPointsBackgroundTimer_;
     QString lastBackgroundPointsChannel_;
+    QTimer sevenTVSnapshotTimer_;
+    QString lastSevenTVSnapshotChannel_;
     int writeReconnectDelayMs_ = 1000;
     pajlada::Signals::SignalHolder writeSignalHolder_;
     QObjectPtr<TwitchReadConnectionPool> readConnection_ = nullptr;

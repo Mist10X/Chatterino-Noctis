@@ -2391,6 +2391,81 @@ void TwitchGql::getUsercardMessagesBySender(
         .execute();
 }
 
+std::optional<GqlUsercardModerationCounts> TwitchGql::parseUsercardModerationCounts(
+    const QJsonValue &response)
+{
+    if (!extractFirstGqlErrorMessage(response).isEmpty())
+    {
+        return std::nullopt;
+    }
+    const auto logs = payloadDataObject(response).value("viewerCardModLogs").toObject();
+    const auto parse = [](const QJsonObject &node) -> std::optional<std::pair<int, bool>> {
+        auto count = node.value("count").toInt(-1);
+        const auto more = node.value("pageInfo").toObject().value("hasNextPage");
+        if (node.value("__typename").toString() != u"ModLogsTargetedActionsConnection")
+        {
+            return std::nullopt;
+        }
+        if (const auto edges = node.value("edges");
+            (node.value("count").isNull() || node.value("count").isUndefined()) &&
+            edges.isArray() && edges.toArray().isEmpty() &&
+            more.isBool() && !more.toBool())
+        {
+            // A successful terminal empty page establishes zero even when
+            // Twitch omits the nullable count. Missing or denied data doesn't.
+            count = 0;
+        }
+        if (count < 0 || (count >= 99 && !more.isBool()))
+        {
+            return std::nullopt;
+        }
+        return std::pair(count, count >= 99 && more.toBool());
+    };
+    const auto bans = parse(logs.value("bans").toObject());
+    const auto timeouts = parse(logs.value("timeouts").toObject());
+    if (!bans || !timeouts)
+    {
+        return std::nullopt;
+    }
+    return GqlUsercardModerationCounts{bans->first, timeouts->first,
+                                       bans->second, timeouts->second};
+}
+
+void TwitchGql::getUsercardModerationCounts(
+    const QString &channelId, const QString &targetId, const QString &oauthToken,
+    std::function<void(std::optional<GqlUsercardModerationCounts>)> callback)
+{
+    // Same targeted-action connections used by Twitch's web moderation UI.
+    // Ask only for count and cursor metadata, without action contents or comments.
+    constexpr auto QUERY = R"gql(
+        query NoctisUsercardModerationCounts($channelID: ID!, $targetID: ID!) {
+          viewerCardModLogs(channelID: $channelID, targetID: $targetID) {
+            bans: targetedActions(first: 99, type: BAN) {
+              __typename
+              ... on ModLogsTargetedActionsConnection { count pageInfo { hasNextPage } edges { cursor } }
+            }
+            timeouts: targetedActions(first: 99, type: TIMEOUT) {
+              __typename
+              ... on ModLogsTargetedActionsConnection { count pageInfo { hasNextPage } edges { cursor } }
+            }
+          }
+        }
+    )gql";
+    if (channelId.isEmpty() || targetId.isEmpty() || oauthToken.isEmpty())
+    {
+        callback(std::nullopt);
+        return;
+    }
+    makeGqlRequest(QUERY, {{"channelID", channelId}, {"targetID", targetId}}, oauthToken)
+        .onSuccess([callback](const NetworkResult &result) {
+            callback(parseUsercardModerationCounts(result.parseJsonValue()));
+        })
+        .onError([callback](const NetworkResult &) {
+            callback(std::nullopt);
+        })
+        .execute();
+}
+
 void TwitchGql::getModerationActionLogs(
     const QString &channelId, const QString &cursor, const QString &oauthToken,
     std::function<void(GqlModerationActionLogPage)> successCallback,

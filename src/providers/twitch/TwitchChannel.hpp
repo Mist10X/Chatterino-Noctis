@@ -452,7 +452,9 @@ public:
     void refreshTwitchChannelEmotes(bool manualRefresh);
     void refreshBTTVChannelEmotes(bool manualRefresh);
     void refreshFFZChannelEmotes(bool manualRefresh);
-    void refreshSevenTVChannelEmotes(bool manualRefresh);
+    void refreshSevenTVChannelEmotes(bool manualRefresh, bool backgroundRefresh = false);
+    bool isSevenTVSnapshotDue() const;
+    void requestSevenTVSnapshot();
     void refreshBadgesProviders();
 
     void setBttvEmotes(std::shared_ptr<const EmoteMap> &&map);
@@ -699,6 +701,7 @@ private:
 
     void refreshPubSub();
     void refreshBadges();
+    void requestChannelBadges(const QString &id, uint64_t generation, int attempt);
     void refreshCheerEmotes();
     void loadRecentMessages();
     struct HistoryRange {
@@ -887,6 +890,7 @@ private:
     // Badges
     UniqueAccess<std::map<QString, std::map<QString, EmotePtr>>>
         badgeSets_;  // "subscribers": { "0": ... "3": ... "6": ...
+    uint64_t channelBadgeRequestGeneration_ = 0;
     UniqueAccess<std::vector<CheerEmoteSet>> cheerEmoteSets_;
     UniqueAccess<std::map<QString, ChannelPointReward>> channelPointRewards_;
     boost::circular_buffer_space_optimized<QueuedRedemption>
@@ -935,6 +939,10 @@ private:
      * 7TV's user representation.
      */
     size_t seventvUserTwitchConnectionIndex_{};
+    QElapsedTimer seventvSnapshotAttempt_;
+    uint64_t seventvSnapshotRequest_{};
+    uint64_t seventvLiveRevision_{};
+    bool seventvSnapshotLoaded_{};
 
     /**
      * The next moment in time to signal activity in this channel to 7TV.

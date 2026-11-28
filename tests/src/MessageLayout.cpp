@@ -220,7 +220,7 @@ TEST(ModerationChrome, HeaderIconsRenderAtSmallSizes)
         EXPECT_TRUE(preview.save(path));
 }
 
-TEST(ModerationChrome, AutomaticPinHonorsVisibilityAndAvoidsDuplicates)
+TEST(ModerationChrome, InlinePinRequiresConfiguredActionAndModerationMode)
 {
     MockApplication app;
     auto countPins = [&](bool canModerate, bool targetModerator, bool modMode) {
@@ -244,21 +244,20 @@ TEST(ModerationChrome, AutomaticPinHonorsVisibilityAndAvoidsDuplicates)
                     pins.insert(el);
         return pins.size();
     };
-    app.settings.showPinButtonOnModeratorsMode.setValue(1);
-    EXPECT_EQ(countPins(true, false, true), 1);
+    EXPECT_EQ(countPins(true, false, true), 0);
     EXPECT_EQ(countPins(true, false, false), 0);
     EXPECT_EQ(countPins(false, false, true), 0);
-    EXPECT_EQ(countPins(false, true, true), 1);
-    EXPECT_EQ(countPins(false, true, false), 0);
-    app.settings.showPinButtonOnModeratorsMode.setValue(0);
     EXPECT_EQ(countPins(false, true, true), 0);
-    EXPECT_EQ(countPins(true, false, true), 1);
-    app.settings.showPinButtonOnModeratorsMode.setValue(2);
-    EXPECT_EQ(countPins(false, true, false), 1);
-    EXPECT_EQ(countPins(true, false, false), 0);
+    EXPECT_EQ(countPins(false, true, false), 0);
     app.settings.moderationActions.append(ModerationAction("/pin {msg.id}"));
     EXPECT_EQ(countPins(true, false, true), 1);
     EXPECT_EQ(countPins(false, true, true), 1);
+    EXPECT_EQ(countPins(true, false, false), 0);
+    EXPECT_EQ(countPins(false, true, false), 0);
+    EXPECT_EQ(countPins(false, false, true), 0);
+    app.settings.moderationActions.removeAt(0);
+    EXPECT_EQ(countPins(true, false, true), 0);
+    EXPECT_EQ(countPins(false, true, true), 0);
 }
 
 namespace {

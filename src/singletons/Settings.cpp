@@ -536,6 +536,11 @@ Settings::Settings(const Modes &modes, const Args &args,
 
     instance_ = this;
 
+    // Old profiles may enable local R9K (Ctrl+H). Repeated chat remains
+    // visible; retain the other similarity and moderation preferences.
+    if (this->hideSimilar)
+        this->hideSimilar.setValue(false);
+
 #ifdef USEWINSDK
     this->autorun = isRegisteredForStartup();
     this->autorun.connect(

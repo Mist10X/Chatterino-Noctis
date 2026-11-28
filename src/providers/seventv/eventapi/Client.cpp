@@ -223,6 +223,8 @@ void Client::onEmoteSetUpdate(const Dispatch &dispatch)
         {
             qCDebug(chatterinoSeventvEventAPI)
                 << "Invalid dispatch" << dispatch.body;
+            if (!dispatch.id.isEmpty())
+                this->manager_.signals_.emoteSetNeedsRefresh.invoke(dispatch.id);
         }
     }
     for (const auto updatedRef : updatedArray)
@@ -245,6 +247,8 @@ void Client::onEmoteSetUpdate(const Dispatch &dispatch)
         {
             qCDebug(chatterinoSeventvEventAPI)
                 << "Invalid dispatch" << dispatch.body;
+            if (!dispatch.id.isEmpty())
+                this->manager_.signals_.emoteSetNeedsRefresh.invoke(dispatch.id);
         }
     }
     for (const auto pulledRef : pulledArray)
@@ -266,6 +270,8 @@ void Client::onEmoteSetUpdate(const Dispatch &dispatch)
         {
             qCDebug(chatterinoSeventvEventAPI)
                 << "Invalid dispatch" << dispatch.body;
+            if (!dispatch.id.isEmpty())
+                this->manager_.signals_.emoteSetNeedsRefresh.invoke(dispatch.id);
         }
     }
 

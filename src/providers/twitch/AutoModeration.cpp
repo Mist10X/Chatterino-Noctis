@@ -1,5 +1,6 @@
 #include "providers/twitch/AutoModeration.hpp"
 #include "providers/twitch/AutoModerationRules.hpp"
+#include "providers/twitch/AutoModerationTable.hpp"
 #include "providers/twitch/ModeratorExtension.hpp"
 #include "providers/twitch/AutomationDialog.hpp"
 #include "Application.hpp"
@@ -36,6 +37,7 @@
 #include <QPushButton>
 #include <QQueue>
 #include <QSaveFile>
+#include <QScrollArea>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -492,7 +494,8 @@ void observeAutoModerationMessage(TwitchChannel &channel, Communi::TagsRef tags,
 }
 
 void openAutoModeration(QWidget *parent,
-                        AutoModerationRewardsFetcher fixtureFetcher)
+                        AutoModerationRewardsFetcher fixtureFetcher,
+                        std::function<QWidget *(QWidget *)> commandPage)
 {
     moderatorextension::UiLease moduleUi;
     const auto &bundle=moderatorextension::active();
@@ -510,16 +513,31 @@ void openAutoModeration(QWidget *parent,
     QDialog dialog(parent);
     dialog.setObjectName("NoctisAutoModeration");
     dialog.setWindowTitle(uiText("Automatic moderation"));
-    dialog.resize(900,640);
+    dialog.resize(720,500);
+    dialog.setMinimumSize(540,390);
+    dialog.setSizeGripEnabled(true);
     auto font = getApp()->getFonts()->getFont(FontStyle::ChatMedium,
         std::clamp(getSettings()->getClampedUiScale(),1.F,1.4F));
     font.setWeight(std::max(font.weight(),QFont::Medium));
     dialog.setFont(font);
-    auto *layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(14,12,14,12);
+    auto *rootLayout = new QVBoxLayout(&dialog);
+    rootLayout->setContentsMargins(14,12,14,12);
+    auto *scroll = new QScrollArea(&dialog);
+    scroll->setObjectName("AutoModerationScroll");
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    auto *content = new QWidget(scroll);
+    content->setObjectName("AutoModerationContent");
+    auto *layout = new QVBoxLayout(content);
+    layout->setContentsMargins(0,0,0,0);
+    layout->setSizeConstraint(QLayout::SetMinimumSize);
+    scroll->setWidget(content);
+    rootLayout->addWidget(scroll,1);
     auto *top = new QHBoxLayout;
     auto *channel = new QComboBox(&dialog);
     channel->setObjectName("AutoModerationChannel");
+    channel->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    channel->setMinimumContentsLength(12);
     channel->addItems(channels);
     auto *enabled = new QCheckBox(uiText("Enable automatic moderation"),&dialog);
     enabled->setObjectName("AutoModerationEnabled");
@@ -527,9 +545,12 @@ void openAutoModeration(QWidget *parent,
     dryRun->setObjectName("AutoModerationDryRun");
     top->addWidget(new QLabel(uiText("Channel"),&dialog));
     top->addWidget(channel,1);
-    top->addWidget(enabled);
-    top->addWidget(dryRun);
     layout->addLayout(top);
+    auto *flags = new QVBoxLayout;
+    flags->setSpacing(2);
+    flags->addWidget(enabled);
+    flags->addWidget(dryRun);
+    layout->addLayout(flags);
     auto *hint = new QLabel(uiText("Only live events in a verified moderation channel are processed. Protected roles and excluded users are never punished."),&dialog);
     hint->setWordWrap(true);
     hint->setObjectName("MutedText");
@@ -540,6 +561,11 @@ void openAutoModeration(QWidget *parent,
     layout->addWidget(exceptions);
     auto *tabs = new QTabWidget(&dialog);
     tabs->setObjectName("AutoModerationTabs");
+    tabs->setUsesScrollButtons(true);
+    // The outer scroll area supplies overflow space; never let the
+    // largest inactive tab dictate the minimum size of the whole window.
+    tabs->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Ignored);
+    tabs->setMinimumHeight(235);
     layout->addWidget(tabs,1);
     auto setupPage = [&](const QString &title) {
         auto *page = new QWidget(tabs);
@@ -552,7 +578,7 @@ void openAutoModeration(QWidget *parent,
     auto *wordHint = new QLabel(uiText("A contiguous fragment, ignoring letter case. The author of a matching message receives a timeout."),&dialog);
     wordHint->setWordWrap(true);
     wordPage->addWidget(wordHint);
-    auto *words = new QTableWidget(0,6,&dialog);
+    auto *words = new AutoModerationTable(6,&dialog);
     words->setObjectName("AutoModerationWords");
     words->setHorizontalHeaderLabels({uiText("Enabled"),uiText("Contains phrase"),uiText("Action"),uiText("Timeout duration"),uiText("Reason"),uiText("Parameters")});
     wordPage->addWidget(words,1);
@@ -566,7 +592,7 @@ void openAutoModeration(QWidget *parent,
     auto *rewardHint = new QLabel(uiText("Choose a reward that requires a nickname as input. Enter only one exact Twitch login. Untimeout requires a confirmed active timeout; known permanent bans are excluded."),&dialog);
     rewardHint->setWordWrap(true);
     rewardPage->addWidget(rewardHint);
-    auto *rewards = new QTableWidget(0,6,&dialog);
+    auto *rewards = new AutoModerationTable(6,&dialog);
     rewards->setObjectName("AutoModerationRewards");
     rewards->setHorizontalHeaderLabels({uiText("Enabled"),uiText("Reward"),uiText("Action"),uiText("Timeout duration"),uiText("Reason"),uiText("Parameters")});
     rewardPage->addWidget(rewards,1);
@@ -583,8 +609,10 @@ void openAutoModeration(QWidget *parent,
         {"rewards",rewardPage->parentWidget()},{"history",historyPage->parentWidget()}};
     for(int index=0;index<bundle.moderationOrder.size();++index)
         tabs->tabBar()->moveTab(tabs->indexOf(pageById.value(bundle.moderationOrder[index])),index);
+    QWidget *commands = commandPage ? commandPage(tabs) : nullptr;
+    if (commands) tabs->addTab(commands,uiText("Commands"));
     tabs->setCurrentIndex(0);
-    auto *history = new QTableWidget(0,4,&dialog);
+    auto *history = new AutoModerationTable(4,&dialog);
     history->setObjectName("AutoModerationHistory");
     history->setHorizontalHeaderLabels({uiText("Time"),uiText("Action"),uiText("User"),uiText("Status")});
     history->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -599,7 +627,7 @@ void openAutoModeration(QWidget *parent,
     saveButton->setObjectName("SaveRules");
     auto *close = new QPushButton(uiText("Close"),&dialog);
     buttons->addStretch();buttons->addWidget(saveButton);buttons->addWidget(close);
-    layout->addLayout(buttons);
+    rootLayout->addLayout(buttons);
     for (auto *table : {words,rewards,history})
     {
         table->verticalHeader()->hide();
@@ -607,12 +635,7 @@ void openAutoModeration(QWidget *parent,
         table->setSelectionMode(QAbstractItemView::SingleSelection);
         table->setAlternatingRowColors(true);
         table->setShowGrid(false);
-        table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     }
-    words->horizontalHeader()->setSectionResizeMode(0,QHeaderView::ResizeToContents);
-    rewards->horizontalHeader()->setSectionResizeMode(0,QHeaderView::ResizeToContents);
-    words->horizontalHeader()->setSectionResizeMode(5,QHeaderView::ResizeToContents);
-    rewards->horizontalHeader()->setSectionResizeMode(5,QHeaderView::ResizeToContents);
     QHash<QString,Config> draft = s->configs;
     QHash<QString,QList<std::pair<QString,QString>>> rewardChoices;
     QSet<QString> loadingRewards;
@@ -850,6 +873,13 @@ void openAutoModeration(QWidget *parent,
     QObject::connect(removeReward,&QPushButton::clicked,&dialog,[&] {if(rewards->currentRow()>=0)rewards->removeRow(rewards->currentRow());});
     QObject::connect(refreshRewards,&QPushButton::clicked,&dialog,[&] {requestRewards(true);});
     QObject::connect(tabs,&QTabWidget::currentChanged,&dialog,[&](int index) {
+        const bool commandTab = commands && tabs->widget(index)==commands;
+        for (auto *widget : {static_cast<QWidget *>(channel),static_cast<QWidget *>(enabled),
+                             static_cast<QWidget *>(dryRun),static_cast<QWidget *>(hint),
+                             static_cast<QWidget *>(exceptions),static_cast<QWidget *>(saveButton),
+                             static_cast<QWidget *>(status)})
+            widget->setVisible(!commandTab);
+        top->itemAt(0)->widget()->setVisible(!commandTab);
         if(tabs->widget(index)==rewardPage->parentWidget()) requestRewards(false);
     });
     QObject::connect(saveButton,&QPushButton::clicked,&dialog,[&] {
@@ -902,13 +932,26 @@ void openAutoModeration(QWidget *parent,
     if(!channels.isEmpty())load(channels.first());
     else status->setText(uiText("No verified moderator channels are currently available."));
     saveButton->setEnabled(!channels.isEmpty() && s->healthy);
-    tabs->setEnabled(!channels.isEmpty() && s->healthy);
+    tabs->setEnabled((!channels.isEmpty() && s->healthy) || commands);
+    if (commands)
+    {
+        for (int index=0;index<tabs->count();++index)
+            if (tabs->widget(index)!=commands)
+                tabs->setTabEnabled(index,!channels.isEmpty() && s->healthy);
+        if (channels.isEmpty() || !s->healthy) tabs->setCurrentWidget(commands);
+    }
     enabled->setEnabled(!channels.isEmpty() && s->healthy);dryRun->setEnabled(enabled->isEnabled());
     if(!s->healthy)status->setText(uiText("Moderation data could not be read or saved. Actions are disabled."));
     installMoltorinoDialogTheme(&dialog,[&] {
         auto *t=getTheme();
         dialog.setStyleSheet(QStringLiteral(R"(
 QDialog, QTabWidget::pane, QTableWidget { background:%1; color:%2; }
+QScrollArea#AutoModerationScroll, QWidget#AutoModerationContent,
+QScrollArea#RepeatCommandEditorScroll, QWidget#RepeatCommandEditor { background:%1; border:0; }
+QScrollBar:vertical { background:transparent; width:9px; margin:0; }
+QScrollBar::handle:vertical { background:%4; border-radius:4px; min-height:24px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }
 QLabel, QCheckBox { background:transparent; color:%2; }
 QLabel#MutedText, QLabel#AutoModerationStatus { color:%5; }
 QTableWidget { border:1px solid %4; border-radius:6px; alternate-background-color:%3; }
@@ -917,15 +960,16 @@ QTableWidget::item { padding:4px; }
 QTableWidget::item:selected { background:%3; color:%2; }
 QTabBar::tab { background:transparent;color:%5;padding:7px 14px; }
 QTabBar::tab:selected { color:%2; border-bottom:2px solid %6; }
-QPushButton, QLineEdit, QComboBox, QSpinBox { background:%3;color:%2;border:1px solid %4;border-radius:5px;padding:5px 8px; }
-QPushButton:hover, QComboBox:focus, QSpinBox:focus, QLineEdit:focus { border-color:%6; }
-QPushButton#SaveRules { background:%6;color:%1; }
+QPushButton, QLineEdit, QComboBox, QSpinBox, QPlainTextEdit { background:%3;color:%2;border:1px solid %4;border-radius:5px;padding:5px 8px; }
+QPushButton:hover, QComboBox:focus, QSpinBox:focus, QLineEdit:focus, QPlainTextEdit:focus { border-color:%6; }
+QPushButton#SaveRules, QPushButton#RepeatCommandSave { background:%6;color:%1; }
 )").arg(t->messages.backgrounds.regular.name(),t->messages.textColors.regular.name(),
             t->messages.backgrounds.alternate.name(),t->tabs.dividerLine.name(),
             t->messages.textColors.system.name(),t->tabs.selected.line.regular.name()));
         for(auto *child:dialog.findChildren<QWidget *>())child->setFont(font);
         for(auto *table:{words,rewards,history})table->verticalHeader()->setDefaultSectionSize(table->fontMetrics().height()+18);
     });
+    dialog.resize(720,500);
     automationdialog::run(dialog);
     tick.stop();
     for(auto *child:dialog.findChildren<QWidget *>())QObject::disconnect(child,nullptr,&dialog,nullptr);

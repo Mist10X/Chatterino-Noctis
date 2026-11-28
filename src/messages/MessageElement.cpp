@@ -2301,14 +2301,9 @@ void TwitchModerationElement::addToContainer(MessageLayoutContainer &container,
     auto *settings = getSettings();
     const auto selfDeleteMode =
         normalizeInlineActionMode(settings->showSelfDeleteButton.getValue());
-    const auto pinOnModeratorsMode = normalizeInlineActionMode(
-        settings->showPinButtonOnModeratorsMode.getValue());
     const bool showSelfDeleteOutsideModerationMode =
         this->targetIsCurrentUser_ && selfDeleteMode == 2;
-    const bool showPinOutsideModerationMode =
-        this->targetIsModOrBroadcaster_ && pinOnModeratorsMode == 2;
-    if (!inModerationMode && !showSelfDeleteOutsideModerationMode &&
-        !showPinOutsideModerationMode)
+    if (!inModerationMode && !showSelfDeleteOutsideModerationMode)
     {
         return;
     }
@@ -2318,27 +2313,18 @@ void TwitchModerationElement::addToContainer(MessageLayoutContainer &container,
         container.getScale() * 16,
     };
 
-    bool hasVisiblePinAction = false;
     bool hasVisibleDeleteAction = false;
     auto actions = settings->moderationActions.readOnly();
     for (const auto &action : *actions)
     {
-        if (!this->shouldShowAction(action, inModerationMode, selfDeleteMode,
-                                    pinOnModeratorsMode))
+        if (!this->shouldShowAction(action, inModerationMode, selfDeleteMode))
         {
             continue;
         }
 
-        switch (action.getType())
+        if (action.getType() == ModerationAction::Type::Delete)
         {
-            case ModerationAction::Type::Pin:
-                hasVisiblePinAction = true;
-                break;
-            case ModerationAction::Type::Delete:
-                hasVisibleDeleteAction = true;
-                break;
-            default:
-                break;
+            hasVisibleDeleteAction = true;
         }
 
         addModerationActionToContainer(*this, action, container, size);
@@ -2348,14 +2334,6 @@ void TwitchModerationElement::addToContainer(MessageLayoutContainer &container,
         const ModerationAction action(command);
         addModerationActionToContainer(*this, action, container, size);
     };
-
-    static const ModerationAction defaultPin("/pin {msg.id}");
-    if (!hasVisiblePinAction &&
-        this->shouldShowAction(defaultPin, inModerationMode, selfDeleteMode,
-                               pinOnModeratorsMode))
-    {
-        addModerationActionToContainer(*this, defaultPin, container, size);
-    }
 
     if (!hasVisibleDeleteAction && this->targetIsCurrentUser_ &&
         selfDeleteMode != 0 && (inModerationMode || selfDeleteMode == 2))
@@ -2388,12 +2366,10 @@ std::string_view TwitchModerationElement::type() const
 
 bool TwitchModerationElement::shouldShowAction(const ModerationAction &action,
                                                bool inModerationMode,
-                                               int selfDeleteMode,
-                                               int pinOnModeratorsMode) const
+                                               int selfDeleteMode) const
 {
     if (!inModerationMode &&
-        action.getType() != ModerationAction::Type::Delete &&
-        action.getType() != ModerationAction::Type::Pin)
+        action.getType() != ModerationAction::Type::Delete)
     {
         return false;
     }
@@ -2408,12 +2384,7 @@ bool TwitchModerationElement::shouldShowAction(const ModerationAction &action,
             }
             return this->canModerateUser_ && inModerationMode;
         case ModerationAction::Type::Pin:
-            if (this->targetIsModOrBroadcaster_)
-            {
-                return pinOnModeratorsMode != 0 &&
-                       (inModerationMode || pinOnModeratorsMode == 2);
-            }
-            return this->canModerateUser_ && inModerationMode;
+            return this->targetIsModOrBroadcaster_ || this->canModerateUser_;
         case ModerationAction::Type::Ban:
         case ModerationAction::Type::Timeout:
         case ModerationAction::Type::Custom:

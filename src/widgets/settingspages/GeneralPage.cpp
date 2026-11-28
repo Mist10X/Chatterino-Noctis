@@ -1227,41 +1227,24 @@ void GeneralPage::initLayout(GeneralPageView &layout)
         ->addTo(layout);
 
     routeSetting(layout, QStringLiteral("Chat"),
-                 QStringLiteral("Unique chat (R9K)"));
-    auto toggleLocalr9kSeq = getApp()->getHotkeys()->getDisplaySequence(
-        HotkeyCategory::Window, "toggleLocalR9K");
-    QString toggleLocalr9kShortcut =
-        "an assigned hotkey (Window -> Toggle local unique chat (R9K))";
-    if (!toggleLocalr9kSeq.isEmpty())
-    {
-        toggleLocalr9kShortcut = toggleLocalr9kSeq.toString(
-            QKeySequence::SequenceFormat::NativeText);
-    }
-    layout.addDescription(uiText("Hide similar messages to those previously seen. "
-                          "Toggle hidden messages by pressing ") +
-                          toggleLocalr9kShortcut + ".");
+                 QStringLiteral("Similarity checks"));
+    layout.addDescription(uiText("Detect similar messages without hiding them."));
 
     SettingWidget::checkbox(uiText("Enable similarity checks"), s.similarityEnabled)
         ->addTo(layout);
 
     SettingWidget::checkbox(uiText("Only if by the same user"), s.hideSimilarBySameUser)
         ->setTooltip(
-            uiText("When checked, messages that are very similar to each other can "
-            "still be shown as long as they're sent by different users."))
+            uiText("Compare only messages sent by the same user."))
         ->addTo(layout);
 
-    SettingWidget::checkbox(uiText("Hide my own messages"), s.hideSimilarMyself)
+    SettingWidget::checkbox(uiText("Check my own messages"), s.hideSimilarMyself)
         ->addTo(layout);
 
-    SettingWidget::checkbox(uiText("Receive notification sounds from hidden messages"),
+    SettingWidget::checkbox(uiText("Receive notification sounds from similar messages"),
                             s.shownSimilarTriggerHighlights)
         ->addTo(layout);
 
-    s.hideSimilar.connect(
-        []() {
-            getApp()->getWindows()->forceLayoutChannelViews();
-        },
-        false);
     layout.addDropdown<float>(
         uiText("Similarity threshold"), {"0.5", "0.75", "0.9"}, s.similarityPercentage,
         [](auto val) {

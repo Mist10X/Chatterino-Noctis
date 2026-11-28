@@ -879,12 +879,14 @@ void Application::aboutToQuit()
 
     this->eventSub->setQuitting();
 
-    this->twitch->aboutToQuit();
-
-    this->hotkeys->save();
+    // Also handle exit paths that did not originate in Window::closeEvent
+    // (tray, quit shortcut, session ending). Snapshot the real geometry
+    // and close all windows before potentially blocking provider shutdown.
     this->windows->save();
-
     this->windows->closeAll();
+
+    this->twitch->aboutToQuit();
+    this->hotkeys->save();
 }
 
 void Application::stop()
